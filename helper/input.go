@@ -29,14 +29,11 @@ func RetStrBufInput() string {
 	return txt
 }
 
-func Default(options map[int]string) int {
+func Default(options map[int]string) {
 	log.Info.Println("🤗 Please select the required option...")
 	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")
-	for opt, val := range options {
-		fmt.Printf("%10v 👉 [%-3v]: To [%v]\n", "", opt, val)
+	for opt := -1; opt < len(options)-1; opt++ {
+		fmt.Printf("%10v👉 [%-2v]: To %v\n", "", opt, options[opt])
 	}
 	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
-	var opt int
-	TakeIntInput(&opt)
-	return opt
 }

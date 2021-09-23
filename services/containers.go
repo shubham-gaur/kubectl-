@@ -2,8 +2,6 @@ package services
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	help "github.com/shubham-gaur/kubectl++/helper"
@@ -18,12 +16,8 @@ var containerSt struct {
 var ctrStr string
 
 func fetchContainers(pdIndex int, nsIndex int) {
-	cmd := exec.Command("kubectl", "get", "pods", podSt.pods[pdIndex], "-n", namespacesSt.namespaces[nsIndex], "-o", "jsonpath={.spec.containers[*].name}")
-	stdout, err := cmd.Output()
-	if err != nil {
-		panic(err)
-	}
-	ctrStr = string(stdout)
+	kargs := []string{"get", "pods", podSt.pods[pdIndex], "-n", namespacesSt.namespaces[nsIndex], "-o", "jsonpath={.spec.containers[*].name}"}
+	ctrStr = help.ExecKubectlCmd(kargs...)
 	containerSt.containers = strings.Fields(ctrStr)
 	containerSt.numberOfContainers = len(containerSt.containers)
 }
@@ -37,7 +31,7 @@ func GetTaggedContainers() (int, int, int) {
 	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")
 	for ct := 0; ct < containerSt.numberOfContainers; ct++ {
 		ctMap[ct] = containerSt.containers[ct]
-		fmt.Printf("%10v👉 Press [%-3v]: %v\n", "", ct, containerSt.containers[ct])
+		fmt.Printf("%10v👉 Press [%-2v]: %v\n", "", ct, containerSt.containers[ct])
 	}
 	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
 	var ctIndex int
@@ -49,36 +43,32 @@ func MarkContainer() {
 	var ctIndex, pdIndex, nsIndex int
 	ctIndex, pdIndex, nsIndex = GetTaggedContainers()
 	options := make(map[int]string)
-	options[1] = "exec command"
-	options[2] = "display logs"
-	options[3] = "login"
-	options[-1] = "exit"
-	options[-2] = "return"
+	options[1] = "login container"
+	options[2] = "exec command in container"
+	options[3] = "display logs of container"
+	options[0] = "exit"
+	options[-1] = "return"
 	var opt int
 	for {
+		help.Default(options)
+		help.TakeIntInput(&opt)
 		switch options[opt] {
-		case "exec command":
-			executeCmd(ctIndex, pdIndex, nsIndex)
-			opt = 0
-		case "display logs":
-			displayLogs(ctIndex, pdIndex, nsIndex)
-			opt = 0
-		case "login":
-			Login(ctIndex, pdIndex, nsIndex)
-			opt = 0
-		case "return":
+		case options[-1]:
 			fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")
 			for ct := 0; ct < containerSt.numberOfContainers; ct++ {
-				fmt.Printf("%10v👉 Press [%-3v]: %v\n", "", ct, containerSt.containers[ct])
+				fmt.Printf("%10v👉 Press [%-2v]: %v\n", "", ct, containerSt.containers[ct])
 			}
 			fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
 			help.TakeIntInput(&ctIndex)
 			log.Info.Println("😀 Active container being set to 👉 ", containerSt.containers[ctIndex])
-			opt = 0
-		case "exit":
+		case options[0]:
 			return
-		default:
-			opt = help.Default(options)
+		case options[1]:
+			Login(ctIndex, pdIndex, nsIndex)
+		case options[2]:
+			executeCmd(ctIndex, pdIndex, nsIndex)
+		case options[3]:
+			displayLogs(ctIndex, pdIndex, nsIndex)
 		}
 	}
 }
@@ -86,30 +76,15 @@ func MarkContainer() {
 func executeCmd(ctIndex int, pdIndex int, nsIndex int) {
 	log.Info.Println("🤔 What command to execute?")
 	c := help.RetStrBufInput()
-	args := []string{"-n", namespacesSt.namespaces[nsIndex], "exec", "-it", podSt.pods[pdIndex], "-c", containerSt.containers[ctIndex], "--"}
-	args = append(args, strings.Fields(c)...)
-	cmd := exec.Command("kubectl", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")
-	err := cmd.Run()
-	if err != nil {
-		log.Warning.Println("😖 Could not execute properly ", err)
-	}
-	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
+	kargs := []string{"-n", namespacesSt.namespaces[nsIndex], "exec", "-it", podSt.pods[pdIndex], "-c", containerSt.containers[ctIndex], "--"}
+	kargs = append(kargs, strings.Fields(c)...)
+	help.RunKubectlCmd(kargs...)
 }
 
 func displayLogs(ctIndex int, pdIndex int, nsIndex int) {
 	log.Info.Println("🤔 Following logs are found for ", containerSt.containers[ctIndex])
-	cmd := exec.Command("kubectl", "-n", namespacesSt.namespaces[nsIndex], "logs", podSt.pods[pdIndex], "-c", containerSt.containers[ctIndex])
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	if err != nil {
-		log.Warning.Println("😖 Could not execute properly ", err)
-	}
+	kargs := []string{"-n", namespacesSt.namespaces[nsIndex], "logs", podSt.pods[pdIndex], "-c", containerSt.containers[ctIndex]}
+	help.RunKubectlCmd(kargs...)
 }
 
 func DisplayContainers() {

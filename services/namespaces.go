@@ -2,7 +2,6 @@ package services
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 
 	help "github.com/shubham-gaur/kubectl++/helper"
@@ -16,12 +15,8 @@ var namespacesSt struct {
 var nsStr string
 
 func fetchNamespaces() {
-	cmd := exec.Command("kubectl", "get", "namespaces")
-	stdout, err := cmd.Output()
-	if err != nil {
-		panic(err)
-	}
-	nsStr = string(stdout)
+	kargs := []string{"get", "namespaces"}
+	nsStr = help.ExecKubectlCmd(kargs...)
 	ns := strings.Fields(nsStr)
 	namespacesSt.namespaces = []string{}
 	for nsIndex := 3; nsIndex < len(ns); nsIndex = nsIndex + 3 {
@@ -43,7 +38,7 @@ func GetTaggedNamespaces() int {
 	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")
 	for ns := 0; ns < namespacesSt.numberOfNamespaces; ns++ {
 		nsMap[ns] = namespacesSt.namespaces[ns]
-		fmt.Printf("%10v👉 Press [%-3v]: %v\n", "", ns, namespacesSt.namespaces[ns])
+		fmt.Printf("%10v👉 Press [%-2v]: %v\n", "", ns, namespacesSt.namespaces[ns])
 	}
 	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
 	var nsIndex int

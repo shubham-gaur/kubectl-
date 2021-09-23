@@ -17,41 +17,41 @@ func main() {
 	go func() {
 		<-c
 		fmt.Println()
-		log.Info.Println("😊 Thank you! Please visit again...😊")
+		log.Info.Println("😊 Thank you! Please visit again... 😊")
 		os.Exit(0)
 	}()
 
 	options := make(map[int]string)
-	options[1] = "display namespaces"
-	options[2] = "display pods"
-	options[3] = "login"
-	options[4] = "collect logs"
-	options[5] = "select container"
-	options[-1] = "exit"
+	options[-1] = "return"
+	options[0] = "exit"
+	options[1] = "display all namespaces"
+	options[2] = "display all pods in a namespace"
+	options[3] = "login specific container"
+	options[4] = "collect logs of container"
+	options[5] = "perform operations on container"
 
 	log.Info.Println("😄 Initializing kubectl++ 😄")
 	var opt int
 	for {
+		help.Default(options)
+		help.TakeIntInput(&opt)
 		switch options[opt] {
-		case "display pods":
-			services.DisplayPods()
-			opt = 0
-		case "display namespaces":
-			services.DisplayNamespaces()
-			opt = 0
-		case "login":
-			services.Login()
-			opt = 0
-		case "collect logs":
-			services.CollectLogForContainer()
-			opt = 0
-		case "select container":
-			services.MarkContainer()
-			opt = 0
-		case "exit":
+		case options[-1]:
+			log.Info.Println("😊 Thank you! Please visit again... 😊")
 			return
-		default:
-			opt = help.Default(options)
+		case options[0]:
+			log.Info.Println("😊 Thank you! Please visit again... 😊")
+			return
+		case options[1]:
+			services.DisplayNamespaces()
+		case options[2]:
+			services.DisplayPods()
+		case options[3]:
+			services.Login()
+		case options[4]:
+			services.CollectLogForContainer()
+		case options[5]:
+			services.MarkContainer()
 		}
 	}
 }

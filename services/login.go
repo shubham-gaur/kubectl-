@@ -1,9 +1,7 @@
 package services
 
 import (
-	"os"
-	"os/exec"
-
+	help "github.com/shubham-gaur/kubectl++/helper"
 	log "github.com/shubham-gaur/kubectl++/logger"
 )
 
@@ -19,15 +17,8 @@ func Login(args ...int) {
 	namespace := namespacesSt.namespaces[nsIndex]
 	pod := podSt.pods[pdIndex]
 	container := containerSt.containers[ctIndex]
-	var cmd *exec.Cmd
 	log.Info.Printf("🤔 %v namespace provided; will login inside %v container in %v pod", namespace, container, pod)
-	log.Info.Println("😓 Executing command: kubectl exec")
-	cmd = exec.Command("kubectl", "-n", namespace, "exec", "-it", pod, "-c", container, "--", "bash")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	if err != nil {
-		log.Warning.Println("😖 Could not login properly ", err)
-	}
+	log.Info.Printf("😓 Executing command: kubectl -n %v exec -it %v -c %v --bash", namespace, pod, container)
+	kargs := []string{"-n", namespace, "exec", "-it", pod, "-c", container, "--", "bash"}
+	help.RunKubectlCmd(kargs...)
 }
