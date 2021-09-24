@@ -1,6 +1,6 @@
 ![kctl++](assets/logo/kubectl++.svg)
 
-[![Makefile CI](https://github.com/shubham-gaur/kubectl-/actions/workflows/makefile.yml/badge.svg)](https://github.com/shubham-gaur/kubectl-/actions/workflows/makefile.yml) [![Test CI](https://github.com/shubham-gaur/kubectl-/actions/workflows/test.yml/badge.svg)](https://github.com/shubham-gaur/kubectl-/actions/workflows/test.yml)
+[![Makefile CI](https://github.com/shubham-gaur/kubectl-/actions/workflows/makefile.yml/badge.svg)](https://github.com/shubham-gaur/kubectl-/actions/workflows/makefile.yml) [![Test CI](https://github.com/shubham-gaur/kubectl-/actions/workflows/test.yml/badge.svg)](https://github.com/shubham-gaur/kubectl-/actions/workflows/test.yml) [![CodeQL](https://github.com/shubham-gaur/kubectl-/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/shubham-gaur/kubectl-/actions/workflows/codeql-analysis.yml)
 
 ---
 
