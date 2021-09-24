@@ -17,13 +17,15 @@ install:
 
 .PHONY: clean
 clean:
-	# Deleting... protos
 	@rm -rf bin
 
 .PHONY: RESET
 RESET: clean
 
-test: gen-doc
+test:
+	# Executing tests...
+	go test -v -timeout 30s -run TestExecKubectlCmd github.com/shubham-gaur/kubectl++/helper
+	# All test completed !
 
 gen-doc:
 	@mkdir -p docs; golds -wdpkgs-listing=solo -source-code-reading=plain -nouses -allow-network-connection -gen -dir=docs/ cmd/main.go
