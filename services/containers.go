@@ -35,7 +35,7 @@ func GetTaggedContainers() (int, int, int) {
 	}
 	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
 	var ctIndex int
-	help.TakeIntInput(&ctIndex)
+	help.TakeIntInput(&ctIndex, containerSt.numberOfContainers)
 	return ctIndex, pdIndex, nsIndex
 }
 
@@ -43,32 +43,32 @@ func MarkContainer() {
 	var ctIndex, pdIndex, nsIndex int
 	ctIndex, pdIndex, nsIndex = GetTaggedContainers()
 	options := make(map[int]string)
+	options[0] = "return"
 	options[1] = "login container"
 	options[2] = "exec command in container"
 	options[3] = "display logs of container"
-	options[0] = "exit"
-	options[-1] = "return"
+	options[4] = "return to main"
 	var opt int
 	for {
 		help.Default(options)
-		help.TakeIntInput(&opt)
+		help.TakeIntInput(&opt, len(options))
 		switch options[opt] {
-		case options[-1]:
+		case options[0]:
 			fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")
 			for ct := 0; ct < containerSt.numberOfContainers; ct++ {
 				fmt.Printf("%10v👉 Press [%-2v]: %v\n", "", ct, containerSt.containers[ct])
 			}
 			fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
-			help.TakeIntInput(&ctIndex)
+			help.TakeIntInput(&ctIndex, containerSt.numberOfContainers)
 			log.Info.Println("😀 Active container being set to 👉 ", containerSt.containers[ctIndex])
-		case options[0]:
-			return
 		case options[1]:
 			Login(ctIndex, pdIndex, nsIndex)
 		case options[2]:
 			executeCmd(ctIndex, pdIndex, nsIndex)
 		case options[3]:
 			displayLogs(ctIndex, pdIndex, nsIndex)
+		case options[4]:
+			return
 		}
 	}
 }

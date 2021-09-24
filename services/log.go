@@ -28,7 +28,7 @@ func CollectLogForContainer() {
 
 	log.Info.Println("🤔 For how long I should collect logs ??? Please be generous time in seconds 😅")
 	var timeout int
-	help.TakeIntInput(&timeout)
+	help.TakeIntInput(&timeout, 3600)
 
 	var cmd *exec.Cmd
 	log.Info.Println("🤔 Collecting log of " + container + " for " + pod + " pod in " + namespace + " namespace")

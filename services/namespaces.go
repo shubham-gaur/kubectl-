@@ -42,6 +42,6 @@ func GetTaggedNamespaces() int {
 	}
 	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
 	var nsIndex int
-	help.TakeIntInput(&nsIndex)
+	help.TakeIntInput(&nsIndex, namespacesSt.numberOfNamespaces)
 	return nsIndex
 }

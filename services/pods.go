@@ -42,7 +42,7 @@ func GetTaggedPods() (int, int) {
 	}
 	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
 	var pdIndex int
-	help.TakeIntInput(&pdIndex)
+	help.TakeIntInput(&pdIndex, podSt.numverOfPods)
 	return pdIndex, nsIndex
 }
 

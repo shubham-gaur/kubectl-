@@ -22,23 +22,20 @@ func main() {
 	}()
 
 	options := make(map[int]string)
-	options[-1] = "return"
-	options[0] = "exit"
+	options[0] = "return"
 	options[1] = "display all namespaces"
 	options[2] = "display all pods in a namespace"
 	options[3] = "login specific container"
 	options[4] = "collect logs of container"
 	options[5] = "perform operations on container"
+	options[6] = "exit"
 
 	log.Info.Println("😄 Initializing kubectl++ 😄")
 	var opt int
 	for {
 		help.Default(options)
-		help.TakeIntInput(&opt)
+		help.TakeIntInput(&opt, len(options))
 		switch options[opt] {
-		case options[-1]:
-			log.Info.Println("😊 Thank you! Please visit again... 😊")
-			return
 		case options[0]:
 			log.Info.Println("😊 Thank you! Please visit again... 😊")
 			return
@@ -52,6 +49,9 @@ func main() {
 			services.CollectLogForContainer()
 		case options[5]:
 			services.MarkContainer()
+		case options[6]:
+			log.Info.Println("😊 Thank you! Please visit again... 😊")
+			return
 		}
 	}
 }
