@@ -1,9 +1,9 @@
-name: Makefile CI
+name: Test CI
 
 on:
   push:
     branches:
-      - feat/api-integration
+      - test/api-integration
   pull_request:
     branches: [main]
 
@@ -14,5 +14,5 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Install
-        run: make install
+      - name: Test
+        run: make test
