@@ -75,7 +75,7 @@ func MarkPod() {
 		log.Info.Printf("😀 Refreshing %v pod status...", defaultPod)
 		kargs := []string{"get", "pod", defaultPod, "-n", defaultNamespace, "-o", "jsonpath={.status.phase}"}
 		status := help.ExecKubectlCmd(kargs...)
-		if status == "Active" {
+		if status == "Running" {
 			log.Info.Printf("😀 [Set Pod]|👉 %v pod |👉 %v namespace |👌 %v", defaultPod, defaultNamespace, status)
 		} else {
 			if status == "" {
