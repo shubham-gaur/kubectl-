@@ -12,7 +12,9 @@ func ExecKubectlCmd(args ...string) string {
 	cmd := exec.Command("kubectl", args...)
 	stdout, err := cmd.Output()
 	if err != nil {
-		panic(err)
+		log.Warning.Printf("😖 Could not execute command properly %v", err)
+	} else {
+		log.Info.Printf("[✔️ ] Command executed successfully 😄 ")
 	}
 	return string(stdout)
 }
@@ -26,8 +28,8 @@ func RunKubectlCmd(args ...string) {
 	err := cmd.Run()
 	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
 	if err != nil {
-		log.Warning.Println("😖 Could not execute command properly ", err)
+		log.Warning.Printf("😖 Could not execute command properly ", err)
 	} else {
-		log.Info.Println("[✔️ ] Command executed successfully 😄 ")
+		log.Info.Printf("[✔️ ] Command executed successfully 😄 ")
 	}
 }
