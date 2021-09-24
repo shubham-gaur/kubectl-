@@ -26,13 +26,13 @@ func CollectLogForContainer() {
 	}
 	defer outfile.Close()
 
-	log.Info.Println("🤔 For how long I should collect logs ??? Please be generous time in seconds 😅")
+	log.Info.Printf("🤔 For how long I should collect logs ??? Please be generous time in seconds 😅")
 	var timeout int
 	help.TakeIntInput(&timeout, 3600)
 
 	var cmd *exec.Cmd
-	log.Info.Println("🤔 Collecting log of " + container + " for " + pod + " pod in " + namespace + " namespace")
-	log.Info.Println("😓 Executing command: timeout 3 kubectl -n " + namespace + " logs -f " + pod + " -c " + container + " > " + container + ".log")
+	log.Info.Printf("🤔 Collecting log of " + container + " for " + pod + " pod in " + namespace + " namespace")
+	log.Info.Printf("😓 Executing command: timeout 3 kubectl -n " + namespace + " logs -f " + pod + " -c " + container + " > " + container + ".log")
 	cmd = exec.Command("kubectl", "logs", "-f", pod, "-n", namespace, "-c", container)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = outfile
@@ -40,7 +40,7 @@ func CollectLogForContainer() {
 	done := make(chan error, 1)
 	err = cmd.Start()
 	if err != nil {
-		log.Warning.Println("😖 Could not execute properly ", err)
+		log.Warning.Printf("😖 Could not execute properly ", err)
 	}
 	go func() {
 		done <- cmd.Wait()
@@ -50,16 +50,16 @@ func CollectLogForContainer() {
 			select {
 			case <-time.After(time.Duration(timeout) * time.Second):
 				if err := cmd.Process.Kill(); err != nil {
-					log.Critical.Println("😢 failed to kill process: ", err)
+					log.Critical.Printf("😢 failed to kill process: ", err)
 				}
 				log.Info.Printf("I get tired after fetching logs for %v seconds 😰", timeout)
-				log.Warning.Println("Limited support for logging 😢")
+				log.Warning.Printf("Limited support for logging 😢")
 				return
 			case err := <-done:
 				if err != nil {
-					log.Critical.Println("process finished with error ", err)
+					log.Critical.Printf("process finished with error ", err)
 				}
-				log.Info.Println("[✔️ ] Command executed successfully 😄 ")
+				log.Info.Printf("[✔️ ] Command executed successfully 😄 ")
 			}
 		}
 	}()

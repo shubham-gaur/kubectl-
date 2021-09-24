@@ -62,7 +62,7 @@ func init() {
 func PrintDebugMap(funcName string, m interface{}) {
 	data, err := json.MarshalIndent(m, "", "\t|")
 	if err != nil {
-		log.Println("logger:: json parse err: ", err)
+		log.Printf("logger:: json parse err: ", err)
 		return
 	}
 	Debug.Printf("%v:\n%v", funcName, string(data))
@@ -72,7 +72,7 @@ func PrintSpecial(funcName string, output string) {
 	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")
 	fmt.Print(output)
 	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")
-	Info.Println("[✔️ ] Command executed successfully 😄 ")
+	Info.Printf("[✔️ ] Command executed successfully 😄 ")
 }
 
 func GetCurrentFunctionName() string {

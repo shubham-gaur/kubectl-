@@ -37,7 +37,7 @@ func RetStrBufInput() string {
 }
 
 func Default(options map[int]string) {
-	log.Info.Println("🤗 Please select the required option...")
+	log.Info.Printf("🤗 Please select the required option...")
 	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")
 	for opt := 0; opt < len(options); opt++ {
 		fmt.Printf("%10v👉 [%-2v]: To %v\n", "", opt, options[opt])
