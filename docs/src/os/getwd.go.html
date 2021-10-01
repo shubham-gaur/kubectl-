@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: getwd.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	getwd.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package os</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime"</code></span>
+<span class="codeline" id="line-9"><code>	"sync"</code></span>
+<span class="codeline" id="line-10"><code>	"syscall"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>var getwdCache struct {</code></span>
+<span class="codeline" id="line-14"><code>	sync.Mutex</code></span>
+<span class="codeline" id="line-15"><code>	dir string</code></span>
+<span class="codeline" id="line-16"><code>}</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>// Getwd returns a rooted path name corresponding to the</code></span>
+<span class="codeline" id="line-19"><code>// current directory. If the current directory can be</code></span>
+<span class="codeline" id="line-20"><code>// reached via multiple paths (due to symbolic links),</code></span>
+<span class="codeline" id="line-21"><code>// Getwd may return any one of them.</code></span>
+<span class="codeline" id="line-22"><code>func Getwd() (dir string, err error) {</code></span>
+<span class="codeline" id="line-23"><code>	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {</code></span>
+<span class="codeline" id="line-24"><code>		return syscall.Getwd()</code></span>
+<span class="codeline" id="line-25"><code>	}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>	// Clumsy but widespread kludge:</code></span>
+<span class="codeline" id="line-28"><code>	// if $PWD is set and matches ".", use it.</code></span>
+<span class="codeline" id="line-29"><code>	dot, err := statNolog(".")</code></span>
+<span class="codeline" id="line-30"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-31"><code>		return "", err</code></span>
+<span class="codeline" id="line-32"><code>	}</code></span>
+<span class="codeline" id="line-33"><code>	dir = Getenv("PWD")</code></span>
+<span class="codeline" id="line-34"><code>	if len(dir) &gt; 0 &amp;&amp; dir[0] == '/' {</code></span>
+<span class="codeline" id="line-35"><code>		d, err := statNolog(dir)</code></span>
+<span class="codeline" id="line-36"><code>		if err == nil &amp;&amp; SameFile(dot, d) {</code></span>
+<span class="codeline" id="line-37"><code>			return dir, nil</code></span>
+<span class="codeline" id="line-38"><code>		}</code></span>
+<span class="codeline" id="line-39"><code>	}</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>	// If the operating system provides a Getwd call, use it.</code></span>
+<span class="codeline" id="line-42"><code>	// Otherwise, we're trying to find our way back to ".".</code></span>
+<span class="codeline" id="line-43"><code>	if syscall.ImplementsGetwd {</code></span>
+<span class="codeline" id="line-44"><code>		var (</code></span>
+<span class="codeline" id="line-45"><code>			s string</code></span>
+<span class="codeline" id="line-46"><code>			e error</code></span>
+<span class="codeline" id="line-47"><code>		)</code></span>
+<span class="codeline" id="line-48"><code>		for {</code></span>
+<span class="codeline" id="line-49"><code>			s, e = syscall.Getwd()</code></span>
+<span class="codeline" id="line-50"><code>			if e != syscall.EINTR {</code></span>
+<span class="codeline" id="line-51"><code>				break</code></span>
+<span class="codeline" id="line-52"><code>			}</code></span>
+<span class="codeline" id="line-53"><code>		}</code></span>
+<span class="codeline" id="line-54"><code>		return s, NewSyscallError("getwd", e)</code></span>
+<span class="codeline" id="line-55"><code>	}</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>	// Apply same kludge but to cached dir instead of $PWD.</code></span>
+<span class="codeline" id="line-58"><code>	getwdCache.Lock()</code></span>
+<span class="codeline" id="line-59"><code>	dir = getwdCache.dir</code></span>
+<span class="codeline" id="line-60"><code>	getwdCache.Unlock()</code></span>
+<span class="codeline" id="line-61"><code>	if len(dir) &gt; 0 {</code></span>
+<span class="codeline" id="line-62"><code>		d, err := statNolog(dir)</code></span>
+<span class="codeline" id="line-63"><code>		if err == nil &amp;&amp; SameFile(dot, d) {</code></span>
+<span class="codeline" id="line-64"><code>			return dir, nil</code></span>
+<span class="codeline" id="line-65"><code>		}</code></span>
+<span class="codeline" id="line-66"><code>	}</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>	// Root is a special case because it has no parent</code></span>
+<span class="codeline" id="line-69"><code>	// and ends in a slash.</code></span>
+<span class="codeline" id="line-70"><code>	root, err := statNolog("/")</code></span>
+<span class="codeline" id="line-71"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-72"><code>		// Can't stat root - no hope.</code></span>
+<span class="codeline" id="line-73"><code>		return "", err</code></span>
+<span class="codeline" id="line-74"><code>	}</code></span>
+<span class="codeline" id="line-75"><code>	if SameFile(root, dot) {</code></span>
+<span class="codeline" id="line-76"><code>		return "/", nil</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>	// General algorithm: find name in parent</code></span>
+<span class="codeline" id="line-80"><code>	// and then find name of parent. Each iteration</code></span>
+<span class="codeline" id="line-81"><code>	// adds /name to the beginning of dir.</code></span>
+<span class="codeline" id="line-82"><code>	dir = ""</code></span>
+<span class="codeline" id="line-83"><code>	for parent := ".."; ; parent = "../" + parent {</code></span>
+<span class="codeline" id="line-84"><code>		if len(parent) &gt;= 1024 { // Sanity check</code></span>
+<span class="codeline" id="line-85"><code>			return "", syscall.ENAMETOOLONG</code></span>
+<span class="codeline" id="line-86"><code>		}</code></span>
+<span class="codeline" id="line-87"><code>		fd, err := openFileNolog(parent, O_RDONLY, 0)</code></span>
+<span class="codeline" id="line-88"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-89"><code>			return "", err</code></span>
+<span class="codeline" id="line-90"><code>		}</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>		for {</code></span>
+<span class="codeline" id="line-93"><code>			names, err := fd.Readdirnames(100)</code></span>
+<span class="codeline" id="line-94"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-95"><code>				fd.Close()</code></span>
+<span class="codeline" id="line-96"><code>				return "", err</code></span>
+<span class="codeline" id="line-97"><code>			}</code></span>
+<span class="codeline" id="line-98"><code>			for _, name := range names {</code></span>
+<span class="codeline" id="line-99"><code>				d, _ := lstatNolog(parent + "/" + name)</code></span>
+<span class="codeline" id="line-100"><code>				if SameFile(d, dot) {</code></span>
+<span class="codeline" id="line-101"><code>					dir = "/" + name + dir</code></span>
+<span class="codeline" id="line-102"><code>					goto Found</code></span>
+<span class="codeline" id="line-103"><code>				}</code></span>
+<span class="codeline" id="line-104"><code>			}</code></span>
+<span class="codeline" id="line-105"><code>		}</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>	Found:</code></span>
+<span class="codeline" id="line-108"><code>		pd, err := fd.Stat()</code></span>
+<span class="codeline" id="line-109"><code>		fd.Close()</code></span>
+<span class="codeline" id="line-110"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-111"><code>			return "", err</code></span>
+<span class="codeline" id="line-112"><code>		}</code></span>
+<span class="codeline" id="line-113"><code>		if SameFile(pd, root) {</code></span>
+<span class="codeline" id="line-114"><code>			break</code></span>
+<span class="codeline" id="line-115"><code>		}</code></span>
+<span class="codeline" id="line-116"><code>		// Set up for next round.</code></span>
+<span class="codeline" id="line-117"><code>		dot = pd</code></span>
+<span class="codeline" id="line-118"><code>	}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>	// Save answer as hint to avoid the expensive path next time.</code></span>
+<span class="codeline" id="line-121"><code>	getwdCache.Lock()</code></span>
+<span class="codeline" id="line-122"><code>	getwdCache.dir = dir</code></span>
+<span class="codeline" id="line-123"><code>	getwdCache.Unlock()</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>	return dir, nil</code></span>
+<span class="codeline" id="line-126"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: ftoa.go in package strconv</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	ftoa.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/strconv.html">strconv</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Binary to decimal floating point conversion.</code></span>
+<span class="codeline" id="line-6"><code>// Algorithm:</code></span>
+<span class="codeline" id="line-7"><code>//   1) store mantissa in multiprecision decimal</code></span>
+<span class="codeline" id="line-8"><code>//   2) shift decimal by exponent</code></span>
+<span class="codeline" id="line-9"><code>//   3) read digits out &amp; format</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>package strconv</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>import "math"</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// TODO: move elsewhere?</code></span>
+<span class="codeline" id="line-16"><code>type floatInfo struct {</code></span>
+<span class="codeline" id="line-17"><code>	mantbits uint</code></span>
+<span class="codeline" id="line-18"><code>	expbits  uint</code></span>
+<span class="codeline" id="line-19"><code>	bias     int</code></span>
+<span class="codeline" id="line-20"><code>}</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>var float32info = floatInfo{23, 8, -127}</code></span>
+<span class="codeline" id="line-23"><code>var float64info = floatInfo{52, 11, -1023}</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>// FormatFloat converts the floating-point number f to a string,</code></span>
+<span class="codeline" id="line-26"><code>// according to the format fmt and precision prec. It rounds the</code></span>
+<span class="codeline" id="line-27"><code>// result assuming that the original was obtained from a floating-point</code></span>
+<span class="codeline" id="line-28"><code>// value of bitSize bits (32 for float32, 64 for float64).</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>// The format fmt is one of</code></span>
+<span class="codeline" id="line-31"><code>// 'b' (-ddddp±ddd, a binary exponent),</code></span>
+<span class="codeline" id="line-32"><code>// 'e' (-d.dddde±dd, a decimal exponent),</code></span>
+<span class="codeline" id="line-33"><code>// 'E' (-d.ddddE±dd, a decimal exponent),</code></span>
+<span class="codeline" id="line-34"><code>// 'f' (-ddd.dddd, no exponent),</code></span>
+<span class="codeline" id="line-35"><code>// 'g' ('e' for large exponents, 'f' otherwise),</code></span>
+<span class="codeline" id="line-36"><code>// 'G' ('E' for large exponents, 'f' otherwise),</code></span>
+<span class="codeline" id="line-37"><code>// 'x' (-0xd.ddddp±ddd, a hexadecimal fraction and binary exponent), or</code></span>
+<span class="codeline" id="line-38"><code>// 'X' (-0Xd.ddddP±ddd, a hexadecimal fraction and binary exponent).</code></span>
+<span class="codeline" id="line-39"><code>//</code></span>
+<span class="codeline" id="line-40"><code>// The precision prec controls the number of digits (excluding the exponent)</code></span>
+<span class="codeline" id="line-41"><code>// printed by the 'e', 'E', 'f', 'g', 'G', 'x', and 'X' formats.</code></span>
+<span class="codeline" id="line-42"><code>// For 'e', 'E', 'f', 'x', and 'X', it is the number of digits after the decimal point.</code></span>
+<span class="codeline" id="line-43"><code>// For 'g' and 'G' it is the maximum number of significant digits (trailing</code></span>
+<span class="codeline" id="line-44"><code>// zeros are removed).</code></span>
+<span class="codeline" id="line-45"><code>// The special precision -1 uses the smallest number of digits</code></span>
+<span class="codeline" id="line-46"><code>// necessary such that ParseFloat will return f exactly.</code></span>
+<span class="codeline" id="line-47"><code>func FormatFloat(f float64, fmt byte, prec, bitSize int) string {</code></span>
+<span class="codeline" id="line-48"><code>	return string(genericFtoa(make([]byte, 0, max(prec+4, 24)), f, fmt, prec, bitSize))</code></span>
+<span class="codeline" id="line-49"><code>}</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>// AppendFloat appends the string form of the floating-point number f,</code></span>
+<span class="codeline" id="line-52"><code>// as generated by FormatFloat, to dst and returns the extended buffer.</code></span>
+<span class="codeline" id="line-53"><code>func AppendFloat(dst []byte, f float64, fmt byte, prec, bitSize int) []byte {</code></span>
+<span class="codeline" id="line-54"><code>	return genericFtoa(dst, f, fmt, prec, bitSize)</code></span>
+<span class="codeline" id="line-55"><code>}</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>func genericFtoa(dst []byte, val float64, fmt byte, prec, bitSize int) []byte {</code></span>
+<span class="codeline" id="line-58"><code>	var bits uint64</code></span>
+<span class="codeline" id="line-59"><code>	var flt *floatInfo</code></span>
+<span class="codeline" id="line-60"><code>	switch bitSize {</code></span>
+<span class="codeline" id="line-61"><code>	case 32:</code></span>
+<span class="codeline" id="line-62"><code>		bits = uint64(math.Float32bits(float32(val)))</code></span>
+<span class="codeline" id="line-63"><code>		flt = &amp;float32info</code></span>
+<span class="codeline" id="line-64"><code>	case 64:</code></span>
+<span class="codeline" id="line-65"><code>		bits = math.Float64bits(val)</code></span>
+<span class="codeline" id="line-66"><code>		flt = &amp;float64info</code></span>
+<span class="codeline" id="line-67"><code>	default:</code></span>
+<span class="codeline" id="line-68"><code>		panic("strconv: illegal AppendFloat/FormatFloat bitSize")</code></span>
+<span class="codeline" id="line-69"><code>	}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>	neg := bits&gt;&gt;(flt.expbits+flt.mantbits) != 0</code></span>
+<span class="codeline" id="line-72"><code>	exp := int(bits&gt;&gt;flt.mantbits) &amp; (1&lt;&lt;flt.expbits - 1)</code></span>
+<span class="codeline" id="line-73"><code>	mant := bits &amp; (uint64(1)&lt;&lt;flt.mantbits - 1)</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>	switch exp {</code></span>
+<span class="codeline" id="line-76"><code>	case 1&lt;&lt;flt.expbits - 1:</code></span>
+<span class="codeline" id="line-77"><code>		// Inf, NaN</code></span>
+<span class="codeline" id="line-78"><code>		var s string</code></span>
+<span class="codeline" id="line-79"><code>		switch {</code></span>
+<span class="codeline" id="line-80"><code>		case mant != 0:</code></span>
+<span class="codeline" id="line-81"><code>			s = "NaN"</code></span>
+<span class="codeline" id="line-82"><code>		case neg:</code></span>
+<span class="codeline" id="line-83"><code>			s = "-Inf"</code></span>
+<span class="codeline" id="line-84"><code>		default:</code></span>
+<span class="codeline" id="line-85"><code>			s = "+Inf"</code></span>
+<span class="codeline" id="line-86"><code>		}</code></span>
+<span class="codeline" id="line-87"><code>		return append(dst, s...)</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>	case 0:</code></span>
+<span class="codeline" id="line-90"><code>		// denormalized</code></span>
+<span class="codeline" id="line-91"><code>		exp++</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>	default:</code></span>
+<span class="codeline" id="line-94"><code>		// add implicit top bit</code></span>
+<span class="codeline" id="line-95"><code>		mant |= uint64(1) &lt;&lt; flt.mantbits</code></span>
+<span class="codeline" id="line-96"><code>	}</code></span>
+<span class="codeline" id="line-97"><code>	exp += flt.bias</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>	// Pick off easy binary, hex formats.</code></span>
+<span class="codeline" id="line-100"><code>	if fmt == 'b' {</code></span>
+<span class="codeline" id="line-101"><code>		return fmtB(dst, neg, mant, exp, flt)</code></span>
+<span class="codeline" id="line-102"><code>	}</code></span>
+<span class="codeline" id="line-103"><code>	if fmt == 'x' || fmt == 'X' {</code></span>
+<span class="codeline" id="line-104"><code>		return fmtX(dst, prec, fmt, neg, mant, exp, flt)</code></span>
+<span class="codeline" id="line-105"><code>	}</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>	if !optimize {</code></span>
+<span class="codeline" id="line-108"><code>		return bigFtoa(dst, prec, fmt, neg, mant, exp, flt)</code></span>
+<span class="codeline" id="line-109"><code>	}</code></span>
+<span class="codeline" id="line-110"><code></code></span>
+<span class="codeline" id="line-111"><code>	var digs decimalSlice</code></span>
+<span class="codeline" id="line-112"><code>	ok := false</code></span>
+<span class="codeline" id="line-113"><code>	// Negative precision means "only as much as needed to be exact."</code></span>
+<span class="codeline" id="line-114"><code>	shortest := prec &lt; 0</code></span>
+<span class="codeline" id="line-115"><code>	if shortest {</code></span>
+<span class="codeline" id="line-116"><code>		// Try Grisu3 algorithm.</code></span>
+<span class="codeline" id="line-117"><code>		f := new(extFloat)</code></span>
+<span class="codeline" id="line-118"><code>		lower, upper := f.AssignComputeBounds(mant, exp, neg, flt)</code></span>
+<span class="codeline" id="line-119"><code>		var buf [32]byte</code></span>
+<span class="codeline" id="line-120"><code>		digs.d = buf[:]</code></span>
+<span class="codeline" id="line-121"><code>		ok = f.ShortestDecimal(&amp;digs, &amp;lower, &amp;upper)</code></span>
+<span class="codeline" id="line-122"><code>		if !ok {</code></span>
+<span class="codeline" id="line-123"><code>			return bigFtoa(dst, prec, fmt, neg, mant, exp, flt)</code></span>
+<span class="codeline" id="line-124"><code>		}</code></span>
+<span class="codeline" id="line-125"><code>		// Precision for shortest representation mode.</code></span>
+<span class="codeline" id="line-126"><code>		switch fmt {</code></span>
+<span class="codeline" id="line-127"><code>		case 'e', 'E':</code></span>
+<span class="codeline" id="line-128"><code>			prec = max(digs.nd-1, 0)</code></span>
+<span class="codeline" id="line-129"><code>		case 'f':</code></span>
+<span class="codeline" id="line-130"><code>			prec = max(digs.nd-digs.dp, 0)</code></span>
+<span class="codeline" id="line-131"><code>		case 'g', 'G':</code></span>
+<span class="codeline" id="line-132"><code>			prec = digs.nd</code></span>
+<span class="codeline" id="line-133"><code>		}</code></span>
+<span class="codeline" id="line-134"><code>	} else if fmt != 'f' {</code></span>
+<span class="codeline" id="line-135"><code>		// Fixed number of digits.</code></span>
+<span class="codeline" id="line-136"><code>		digits := prec</code></span>
+<span class="codeline" id="line-137"><code>		switch fmt {</code></span>
+<span class="codeline" id="line-138"><code>		case 'e', 'E':</code></span>
+<span class="codeline" id="line-139"><code>			digits++</code></span>
+<span class="codeline" id="line-140"><code>		case 'g', 'G':</code></span>
+<span class="codeline" id="line-141"><code>			if prec == 0 {</code></span>
+<span class="codeline" id="line-142"><code>				prec = 1</code></span>
+<span class="codeline" id="line-143"><code>			}</code></span>
+<span class="codeline" id="line-144"><code>			digits = prec</code></span>
+<span class="codeline" id="line-145"><code>		}</code></span>
+<span class="codeline" id="line-146"><code>		if digits &lt;= 15 {</code></span>
+<span class="codeline" id="line-147"><code>			// try fast algorithm when the number of digits is reasonable.</code></span>
+<span class="codeline" id="line-148"><code>			var buf [24]byte</code></span>
+<span class="codeline" id="line-149"><code>			digs.d = buf[:]</code></span>
+<span class="codeline" id="line-150"><code>			f := extFloat{mant, exp - int(flt.mantbits), neg}</code></span>
+<span class="codeline" id="line-151"><code>			ok = f.FixedDecimal(&amp;digs, digits)</code></span>
+<span class="codeline" id="line-152"><code>		}</code></span>
+<span class="codeline" id="line-153"><code>	}</code></span>
+<span class="codeline" id="line-154"><code>	if !ok {</code></span>
+<span class="codeline" id="line-155"><code>		return bigFtoa(dst, prec, fmt, neg, mant, exp, flt)</code></span>
+<span class="codeline" id="line-156"><code>	}</code></span>
+<span class="codeline" id="line-157"><code>	return formatDigits(dst, shortest, neg, digs, prec, fmt)</code></span>
+<span class="codeline" id="line-158"><code>}</code></span>
+<span class="codeline" id="line-159"><code></code></span>
+<span class="codeline" id="line-160"><code>// bigFtoa uses multiprecision computations to format a float.</code></span>
+<span class="codeline" id="line-161"><code>func bigFtoa(dst []byte, prec int, fmt byte, neg bool, mant uint64, exp int, flt *floatInfo) []byte {</code></span>
+<span class="codeline" id="line-162"><code>	d := new(decimal)</code></span>
+<span class="codeline" id="line-163"><code>	d.Assign(mant)</code></span>
+<span class="codeline" id="line-164"><code>	d.Shift(exp - int(flt.mantbits))</code></span>
+<span class="codeline" id="line-165"><code>	var digs decimalSlice</code></span>
+<span class="codeline" id="line-166"><code>	shortest := prec &lt; 0</code></span>
+<span class="codeline" id="line-167"><code>	if shortest {</code></span>
+<span class="codeline" id="line-168"><code>		roundShortest(d, mant, exp, flt)</code></span>
+<span class="codeline" id="line-169"><code>		digs = decimalSlice{d: d.d[:], nd: d.nd, dp: d.dp}</code></span>
+<span class="codeline" id="line-170"><code>		// Precision for shortest representation mode.</code></span>
+<span class="codeline" id="line-171"><code>		switch fmt {</code></span>
+<span class="codeline" id="line-172"><code>		case 'e', 'E':</code></span>
+<span class="codeline" id="line-173"><code>			prec = digs.nd - 1</code></span>
+<span class="codeline" id="line-174"><code>		case 'f':</code></span>
+<span class="codeline" id="line-175"><code>			prec = max(digs.nd-digs.dp, 0)</code></span>
+<span class="codeline" id="line-176"><code>		case 'g', 'G':</code></span>
+<span class="codeline" id="line-177"><code>			prec = digs.nd</code></span>
+<span class="codeline" id="line-178"><code>		}</code></span>
+<span class="codeline" id="line-179"><code>	} else {</code></span>
+<span class="codeline" id="line-180"><code>		// Round appropriately.</code></span>
+<span class="codeline" id="line-181"><code>		switch fmt {</code></span>
+<span class="codeline" id="line-182"><code>		case 'e', 'E':</code></span>
+<span class="codeline" id="line-183"><code>			d.Round(prec + 1)</code></span>
+<span class="codeline" id="line-184"><code>		case 'f':</code></span>
+<span class="codeline" id="line-185"><code>			d.Round(d.dp + prec)</code></span>
+<span class="codeline" id="line-186"><code>		case 'g', 'G':</code></span>
+<span class="codeline" id="line-187"><code>			if prec == 0 {</code></span>
+<span class="codeline" id="line-188"><code>				prec = 1</code></span>
+<span class="codeline" id="line-189"><code>			}</code></span>
+<span class="codeline" id="line-190"><code>			d.Round(prec)</code></span>
+<span class="codeline" id="line-191"><code>		}</code></span>
+<span class="codeline" id="line-192"><code>		digs = decimalSlice{d: d.d[:], nd: d.nd, dp: d.dp}</code></span>
+<span class="codeline" id="line-193"><code>	}</code></span>
+<span class="codeline" id="line-194"><code>	return formatDigits(dst, shortest, neg, digs, prec, fmt)</code></span>
+<span class="codeline" id="line-195"><code>}</code></span>
+<span class="codeline" id="line-196"><code></code></span>
+<span class="codeline" id="line-197"><code>func formatDigits(dst []byte, shortest bool, neg bool, digs decimalSlice, prec int, fmt byte) []byte {</code></span>
+<span class="codeline" id="line-198"><code>	switch fmt {</code></span>
+<span class="codeline" id="line-199"><code>	case 'e', 'E':</code></span>
+<span class="codeline" id="line-200"><code>		return fmtE(dst, neg, digs, prec, fmt)</code></span>
+<span class="codeline" id="line-201"><code>	case 'f':</code></span>
+<span class="codeline" id="line-202"><code>		return fmtF(dst, neg, digs, prec)</code></span>
+<span class="codeline" id="line-203"><code>	case 'g', 'G':</code></span>
+<span class="codeline" id="line-204"><code>		// trailing fractional zeros in 'e' form will be trimmed.</code></span>
+<span class="codeline" id="line-205"><code>		eprec := prec</code></span>
+<span class="codeline" id="line-206"><code>		if eprec &gt; digs.nd &amp;&amp; digs.nd &gt;= digs.dp {</code></span>
+<span class="codeline" id="line-207"><code>			eprec = digs.nd</code></span>
+<span class="codeline" id="line-208"><code>		}</code></span>
+<span class="codeline" id="line-209"><code>		// %e is used if the exponent from the conversion</code></span>
+<span class="codeline" id="line-210"><code>		// is less than -4 or greater than or equal to the precision.</code></span>
+<span class="codeline" id="line-211"><code>		// if precision was the shortest possible, use precision 6 for this decision.</code></span>
+<span class="codeline" id="line-212"><code>		if shortest {</code></span>
+<span class="codeline" id="line-213"><code>			eprec = 6</code></span>
+<span class="codeline" id="line-214"><code>		}</code></span>
+<span class="codeline" id="line-215"><code>		exp := digs.dp - 1</code></span>
+<span class="codeline" id="line-216"><code>		if exp &lt; -4 || exp &gt;= eprec {</code></span>
+<span class="codeline" id="line-217"><code>			if prec &gt; digs.nd {</code></span>
+<span class="codeline" id="line-218"><code>				prec = digs.nd</code></span>
+<span class="codeline" id="line-219"><code>			}</code></span>
+<span class="codeline" id="line-220"><code>			return fmtE(dst, neg, digs, prec-1, fmt+'e'-'g')</code></span>
+<span class="codeline" id="line-221"><code>		}</code></span>
+<span class="codeline" id="line-222"><code>		if prec &gt; digs.dp {</code></span>
+<span class="codeline" id="line-223"><code>			prec = digs.nd</code></span>
+<span class="codeline" id="line-224"><code>		}</code></span>
+<span class="codeline" id="line-225"><code>		return fmtF(dst, neg, digs, max(prec-digs.dp, 0))</code></span>
+<span class="codeline" id="line-226"><code>	}</code></span>
+<span class="codeline" id="line-227"><code></code></span>
+<span class="codeline" id="line-228"><code>	// unknown format</code></span>
+<span class="codeline" id="line-229"><code>	return append(dst, '%', fmt)</code></span>
+<span class="codeline" id="line-230"><code>}</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>// roundShortest rounds d (= mant * 2^exp) to the shortest number of digits</code></span>
+<span class="codeline" id="line-233"><code>// that will let the original floating point value be precisely reconstructed.</code></span>
+<span class="codeline" id="line-234"><code>func roundShortest(d *decimal, mant uint64, exp int, flt *floatInfo) {</code></span>
+<span class="codeline" id="line-235"><code>	// If mantissa is zero, the number is zero; stop now.</code></span>
+<span class="codeline" id="line-236"><code>	if mant == 0 {</code></span>
+<span class="codeline" id="line-237"><code>		d.nd = 0</code></span>
+<span class="codeline" id="line-238"><code>		return</code></span>
+<span class="codeline" id="line-239"><code>	}</code></span>
+<span class="codeline" id="line-240"><code></code></span>
+<span class="codeline" id="line-241"><code>	// Compute upper and lower such that any decimal number</code></span>
+<span class="codeline" id="line-242"><code>	// between upper and lower (possibly inclusive)</code></span>
+<span class="codeline" id="line-243"><code>	// will round to the original floating point number.</code></span>
+<span class="codeline" id="line-244"><code></code></span>
+<span class="codeline" id="line-245"><code>	// We may see at once that the number is already shortest.</code></span>
+<span class="codeline" id="line-246"><code>	//</code></span>
+<span class="codeline" id="line-247"><code>	// Suppose d is not denormal, so that 2^exp &lt;= d &lt; 10^dp.</code></span>
+<span class="codeline" id="line-248"><code>	// The closest shorter number is at least 10^(dp-nd) away.</code></span>
+<span class="codeline" id="line-249"><code>	// The lower/upper bounds computed below are at distance</code></span>
+<span class="codeline" id="line-250"><code>	// at most 2^(exp-mantbits).</code></span>
+<span class="codeline" id="line-251"><code>	//</code></span>
+<span class="codeline" id="line-252"><code>	// So the number is already shortest if 10^(dp-nd) &gt; 2^(exp-mantbits),</code></span>
+<span class="codeline" id="line-253"><code>	// or equivalently log2(10)*(dp-nd) &gt; exp-mantbits.</code></span>
+<span class="codeline" id="line-254"><code>	// It is true if 332/100*(dp-nd) &gt;= exp-mantbits (log2(10) &gt; 3.32).</code></span>
+<span class="codeline" id="line-255"><code>	minexp := flt.bias + 1 // minimum possible exponent</code></span>
+<span class="codeline" id="line-256"><code>	if exp &gt; minexp &amp;&amp; 332*(d.dp-d.nd) &gt;= 100*(exp-int(flt.mantbits)) {</code></span>
+<span class="codeline" id="line-257"><code>		// The number is already shortest.</code></span>
+<span class="codeline" id="line-258"><code>		return</code></span>
+<span class="codeline" id="line-259"><code>	}</code></span>
+<span class="codeline" id="line-260"><code></code></span>
+<span class="codeline" id="line-261"><code>	// d = mant &lt;&lt; (exp - mantbits)</code></span>
+<span class="codeline" id="line-262"><code>	// Next highest floating point number is mant+1 &lt;&lt; exp-mantbits.</code></span>
+<span class="codeline" id="line-263"><code>	// Our upper bound is halfway between, mant*2+1 &lt;&lt; exp-mantbits-1.</code></span>
+<span class="codeline" id="line-264"><code>	upper := new(decimal)</code></span>
+<span class="codeline" id="line-265"><code>	upper.Assign(mant*2 + 1)</code></span>
+<span class="codeline" id="line-266"><code>	upper.Shift(exp - int(flt.mantbits) - 1)</code></span>
+<span class="codeline" id="line-267"><code></code></span>
+<span class="codeline" id="line-268"><code>	// d = mant &lt;&lt; (exp - mantbits)</code></span>
+<span class="codeline" id="line-269"><code>	// Next lowest floating point number is mant-1 &lt;&lt; exp-mantbits,</code></span>
+<span class="codeline" id="line-270"><code>	// unless mant-1 drops the significant bit and exp is not the minimum exp,</code></span>
+<span class="codeline" id="line-271"><code>	// in which case the next lowest is mant*2-1 &lt;&lt; exp-mantbits-1.</code></span>
+<span class="codeline" id="line-272"><code>	// Either way, call it mantlo &lt;&lt; explo-mantbits.</code></span>
+<span class="codeline" id="line-273"><code>	// Our lower bound is halfway between, mantlo*2+1 &lt;&lt; explo-mantbits-1.</code></span>
+<span class="codeline" id="line-274"><code>	var mantlo uint64</code></span>
+<span class="codeline" id="line-275"><code>	var explo int</code></span>
+<span class="codeline" id="line-276"><code>	if mant &gt; 1&lt;&lt;flt.mantbits || exp == minexp {</code></span>
+<span class="codeline" id="line-277"><code>		mantlo = mant - 1</code></span>
+<span class="codeline" id="line-278"><code>		explo = exp</code></span>
+<span class="codeline" id="line-279"><code>	} else {</code></span>
+<span class="codeline" id="line-280"><code>		mantlo = mant*2 - 1</code></span>
+<span class="codeline" id="line-281"><code>		explo = exp - 1</code></span>
+<span class="codeline" id="line-282"><code>	}</code></span>
+<span class="codeline" id="line-283"><code>	lower := new(decimal)</code></span>
+<span class="codeline" id="line-284"><code>	lower.Assign(mantlo*2 + 1)</code></span>
+<span class="codeline" id="line-285"><code>	lower.Shift(explo - int(flt.mantbits) - 1)</code></span>
+<span class="codeline" id="line-286"><code></code></span>
+<span class="codeline" id="line-287"><code>	// The upper and lower bounds are possible outputs only if</code></span>
+<span class="codeline" id="line-288"><code>	// the original mantissa is even, so that IEEE round-to-even</code></span>
+<span class="codeline" id="line-289"><code>	// would round to the original mantissa and not the neighbors.</code></span>
+<span class="codeline" id="line-290"><code>	inclusive := mant%2 == 0</code></span>
+<span class="codeline" id="line-291"><code></code></span>
+<span class="codeline" id="line-292"><code>	// As we walk the digits we want to know whether rounding up would fall</code></span>
+<span class="codeline" id="line-293"><code>	// within the upper bound. This is tracked by upperdelta:</code></span>
+<span class="codeline" id="line-294"><code>	//</code></span>
+<span class="codeline" id="line-295"><code>	// If upperdelta == 0, the digits of d and upper are the same so far.</code></span>
+<span class="codeline" id="line-296"><code>	//</code></span>
+<span class="codeline" id="line-297"><code>	// If upperdelta == 1, we saw a difference of 1 between d and upper on a</code></span>
+<span class="codeline" id="line-298"><code>	// previous digit and subsequently only 9s for d and 0s for upper.</code></span>
+<span class="codeline" id="line-299"><code>	// (Thus rounding up may fall outside the bound, if it is exclusive.)</code></span>
+<span class="codeline" id="line-300"><code>	//</code></span>
+<span class="codeline" id="line-301"><code>	// If upperdelta == 2, then the difference is greater than 1</code></span>
+<span class="codeline" id="line-302"><code>	// and we know that rounding up falls within the bound.</code></span>
+<span class="codeline" id="line-303"><code>	var upperdelta uint8</code></span>
+<span class="codeline" id="line-304"><code></code></span>
+<span class="codeline" id="line-305"><code>	// Now we can figure out the minimum number of digits required.</code></span>
+<span class="codeline" id="line-306"><code>	// Walk along until d has distinguished itself from upper and lower.</code></span>
+<span class="codeline" id="line-307"><code>	for ui := 0; ; ui++ {</code></span>
+<span class="codeline" id="line-308"><code>		// lower, d, and upper may have the decimal points at different</code></span>
+<span class="codeline" id="line-309"><code>		// places. In this case upper is the longest, so we iterate from</code></span>
+<span class="codeline" id="line-310"><code>		// ui==0 and start li and mi at (possibly) -1.</code></span>
+<span class="codeline" id="line-311"><code>		mi := ui - upper.dp + d.dp</code></span>
+<span class="codeline" id="line-312"><code>		if mi &gt;= d.nd {</code></span>
+<span class="codeline" id="line-313"><code>			break</code></span>
+<span class="codeline" id="line-314"><code>		}</code></span>
+<span class="codeline" id="line-315"><code>		li := ui - upper.dp + lower.dp</code></span>
+<span class="codeline" id="line-316"><code>		l := byte('0') // lower digit</code></span>
+<span class="codeline" id="line-317"><code>		if li &gt;= 0 &amp;&amp; li &lt; lower.nd {</code></span>
+<span class="codeline" id="line-318"><code>			l = lower.d[li]</code></span>
+<span class="codeline" id="line-319"><code>		}</code></span>
+<span class="codeline" id="line-320"><code>		m := byte('0') // middle digit</code></span>
+<span class="codeline" id="line-321"><code>		if mi &gt;= 0 {</code></span>
+<span class="codeline" id="line-322"><code>			m = d.d[mi]</code></span>
+<span class="codeline" id="line-323"><code>		}</code></span>
+<span class="codeline" id="line-324"><code>		u := byte('0') // upper digit</code></span>
+<span class="codeline" id="line-325"><code>		if ui &lt; upper.nd {</code></span>
+<span class="codeline" id="line-326"><code>			u = upper.d[ui]</code></span>
+<span class="codeline" id="line-327"><code>		}</code></span>
+<span class="codeline" id="line-328"><code></code></span>
+<span class="codeline" id="line-329"><code>		// Okay to round down (truncate) if lower has a different digit</code></span>
+<span class="codeline" id="line-330"><code>		// or if lower is inclusive and is exactly the result of rounding</code></span>
+<span class="codeline" id="line-331"><code>		// down (i.e., and we have reached the final digit of lower).</code></span>
+<span class="codeline" id="line-332"><code>		okdown := l != m || inclusive &amp;&amp; li+1 == lower.nd</code></span>
+<span class="codeline" id="line-333"><code></code></span>
+<span class="codeline" id="line-334"><code>		switch {</code></span>
+<span class="codeline" id="line-335"><code>		case upperdelta == 0 &amp;&amp; m+1 &lt; u:</code></span>
+<span class="codeline" id="line-336"><code>			// Example:</code></span>
+<span class="codeline" id="line-337"><code>			// m = 12345xxx</code></span>
+<span class="codeline" id="line-338"><code>			// u = 12347xxx</code></span>
+<span class="codeline" id="line-339"><code>			upperdelta = 2</code></span>
+<span class="codeline" id="line-340"><code>		case upperdelta == 0 &amp;&amp; m != u:</code></span>
+<span class="codeline" id="line-341"><code>			// Example:</code></span>
+<span class="codeline" id="line-342"><code>			// m = 12345xxx</code></span>
+<span class="codeline" id="line-343"><code>			// u = 12346xxx</code></span>
+<span class="codeline" id="line-344"><code>			upperdelta = 1</code></span>
+<span class="codeline" id="line-345"><code>		case upperdelta == 1 &amp;&amp; (m != '9' || u != '0'):</code></span>
+<span class="codeline" id="line-346"><code>			// Example:</code></span>
+<span class="codeline" id="line-347"><code>			// m = 1234598x</code></span>
+<span class="codeline" id="line-348"><code>			// u = 1234600x</code></span>
+<span class="codeline" id="line-349"><code>			upperdelta = 2</code></span>
+<span class="codeline" id="line-350"><code>		}</code></span>
+<span class="codeline" id="line-351"><code>		// Okay to round up if upper has a different digit and either upper</code></span>
+<span class="codeline" id="line-352"><code>		// is inclusive or upper is bigger than the result of rounding up.</code></span>
+<span class="codeline" id="line-353"><code>		okup := upperdelta &gt; 0 &amp;&amp; (inclusive || upperdelta &gt; 1 || ui+1 &lt; upper.nd)</code></span>
+<span class="codeline" id="line-354"><code></code></span>
+<span class="codeline" id="line-355"><code>		// If it's okay to do either, then round to the nearest one.</code></span>
+<span class="codeline" id="line-356"><code>		// If it's okay to do only one, do it.</code></span>
+<span class="codeline" id="line-357"><code>		switch {</code></span>
+<span class="codeline" id="line-358"><code>		case okdown &amp;&amp; okup:</code></span>
+<span class="codeline" id="line-359"><code>			d.Round(mi + 1)</code></span>
+<span class="codeline" id="line-360"><code>			return</code></span>
+<span class="codeline" id="line-361"><code>		case okdown:</code></span>
+<span class="codeline" id="line-362"><code>			d.RoundDown(mi + 1)</code></span>
+<span class="codeline" id="line-363"><code>			return</code></span>
+<span class="codeline" id="line-364"><code>		case okup:</code></span>
+<span class="codeline" id="line-365"><code>			d.RoundUp(mi + 1)</code></span>
+<span class="codeline" id="line-366"><code>			return</code></span>
+<span class="codeline" id="line-367"><code>		}</code></span>
+<span class="codeline" id="line-368"><code>	}</code></span>
+<span class="codeline" id="line-369"><code>}</code></span>
+<span class="codeline" id="line-370"><code></code></span>
+<span class="codeline" id="line-371"><code>type decimalSlice struct {</code></span>
+<span class="codeline" id="line-372"><code>	d      []byte</code></span>
+<span class="codeline" id="line-373"><code>	nd, dp int</code></span>
+<span class="codeline" id="line-374"><code>	neg    bool</code></span>
+<span class="codeline" id="line-375"><code>}</code></span>
+<span class="codeline" id="line-376"><code></code></span>
+<span class="codeline" id="line-377"><code>// %e: -d.ddddde±dd</code></span>
+<span class="codeline" id="line-378"><code>func fmtE(dst []byte, neg bool, d decimalSlice, prec int, fmt byte) []byte {</code></span>
+<span class="codeline" id="line-379"><code>	// sign</code></span>
+<span class="codeline" id="line-380"><code>	if neg {</code></span>
+<span class="codeline" id="line-381"><code>		dst = append(dst, '-')</code></span>
+<span class="codeline" id="line-382"><code>	}</code></span>
+<span class="codeline" id="line-383"><code></code></span>
+<span class="codeline" id="line-384"><code>	// first digit</code></span>
+<span class="codeline" id="line-385"><code>	ch := byte('0')</code></span>
+<span class="codeline" id="line-386"><code>	if d.nd != 0 {</code></span>
+<span class="codeline" id="line-387"><code>		ch = d.d[0]</code></span>
+<span class="codeline" id="line-388"><code>	}</code></span>
+<span class="codeline" id="line-389"><code>	dst = append(dst, ch)</code></span>
+<span class="codeline" id="line-390"><code></code></span>
+<span class="codeline" id="line-391"><code>	// .moredigits</code></span>
+<span class="codeline" id="line-392"><code>	if prec &gt; 0 {</code></span>
+<span class="codeline" id="line-393"><code>		dst = append(dst, '.')</code></span>
+<span class="codeline" id="line-394"><code>		i := 1</code></span>
+<span class="codeline" id="line-395"><code>		m := min(d.nd, prec+1)</code></span>
+<span class="codeline" id="line-396"><code>		if i &lt; m {</code></span>
+<span class="codeline" id="line-397"><code>			dst = append(dst, d.d[i:m]...)</code></span>
+<span class="codeline" id="line-398"><code>			i = m</code></span>
+<span class="codeline" id="line-399"><code>		}</code></span>
+<span class="codeline" id="line-400"><code>		for ; i &lt;= prec; i++ {</code></span>
+<span class="codeline" id="line-401"><code>			dst = append(dst, '0')</code></span>
+<span class="codeline" id="line-402"><code>		}</code></span>
+<span class="codeline" id="line-403"><code>	}</code></span>
+<span class="codeline" id="line-404"><code></code></span>
+<span class="codeline" id="line-405"><code>	// e±</code></span>
+<span class="codeline" id="line-406"><code>	dst = append(dst, fmt)</code></span>
+<span class="codeline" id="line-407"><code>	exp := d.dp - 1</code></span>
+<span class="codeline" id="line-408"><code>	if d.nd == 0 { // special case: 0 has exponent 0</code></span>
+<span class="codeline" id="line-409"><code>		exp = 0</code></span>
+<span class="codeline" id="line-410"><code>	}</code></span>
+<span class="codeline" id="line-411"><code>	if exp &lt; 0 {</code></span>
+<span class="codeline" id="line-412"><code>		ch = '-'</code></span>
+<span class="codeline" id="line-413"><code>		exp = -exp</code></span>
+<span class="codeline" id="line-414"><code>	} else {</code></span>
+<span class="codeline" id="line-415"><code>		ch = '+'</code></span>
+<span class="codeline" id="line-416"><code>	}</code></span>
+<span class="codeline" id="line-417"><code>	dst = append(dst, ch)</code></span>
+<span class="codeline" id="line-418"><code></code></span>
+<span class="codeline" id="line-419"><code>	// dd or ddd</code></span>
+<span class="codeline" id="line-420"><code>	switch {</code></span>
+<span class="codeline" id="line-421"><code>	case exp &lt; 10:</code></span>
+<span class="codeline" id="line-422"><code>		dst = append(dst, '0', byte(exp)+'0')</code></span>
+<span class="codeline" id="line-423"><code>	case exp &lt; 100:</code></span>
+<span class="codeline" id="line-424"><code>		dst = append(dst, byte(exp/10)+'0', byte(exp%10)+'0')</code></span>
+<span class="codeline" id="line-425"><code>	default:</code></span>
+<span class="codeline" id="line-426"><code>		dst = append(dst, byte(exp/100)+'0', byte(exp/10)%10+'0', byte(exp%10)+'0')</code></span>
+<span class="codeline" id="line-427"><code>	}</code></span>
+<span class="codeline" id="line-428"><code></code></span>
+<span class="codeline" id="line-429"><code>	return dst</code></span>
+<span class="codeline" id="line-430"><code>}</code></span>
+<span class="codeline" id="line-431"><code></code></span>
+<span class="codeline" id="line-432"><code>// %f: -ddddddd.ddddd</code></span>
+<span class="codeline" id="line-433"><code>func fmtF(dst []byte, neg bool, d decimalSlice, prec int) []byte {</code></span>
+<span class="codeline" id="line-434"><code>	// sign</code></span>
+<span class="codeline" id="line-435"><code>	if neg {</code></span>
+<span class="codeline" id="line-436"><code>		dst = append(dst, '-')</code></span>
+<span class="codeline" id="line-437"><code>	}</code></span>
+<span class="codeline" id="line-438"><code></code></span>
+<span class="codeline" id="line-439"><code>	// integer, padded with zeros as needed.</code></span>
+<span class="codeline" id="line-440"><code>	if d.dp &gt; 0 {</code></span>
+<span class="codeline" id="line-441"><code>		m := min(d.nd, d.dp)</code></span>
+<span class="codeline" id="line-442"><code>		dst = append(dst, d.d[:m]...)</code></span>
+<span class="codeline" id="line-443"><code>		for ; m &lt; d.dp; m++ {</code></span>
+<span class="codeline" id="line-444"><code>			dst = append(dst, '0')</code></span>
+<span class="codeline" id="line-445"><code>		}</code></span>
+<span class="codeline" id="line-446"><code>	} else {</code></span>
+<span class="codeline" id="line-447"><code>		dst = append(dst, '0')</code></span>
+<span class="codeline" id="line-448"><code>	}</code></span>
+<span class="codeline" id="line-449"><code></code></span>
+<span class="codeline" id="line-450"><code>	// fraction</code></span>
+<span class="codeline" id="line-451"><code>	if prec &gt; 0 {</code></span>
+<span class="codeline" id="line-452"><code>		dst = append(dst, '.')</code></span>
+<span class="codeline" id="line-453"><code>		for i := 0; i &lt; prec; i++ {</code></span>
+<span class="codeline" id="line-454"><code>			ch := byte('0')</code></span>
+<span class="codeline" id="line-455"><code>			if j := d.dp + i; 0 &lt;= j &amp;&amp; j &lt; d.nd {</code></span>
+<span class="codeline" id="line-456"><code>				ch = d.d[j]</code></span>
+<span class="codeline" id="line-457"><code>			}</code></span>
+<span class="codeline" id="line-458"><code>			dst = append(dst, ch)</code></span>
+<span class="codeline" id="line-459"><code>		}</code></span>
+<span class="codeline" id="line-460"><code>	}</code></span>
+<span class="codeline" id="line-461"><code></code></span>
+<span class="codeline" id="line-462"><code>	return dst</code></span>
+<span class="codeline" id="line-463"><code>}</code></span>
+<span class="codeline" id="line-464"><code></code></span>
+<span class="codeline" id="line-465"><code>// %b: -ddddddddp±ddd</code></span>
+<span class="codeline" id="line-466"><code>func fmtB(dst []byte, neg bool, mant uint64, exp int, flt *floatInfo) []byte {</code></span>
+<span class="codeline" id="line-467"><code>	// sign</code></span>
+<span class="codeline" id="line-468"><code>	if neg {</code></span>
+<span class="codeline" id="line-469"><code>		dst = append(dst, '-')</code></span>
+<span class="codeline" id="line-470"><code>	}</code></span>
+<span class="codeline" id="line-471"><code></code></span>
+<span class="codeline" id="line-472"><code>	// mantissa</code></span>
+<span class="codeline" id="line-473"><code>	dst, _ = formatBits(dst, mant, 10, false, true)</code></span>
+<span class="codeline" id="line-474"><code></code></span>
+<span class="codeline" id="line-475"><code>	// p</code></span>
+<span class="codeline" id="line-476"><code>	dst = append(dst, 'p')</code></span>
+<span class="codeline" id="line-477"><code></code></span>
+<span class="codeline" id="line-478"><code>	// ±exponent</code></span>
+<span class="codeline" id="line-479"><code>	exp -= int(flt.mantbits)</code></span>
+<span class="codeline" id="line-480"><code>	if exp &gt;= 0 {</code></span>
+<span class="codeline" id="line-481"><code>		dst = append(dst, '+')</code></span>
+<span class="codeline" id="line-482"><code>	}</code></span>
+<span class="codeline" id="line-483"><code>	dst, _ = formatBits(dst, uint64(exp), 10, exp &lt; 0, true)</code></span>
+<span class="codeline" id="line-484"><code></code></span>
+<span class="codeline" id="line-485"><code>	return dst</code></span>
+<span class="codeline" id="line-486"><code>}</code></span>
+<span class="codeline" id="line-487"><code></code></span>
+<span class="codeline" id="line-488"><code>// %x: -0x1.yyyyyyyyp±ddd or -0x0p+0. (y is hex digit, d is decimal digit)</code></span>
+<span class="codeline" id="line-489"><code>func fmtX(dst []byte, prec int, fmt byte, neg bool, mant uint64, exp int, flt *floatInfo) []byte {</code></span>
+<span class="codeline" id="line-490"><code>	if mant == 0 {</code></span>
+<span class="codeline" id="line-491"><code>		exp = 0</code></span>
+<span class="codeline" id="line-492"><code>	}</code></span>
+<span class="codeline" id="line-493"><code></code></span>
+<span class="codeline" id="line-494"><code>	// Shift digits so leading 1 (if any) is at bit 1&lt;&lt;60.</code></span>
+<span class="codeline" id="line-495"><code>	mant &lt;&lt;= 60 - flt.mantbits</code></span>
+<span class="codeline" id="line-496"><code>	for mant != 0 &amp;&amp; mant&amp;(1&lt;&lt;60) == 0 {</code></span>
+<span class="codeline" id="line-497"><code>		mant &lt;&lt;= 1</code></span>
+<span class="codeline" id="line-498"><code>		exp--</code></span>
+<span class="codeline" id="line-499"><code>	}</code></span>
+<span class="codeline" id="line-500"><code></code></span>
+<span class="codeline" id="line-501"><code>	// Round if requested.</code></span>
+<span class="codeline" id="line-502"><code>	if prec &gt;= 0 &amp;&amp; prec &lt; 15 {</code></span>
+<span class="codeline" id="line-503"><code>		shift := uint(prec * 4)</code></span>
+<span class="codeline" id="line-504"><code>		extra := (mant &lt;&lt; shift) &amp; (1&lt;&lt;60 - 1)</code></span>
+<span class="codeline" id="line-505"><code>		mant &gt;&gt;= 60 - shift</code></span>
+<span class="codeline" id="line-506"><code>		if extra|(mant&amp;1) &gt; 1&lt;&lt;59 {</code></span>
+<span class="codeline" id="line-507"><code>			mant++</code></span>
+<span class="codeline" id="line-508"><code>		}</code></span>
+<span class="codeline" id="line-509"><code>		mant &lt;&lt;= 60 - shift</code></span>
+<span class="codeline" id="line-510"><code>		if mant&amp;(1&lt;&lt;61) != 0 {</code></span>
+<span class="codeline" id="line-511"><code>			// Wrapped around.</code></span>
+<span class="codeline" id="line-512"><code>			mant &gt;&gt;= 1</code></span>
+<span class="codeline" id="line-513"><code>			exp++</code></span>
+<span class="codeline" id="line-514"><code>		}</code></span>
+<span class="codeline" id="line-515"><code>	}</code></span>
+<span class="codeline" id="line-516"><code></code></span>
+<span class="codeline" id="line-517"><code>	hex := lowerhex</code></span>
+<span class="codeline" id="line-518"><code>	if fmt == 'X' {</code></span>
+<span class="codeline" id="line-519"><code>		hex = upperhex</code></span>
+<span class="codeline" id="line-520"><code>	}</code></span>
+<span class="codeline" id="line-521"><code></code></span>
+<span class="codeline" id="line-522"><code>	// sign, 0x, leading digit</code></span>
+<span class="codeline" id="line-523"><code>	if neg {</code></span>
+<span class="codeline" id="line-524"><code>		dst = append(dst, '-')</code></span>
+<span class="codeline" id="line-525"><code>	}</code></span>
+<span class="codeline" id="line-526"><code>	dst = append(dst, '0', fmt, '0'+byte((mant&gt;&gt;60)&amp;1))</code></span>
+<span class="codeline" id="line-527"><code></code></span>
+<span class="codeline" id="line-528"><code>	// .fraction</code></span>
+<span class="codeline" id="line-529"><code>	mant &lt;&lt;= 4 // remove leading 0 or 1</code></span>
+<span class="codeline" id="line-530"><code>	if prec &lt; 0 &amp;&amp; mant != 0 {</code></span>
+<span class="codeline" id="line-531"><code>		dst = append(dst, '.')</code></span>
+<span class="codeline" id="line-532"><code>		for mant != 0 {</code></span>
+<span class="codeline" id="line-533"><code>			dst = append(dst, hex[(mant&gt;&gt;60)&amp;15])</code></span>
+<span class="codeline" id="line-534"><code>			mant &lt;&lt;= 4</code></span>
+<span class="codeline" id="line-535"><code>		}</code></span>
+<span class="codeline" id="line-536"><code>	} else if prec &gt; 0 {</code></span>
+<span class="codeline" id="line-537"><code>		dst = append(dst, '.')</code></span>
+<span class="codeline" id="line-538"><code>		for i := 0; i &lt; prec; i++ {</code></span>
+<span class="codeline" id="line-539"><code>			dst = append(dst, hex[(mant&gt;&gt;60)&amp;15])</code></span>
+<span class="codeline" id="line-540"><code>			mant &lt;&lt;= 4</code></span>
+<span class="codeline" id="line-541"><code>		}</code></span>
+<span class="codeline" id="line-542"><code>	}</code></span>
+<span class="codeline" id="line-543"><code></code></span>
+<span class="codeline" id="line-544"><code>	// p±</code></span>
+<span class="codeline" id="line-545"><code>	ch := byte('P')</code></span>
+<span class="codeline" id="line-546"><code>	if fmt == lower(fmt) {</code></span>
+<span class="codeline" id="line-547"><code>		ch = 'p'</code></span>
+<span class="codeline" id="line-548"><code>	}</code></span>
+<span class="codeline" id="line-549"><code>	dst = append(dst, ch)</code></span>
+<span class="codeline" id="line-550"><code>	if exp &lt; 0 {</code></span>
+<span class="codeline" id="line-551"><code>		ch = '-'</code></span>
+<span class="codeline" id="line-552"><code>		exp = -exp</code></span>
+<span class="codeline" id="line-553"><code>	} else {</code></span>
+<span class="codeline" id="line-554"><code>		ch = '+'</code></span>
+<span class="codeline" id="line-555"><code>	}</code></span>
+<span class="codeline" id="line-556"><code>	dst = append(dst, ch)</code></span>
+<span class="codeline" id="line-557"><code></code></span>
+<span class="codeline" id="line-558"><code>	// dd or ddd or dddd</code></span>
+<span class="codeline" id="line-559"><code>	switch {</code></span>
+<span class="codeline" id="line-560"><code>	case exp &lt; 100:</code></span>
+<span class="codeline" id="line-561"><code>		dst = append(dst, byte(exp/10)+'0', byte(exp%10)+'0')</code></span>
+<span class="codeline" id="line-562"><code>	case exp &lt; 1000:</code></span>
+<span class="codeline" id="line-563"><code>		dst = append(dst, byte(exp/100)+'0', byte((exp/10)%10)+'0', byte(exp%10)+'0')</code></span>
+<span class="codeline" id="line-564"><code>	default:</code></span>
+<span class="codeline" id="line-565"><code>		dst = append(dst, byte(exp/1000)+'0', byte(exp/100)%10+'0', byte((exp/10)%10)+'0', byte(exp%10)+'0')</code></span>
+<span class="codeline" id="line-566"><code>	}</code></span>
+<span class="codeline" id="line-567"><code></code></span>
+<span class="codeline" id="line-568"><code>	return dst</code></span>
+<span class="codeline" id="line-569"><code>}</code></span>
+<span class="codeline" id="line-570"><code></code></span>
+<span class="codeline" id="line-571"><code>func min(a, b int) int {</code></span>
+<span class="codeline" id="line-572"><code>	if a &lt; b {</code></span>
+<span class="codeline" id="line-573"><code>		return a</code></span>
+<span class="codeline" id="line-574"><code>	}</code></span>
+<span class="codeline" id="line-575"><code>	return b</code></span>
+<span class="codeline" id="line-576"><code>}</code></span>
+<span class="codeline" id="line-577"><code></code></span>
+<span class="codeline" id="line-578"><code>func max(a, b int) int {</code></span>
+<span class="codeline" id="line-579"><code>	if a &gt; b {</code></span>
+<span class="codeline" id="line-580"><code>		return a</code></span>
+<span class="codeline" id="line-581"><code>	}</code></span>
+<span class="codeline" id="line-582"><code>	return b</code></span>
+<span class="codeline" id="line-583"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

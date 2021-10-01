@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: quote.go in package strconv</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	quote.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/strconv.html">strconv</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>//go:generate go run makeisprint.go -output isprint.go</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package strconv</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"internal/bytealg"</code></span>
+<span class="codeline" id="line-11"><code>	"unicode/utf8"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>const (</code></span>
+<span class="codeline" id="line-15"><code>	lowerhex = "0123456789abcdef"</code></span>
+<span class="codeline" id="line-16"><code>	upperhex = "0123456789ABCDEF"</code></span>
+<span class="codeline" id="line-17"><code>)</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>func quoteWith(s string, quote byte, ASCIIonly, graphicOnly bool) string {</code></span>
+<span class="codeline" id="line-20"><code>	return string(appendQuotedWith(make([]byte, 0, 3*len(s)/2), s, quote, ASCIIonly, graphicOnly))</code></span>
+<span class="codeline" id="line-21"><code>}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>func quoteRuneWith(r rune, quote byte, ASCIIonly, graphicOnly bool) string {</code></span>
+<span class="codeline" id="line-24"><code>	return string(appendQuotedRuneWith(nil, r, quote, ASCIIonly, graphicOnly))</code></span>
+<span class="codeline" id="line-25"><code>}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>func appendQuotedWith(buf []byte, s string, quote byte, ASCIIonly, graphicOnly bool) []byte {</code></span>
+<span class="codeline" id="line-28"><code>	// Often called with big strings, so preallocate. If there's quoting,</code></span>
+<span class="codeline" id="line-29"><code>	// this is conservative but still helps a lot.</code></span>
+<span class="codeline" id="line-30"><code>	if cap(buf)-len(buf) &lt; len(s) {</code></span>
+<span class="codeline" id="line-31"><code>		nBuf := make([]byte, len(buf), len(buf)+1+len(s)+1)</code></span>
+<span class="codeline" id="line-32"><code>		copy(nBuf, buf)</code></span>
+<span class="codeline" id="line-33"><code>		buf = nBuf</code></span>
+<span class="codeline" id="line-34"><code>	}</code></span>
+<span class="codeline" id="line-35"><code>	buf = append(buf, quote)</code></span>
+<span class="codeline" id="line-36"><code>	for width := 0; len(s) &gt; 0; s = s[width:] {</code></span>
+<span class="codeline" id="line-37"><code>		r := rune(s[0])</code></span>
+<span class="codeline" id="line-38"><code>		width = 1</code></span>
+<span class="codeline" id="line-39"><code>		if r &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-40"><code>			r, width = utf8.DecodeRuneInString(s)</code></span>
+<span class="codeline" id="line-41"><code>		}</code></span>
+<span class="codeline" id="line-42"><code>		if width == 1 &amp;&amp; r == utf8.RuneError {</code></span>
+<span class="codeline" id="line-43"><code>			buf = append(buf, `\x`...)</code></span>
+<span class="codeline" id="line-44"><code>			buf = append(buf, lowerhex[s[0]&gt;&gt;4])</code></span>
+<span class="codeline" id="line-45"><code>			buf = append(buf, lowerhex[s[0]&amp;0xF])</code></span>
+<span class="codeline" id="line-46"><code>			continue</code></span>
+<span class="codeline" id="line-47"><code>		}</code></span>
+<span class="codeline" id="line-48"><code>		buf = appendEscapedRune(buf, r, quote, ASCIIonly, graphicOnly)</code></span>
+<span class="codeline" id="line-49"><code>	}</code></span>
+<span class="codeline" id="line-50"><code>	buf = append(buf, quote)</code></span>
+<span class="codeline" id="line-51"><code>	return buf</code></span>
+<span class="codeline" id="line-52"><code>}</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>func appendQuotedRuneWith(buf []byte, r rune, quote byte, ASCIIonly, graphicOnly bool) []byte {</code></span>
+<span class="codeline" id="line-55"><code>	buf = append(buf, quote)</code></span>
+<span class="codeline" id="line-56"><code>	if !utf8.ValidRune(r) {</code></span>
+<span class="codeline" id="line-57"><code>		r = utf8.RuneError</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code>	buf = appendEscapedRune(buf, r, quote, ASCIIonly, graphicOnly)</code></span>
+<span class="codeline" id="line-60"><code>	buf = append(buf, quote)</code></span>
+<span class="codeline" id="line-61"><code>	return buf</code></span>
+<span class="codeline" id="line-62"><code>}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>func appendEscapedRune(buf []byte, r rune, quote byte, ASCIIonly, graphicOnly bool) []byte {</code></span>
+<span class="codeline" id="line-65"><code>	var runeTmp [utf8.UTFMax]byte</code></span>
+<span class="codeline" id="line-66"><code>	if r == rune(quote) || r == '\\' { // always backslashed</code></span>
+<span class="codeline" id="line-67"><code>		buf = append(buf, '\\')</code></span>
+<span class="codeline" id="line-68"><code>		buf = append(buf, byte(r))</code></span>
+<span class="codeline" id="line-69"><code>		return buf</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code>	if ASCIIonly {</code></span>
+<span class="codeline" id="line-72"><code>		if r &lt; utf8.RuneSelf &amp;&amp; IsPrint(r) {</code></span>
+<span class="codeline" id="line-73"><code>			buf = append(buf, byte(r))</code></span>
+<span class="codeline" id="line-74"><code>			return buf</code></span>
+<span class="codeline" id="line-75"><code>		}</code></span>
+<span class="codeline" id="line-76"><code>	} else if IsPrint(r) || graphicOnly &amp;&amp; isInGraphicList(r) {</code></span>
+<span class="codeline" id="line-77"><code>		n := utf8.EncodeRune(runeTmp[:], r)</code></span>
+<span class="codeline" id="line-78"><code>		buf = append(buf, runeTmp[:n]...)</code></span>
+<span class="codeline" id="line-79"><code>		return buf</code></span>
+<span class="codeline" id="line-80"><code>	}</code></span>
+<span class="codeline" id="line-81"><code>	switch r {</code></span>
+<span class="codeline" id="line-82"><code>	case '\a':</code></span>
+<span class="codeline" id="line-83"><code>		buf = append(buf, `\a`...)</code></span>
+<span class="codeline" id="line-84"><code>	case '\b':</code></span>
+<span class="codeline" id="line-85"><code>		buf = append(buf, `\b`...)</code></span>
+<span class="codeline" id="line-86"><code>	case '\f':</code></span>
+<span class="codeline" id="line-87"><code>		buf = append(buf, `\f`...)</code></span>
+<span class="codeline" id="line-88"><code>	case '\n':</code></span>
+<span class="codeline" id="line-89"><code>		buf = append(buf, `\n`...)</code></span>
+<span class="codeline" id="line-90"><code>	case '\r':</code></span>
+<span class="codeline" id="line-91"><code>		buf = append(buf, `\r`...)</code></span>
+<span class="codeline" id="line-92"><code>	case '\t':</code></span>
+<span class="codeline" id="line-93"><code>		buf = append(buf, `\t`...)</code></span>
+<span class="codeline" id="line-94"><code>	case '\v':</code></span>
+<span class="codeline" id="line-95"><code>		buf = append(buf, `\v`...)</code></span>
+<span class="codeline" id="line-96"><code>	default:</code></span>
+<span class="codeline" id="line-97"><code>		switch {</code></span>
+<span class="codeline" id="line-98"><code>		case r &lt; ' ':</code></span>
+<span class="codeline" id="line-99"><code>			buf = append(buf, `\x`...)</code></span>
+<span class="codeline" id="line-100"><code>			buf = append(buf, lowerhex[byte(r)&gt;&gt;4])</code></span>
+<span class="codeline" id="line-101"><code>			buf = append(buf, lowerhex[byte(r)&amp;0xF])</code></span>
+<span class="codeline" id="line-102"><code>		case r &gt; utf8.MaxRune:</code></span>
+<span class="codeline" id="line-103"><code>			r = 0xFFFD</code></span>
+<span class="codeline" id="line-104"><code>			fallthrough</code></span>
+<span class="codeline" id="line-105"><code>		case r &lt; 0x10000:</code></span>
+<span class="codeline" id="line-106"><code>			buf = append(buf, `\u`...)</code></span>
+<span class="codeline" id="line-107"><code>			for s := 12; s &gt;= 0; s -= 4 {</code></span>
+<span class="codeline" id="line-108"><code>				buf = append(buf, lowerhex[r&gt;&gt;uint(s)&amp;0xF])</code></span>
+<span class="codeline" id="line-109"><code>			}</code></span>
+<span class="codeline" id="line-110"><code>		default:</code></span>
+<span class="codeline" id="line-111"><code>			buf = append(buf, `\U`...)</code></span>
+<span class="codeline" id="line-112"><code>			for s := 28; s &gt;= 0; s -= 4 {</code></span>
+<span class="codeline" id="line-113"><code>				buf = append(buf, lowerhex[r&gt;&gt;uint(s)&amp;0xF])</code></span>
+<span class="codeline" id="line-114"><code>			}</code></span>
+<span class="codeline" id="line-115"><code>		}</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code>	return buf</code></span>
+<span class="codeline" id="line-118"><code>}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>// Quote returns a double-quoted Go string literal representing s. The</code></span>
+<span class="codeline" id="line-121"><code>// returned string uses Go escape sequences (\t, \n, \xFF, \u0100) for</code></span>
+<span class="codeline" id="line-122"><code>// control characters and non-printable characters as defined by</code></span>
+<span class="codeline" id="line-123"><code>// IsPrint.</code></span>
+<span class="codeline" id="line-124"><code>func Quote(s string) string {</code></span>
+<span class="codeline" id="line-125"><code>	return quoteWith(s, '"', false, false)</code></span>
+<span class="codeline" id="line-126"><code>}</code></span>
+<span class="codeline" id="line-127"><code></code></span>
+<span class="codeline" id="line-128"><code>// AppendQuote appends a double-quoted Go string literal representing s,</code></span>
+<span class="codeline" id="line-129"><code>// as generated by Quote, to dst and returns the extended buffer.</code></span>
+<span class="codeline" id="line-130"><code>func AppendQuote(dst []byte, s string) []byte {</code></span>
+<span class="codeline" id="line-131"><code>	return appendQuotedWith(dst, s, '"', false, false)</code></span>
+<span class="codeline" id="line-132"><code>}</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>// QuoteToASCII returns a double-quoted Go string literal representing s.</code></span>
+<span class="codeline" id="line-135"><code>// The returned string uses Go escape sequences (\t, \n, \xFF, \u0100) for</code></span>
+<span class="codeline" id="line-136"><code>// non-ASCII characters and non-printable characters as defined by IsPrint.</code></span>
+<span class="codeline" id="line-137"><code>func QuoteToASCII(s string) string {</code></span>
+<span class="codeline" id="line-138"><code>	return quoteWith(s, '"', true, false)</code></span>
+<span class="codeline" id="line-139"><code>}</code></span>
+<span class="codeline" id="line-140"><code></code></span>
+<span class="codeline" id="line-141"><code>// AppendQuoteToASCII appends a double-quoted Go string literal representing s,</code></span>
+<span class="codeline" id="line-142"><code>// as generated by QuoteToASCII, to dst and returns the extended buffer.</code></span>
+<span class="codeline" id="line-143"><code>func AppendQuoteToASCII(dst []byte, s string) []byte {</code></span>
+<span class="codeline" id="line-144"><code>	return appendQuotedWith(dst, s, '"', true, false)</code></span>
+<span class="codeline" id="line-145"><code>}</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>// QuoteToGraphic returns a double-quoted Go string literal representing s.</code></span>
+<span class="codeline" id="line-148"><code>// The returned string leaves Unicode graphic characters, as defined by</code></span>
+<span class="codeline" id="line-149"><code>// IsGraphic, unchanged and uses Go escape sequences (\t, \n, \xFF, \u0100)</code></span>
+<span class="codeline" id="line-150"><code>// for non-graphic characters.</code></span>
+<span class="codeline" id="line-151"><code>func QuoteToGraphic(s string) string {</code></span>
+<span class="codeline" id="line-152"><code>	return quoteWith(s, '"', false, true)</code></span>
+<span class="codeline" id="line-153"><code>}</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>// AppendQuoteToGraphic appends a double-quoted Go string literal representing s,</code></span>
+<span class="codeline" id="line-156"><code>// as generated by QuoteToGraphic, to dst and returns the extended buffer.</code></span>
+<span class="codeline" id="line-157"><code>func AppendQuoteToGraphic(dst []byte, s string) []byte {</code></span>
+<span class="codeline" id="line-158"><code>	return appendQuotedWith(dst, s, '"', false, true)</code></span>
+<span class="codeline" id="line-159"><code>}</code></span>
+<span class="codeline" id="line-160"><code></code></span>
+<span class="codeline" id="line-161"><code>// QuoteRune returns a single-quoted Go character literal representing the</code></span>
+<span class="codeline" id="line-162"><code>// rune. The returned string uses Go escape sequences (\t, \n, \xFF, \u0100)</code></span>
+<span class="codeline" id="line-163"><code>// for control characters and non-printable characters as defined by IsPrint.</code></span>
+<span class="codeline" id="line-164"><code>func QuoteRune(r rune) string {</code></span>
+<span class="codeline" id="line-165"><code>	return quoteRuneWith(r, '\'', false, false)</code></span>
+<span class="codeline" id="line-166"><code>}</code></span>
+<span class="codeline" id="line-167"><code></code></span>
+<span class="codeline" id="line-168"><code>// AppendQuoteRune appends a single-quoted Go character literal representing the rune,</code></span>
+<span class="codeline" id="line-169"><code>// as generated by QuoteRune, to dst and returns the extended buffer.</code></span>
+<span class="codeline" id="line-170"><code>func AppendQuoteRune(dst []byte, r rune) []byte {</code></span>
+<span class="codeline" id="line-171"><code>	return appendQuotedRuneWith(dst, r, '\'', false, false)</code></span>
+<span class="codeline" id="line-172"><code>}</code></span>
+<span class="codeline" id="line-173"><code></code></span>
+<span class="codeline" id="line-174"><code>// QuoteRuneToASCII returns a single-quoted Go character literal representing</code></span>
+<span class="codeline" id="line-175"><code>// the rune. The returned string uses Go escape sequences (\t, \n, \xFF,</code></span>
+<span class="codeline" id="line-176"><code>// \u0100) for non-ASCII characters and non-printable characters as defined</code></span>
+<span class="codeline" id="line-177"><code>// by IsPrint.</code></span>
+<span class="codeline" id="line-178"><code>func QuoteRuneToASCII(r rune) string {</code></span>
+<span class="codeline" id="line-179"><code>	return quoteRuneWith(r, '\'', true, false)</code></span>
+<span class="codeline" id="line-180"><code>}</code></span>
+<span class="codeline" id="line-181"><code></code></span>
+<span class="codeline" id="line-182"><code>// AppendQuoteRuneToASCII appends a single-quoted Go character literal representing the rune,</code></span>
+<span class="codeline" id="line-183"><code>// as generated by QuoteRuneToASCII, to dst and returns the extended buffer.</code></span>
+<span class="codeline" id="line-184"><code>func AppendQuoteRuneToASCII(dst []byte, r rune) []byte {</code></span>
+<span class="codeline" id="line-185"><code>	return appendQuotedRuneWith(dst, r, '\'', true, false)</code></span>
+<span class="codeline" id="line-186"><code>}</code></span>
+<span class="codeline" id="line-187"><code></code></span>
+<span class="codeline" id="line-188"><code>// QuoteRuneToGraphic returns a single-quoted Go character literal representing</code></span>
+<span class="codeline" id="line-189"><code>// the rune. If the rune is not a Unicode graphic character,</code></span>
+<span class="codeline" id="line-190"><code>// as defined by IsGraphic, the returned string will use a Go escape sequence</code></span>
+<span class="codeline" id="line-191"><code>// (\t, \n, \xFF, \u0100).</code></span>
+<span class="codeline" id="line-192"><code>func QuoteRuneToGraphic(r rune) string {</code></span>
+<span class="codeline" id="line-193"><code>	return quoteRuneWith(r, '\'', false, true)</code></span>
+<span class="codeline" id="line-194"><code>}</code></span>
+<span class="codeline" id="line-195"><code></code></span>
+<span class="codeline" id="line-196"><code>// AppendQuoteRuneToGraphic appends a single-quoted Go character literal representing the rune,</code></span>
+<span class="codeline" id="line-197"><code>// as generated by QuoteRuneToGraphic, to dst and returns the extended buffer.</code></span>
+<span class="codeline" id="line-198"><code>func AppendQuoteRuneToGraphic(dst []byte, r rune) []byte {</code></span>
+<span class="codeline" id="line-199"><code>	return appendQuotedRuneWith(dst, r, '\'', false, true)</code></span>
+<span class="codeline" id="line-200"><code>}</code></span>
+<span class="codeline" id="line-201"><code></code></span>
+<span class="codeline" id="line-202"><code>// CanBackquote reports whether the string s can be represented</code></span>
+<span class="codeline" id="line-203"><code>// unchanged as a single-line backquoted string without control</code></span>
+<span class="codeline" id="line-204"><code>// characters other than tab.</code></span>
+<span class="codeline" id="line-205"><code>func CanBackquote(s string) bool {</code></span>
+<span class="codeline" id="line-206"><code>	for len(s) &gt; 0 {</code></span>
+<span class="codeline" id="line-207"><code>		r, wid := utf8.DecodeRuneInString(s)</code></span>
+<span class="codeline" id="line-208"><code>		s = s[wid:]</code></span>
+<span class="codeline" id="line-209"><code>		if wid &gt; 1 {</code></span>
+<span class="codeline" id="line-210"><code>			if r == '\ufeff' {</code></span>
+<span class="codeline" id="line-211"><code>				return false // BOMs are invisible and should not be quoted.</code></span>
+<span class="codeline" id="line-212"><code>			}</code></span>
+<span class="codeline" id="line-213"><code>			continue // All other multibyte runes are correctly encoded and assumed printable.</code></span>
+<span class="codeline" id="line-214"><code>		}</code></span>
+<span class="codeline" id="line-215"><code>		if r == utf8.RuneError {</code></span>
+<span class="codeline" id="line-216"><code>			return false</code></span>
+<span class="codeline" id="line-217"><code>		}</code></span>
+<span class="codeline" id="line-218"><code>		if (r &lt; ' ' &amp;&amp; r != '\t') || r == '`' || r == '\u007F' {</code></span>
+<span class="codeline" id="line-219"><code>			return false</code></span>
+<span class="codeline" id="line-220"><code>		}</code></span>
+<span class="codeline" id="line-221"><code>	}</code></span>
+<span class="codeline" id="line-222"><code>	return true</code></span>
+<span class="codeline" id="line-223"><code>}</code></span>
+<span class="codeline" id="line-224"><code></code></span>
+<span class="codeline" id="line-225"><code>func unhex(b byte) (v rune, ok bool) {</code></span>
+<span class="codeline" id="line-226"><code>	c := rune(b)</code></span>
+<span class="codeline" id="line-227"><code>	switch {</code></span>
+<span class="codeline" id="line-228"><code>	case '0' &lt;= c &amp;&amp; c &lt;= '9':</code></span>
+<span class="codeline" id="line-229"><code>		return c - '0', true</code></span>
+<span class="codeline" id="line-230"><code>	case 'a' &lt;= c &amp;&amp; c &lt;= 'f':</code></span>
+<span class="codeline" id="line-231"><code>		return c - 'a' + 10, true</code></span>
+<span class="codeline" id="line-232"><code>	case 'A' &lt;= c &amp;&amp; c &lt;= 'F':</code></span>
+<span class="codeline" id="line-233"><code>		return c - 'A' + 10, true</code></span>
+<span class="codeline" id="line-234"><code>	}</code></span>
+<span class="codeline" id="line-235"><code>	return</code></span>
+<span class="codeline" id="line-236"><code>}</code></span>
+<span class="codeline" id="line-237"><code></code></span>
+<span class="codeline" id="line-238"><code>// UnquoteChar decodes the first character or byte in the escaped string</code></span>
+<span class="codeline" id="line-239"><code>// or character literal represented by the string s.</code></span>
+<span class="codeline" id="line-240"><code>// It returns four values:</code></span>
+<span class="codeline" id="line-241"><code>//</code></span>
+<span class="codeline" id="line-242"><code>//	1) value, the decoded Unicode code point or byte value;</code></span>
+<span class="codeline" id="line-243"><code>//	2) multibyte, a boolean indicating whether the decoded character requires a multibyte UTF-8 representation;</code></span>
+<span class="codeline" id="line-244"><code>//	3) tail, the remainder of the string after the character; and</code></span>
+<span class="codeline" id="line-245"><code>//	4) an error that will be nil if the character is syntactically valid.</code></span>
+<span class="codeline" id="line-246"><code>//</code></span>
+<span class="codeline" id="line-247"><code>// The second argument, quote, specifies the type of literal being parsed</code></span>
+<span class="codeline" id="line-248"><code>// and therefore which escaped quote character is permitted.</code></span>
+<span class="codeline" id="line-249"><code>// If set to a single quote, it permits the sequence \' and disallows unescaped '.</code></span>
+<span class="codeline" id="line-250"><code>// If set to a double quote, it permits \" and disallows unescaped ".</code></span>
+<span class="codeline" id="line-251"><code>// If set to zero, it does not permit either escape and allows both quote characters to appear unescaped.</code></span>
+<span class="codeline" id="line-252"><code>func UnquoteChar(s string, quote byte) (value rune, multibyte bool, tail string, err error) {</code></span>
+<span class="codeline" id="line-253"><code>	// easy cases</code></span>
+<span class="codeline" id="line-254"><code>	if len(s) == 0 {</code></span>
+<span class="codeline" id="line-255"><code>		err = ErrSyntax</code></span>
+<span class="codeline" id="line-256"><code>		return</code></span>
+<span class="codeline" id="line-257"><code>	}</code></span>
+<span class="codeline" id="line-258"><code>	switch c := s[0]; {</code></span>
+<span class="codeline" id="line-259"><code>	case c == quote &amp;&amp; (quote == '\'' || quote == '"'):</code></span>
+<span class="codeline" id="line-260"><code>		err = ErrSyntax</code></span>
+<span class="codeline" id="line-261"><code>		return</code></span>
+<span class="codeline" id="line-262"><code>	case c &gt;= utf8.RuneSelf:</code></span>
+<span class="codeline" id="line-263"><code>		r, size := utf8.DecodeRuneInString(s)</code></span>
+<span class="codeline" id="line-264"><code>		return r, true, s[size:], nil</code></span>
+<span class="codeline" id="line-265"><code>	case c != '\\':</code></span>
+<span class="codeline" id="line-266"><code>		return rune(s[0]), false, s[1:], nil</code></span>
+<span class="codeline" id="line-267"><code>	}</code></span>
+<span class="codeline" id="line-268"><code></code></span>
+<span class="codeline" id="line-269"><code>	// hard case: c is backslash</code></span>
+<span class="codeline" id="line-270"><code>	if len(s) &lt;= 1 {</code></span>
+<span class="codeline" id="line-271"><code>		err = ErrSyntax</code></span>
+<span class="codeline" id="line-272"><code>		return</code></span>
+<span class="codeline" id="line-273"><code>	}</code></span>
+<span class="codeline" id="line-274"><code>	c := s[1]</code></span>
+<span class="codeline" id="line-275"><code>	s = s[2:]</code></span>
+<span class="codeline" id="line-276"><code></code></span>
+<span class="codeline" id="line-277"><code>	switch c {</code></span>
+<span class="codeline" id="line-278"><code>	case 'a':</code></span>
+<span class="codeline" id="line-279"><code>		value = '\a'</code></span>
+<span class="codeline" id="line-280"><code>	case 'b':</code></span>
+<span class="codeline" id="line-281"><code>		value = '\b'</code></span>
+<span class="codeline" id="line-282"><code>	case 'f':</code></span>
+<span class="codeline" id="line-283"><code>		value = '\f'</code></span>
+<span class="codeline" id="line-284"><code>	case 'n':</code></span>
+<span class="codeline" id="line-285"><code>		value = '\n'</code></span>
+<span class="codeline" id="line-286"><code>	case 'r':</code></span>
+<span class="codeline" id="line-287"><code>		value = '\r'</code></span>
+<span class="codeline" id="line-288"><code>	case 't':</code></span>
+<span class="codeline" id="line-289"><code>		value = '\t'</code></span>
+<span class="codeline" id="line-290"><code>	case 'v':</code></span>
+<span class="codeline" id="line-291"><code>		value = '\v'</code></span>
+<span class="codeline" id="line-292"><code>	case 'x', 'u', 'U':</code></span>
+<span class="codeline" id="line-293"><code>		n := 0</code></span>
+<span class="codeline" id="line-294"><code>		switch c {</code></span>
+<span class="codeline" id="line-295"><code>		case 'x':</code></span>
+<span class="codeline" id="line-296"><code>			n = 2</code></span>
+<span class="codeline" id="line-297"><code>		case 'u':</code></span>
+<span class="codeline" id="line-298"><code>			n = 4</code></span>
+<span class="codeline" id="line-299"><code>		case 'U':</code></span>
+<span class="codeline" id="line-300"><code>			n = 8</code></span>
+<span class="codeline" id="line-301"><code>		}</code></span>
+<span class="codeline" id="line-302"><code>		var v rune</code></span>
+<span class="codeline" id="line-303"><code>		if len(s) &lt; n {</code></span>
+<span class="codeline" id="line-304"><code>			err = ErrSyntax</code></span>
+<span class="codeline" id="line-305"><code>			return</code></span>
+<span class="codeline" id="line-306"><code>		}</code></span>
+<span class="codeline" id="line-307"><code>		for j := 0; j &lt; n; j++ {</code></span>
+<span class="codeline" id="line-308"><code>			x, ok := unhex(s[j])</code></span>
+<span class="codeline" id="line-309"><code>			if !ok {</code></span>
+<span class="codeline" id="line-310"><code>				err = ErrSyntax</code></span>
+<span class="codeline" id="line-311"><code>				return</code></span>
+<span class="codeline" id="line-312"><code>			}</code></span>
+<span class="codeline" id="line-313"><code>			v = v&lt;&lt;4 | x</code></span>
+<span class="codeline" id="line-314"><code>		}</code></span>
+<span class="codeline" id="line-315"><code>		s = s[n:]</code></span>
+<span class="codeline" id="line-316"><code>		if c == 'x' {</code></span>
+<span class="codeline" id="line-317"><code>			// single-byte string, possibly not UTF-8</code></span>
+<span class="codeline" id="line-318"><code>			value = v</code></span>
+<span class="codeline" id="line-319"><code>			break</code></span>
+<span class="codeline" id="line-320"><code>		}</code></span>
+<span class="codeline" id="line-321"><code>		if v &gt; utf8.MaxRune {</code></span>
+<span class="codeline" id="line-322"><code>			err = ErrSyntax</code></span>
+<span class="codeline" id="line-323"><code>			return</code></span>
+<span class="codeline" id="line-324"><code>		}</code></span>
+<span class="codeline" id="line-325"><code>		value = v</code></span>
+<span class="codeline" id="line-326"><code>		multibyte = true</code></span>
+<span class="codeline" id="line-327"><code>	case '0', '1', '2', '3', '4', '5', '6', '7':</code></span>
+<span class="codeline" id="line-328"><code>		v := rune(c) - '0'</code></span>
+<span class="codeline" id="line-329"><code>		if len(s) &lt; 2 {</code></span>
+<span class="codeline" id="line-330"><code>			err = ErrSyntax</code></span>
+<span class="codeline" id="line-331"><code>			return</code></span>
+<span class="codeline" id="line-332"><code>		}</code></span>
+<span class="codeline" id="line-333"><code>		for j := 0; j &lt; 2; j++ { // one digit already; two more</code></span>
+<span class="codeline" id="line-334"><code>			x := rune(s[j]) - '0'</code></span>
+<span class="codeline" id="line-335"><code>			if x &lt; 0 || x &gt; 7 {</code></span>
+<span class="codeline" id="line-336"><code>				err = ErrSyntax</code></span>
+<span class="codeline" id="line-337"><code>				return</code></span>
+<span class="codeline" id="line-338"><code>			}</code></span>
+<span class="codeline" id="line-339"><code>			v = (v &lt;&lt; 3) | x</code></span>
+<span class="codeline" id="line-340"><code>		}</code></span>
+<span class="codeline" id="line-341"><code>		s = s[2:]</code></span>
+<span class="codeline" id="line-342"><code>		if v &gt; 255 {</code></span>
+<span class="codeline" id="line-343"><code>			err = ErrSyntax</code></span>
+<span class="codeline" id="line-344"><code>			return</code></span>
+<span class="codeline" id="line-345"><code>		}</code></span>
+<span class="codeline" id="line-346"><code>		value = v</code></span>
+<span class="codeline" id="line-347"><code>	case '\\':</code></span>
+<span class="codeline" id="line-348"><code>		value = '\\'</code></span>
+<span class="codeline" id="line-349"><code>	case '\'', '"':</code></span>
+<span class="codeline" id="line-350"><code>		if c != quote {</code></span>
+<span class="codeline" id="line-351"><code>			err = ErrSyntax</code></span>
+<span class="codeline" id="line-352"><code>			return</code></span>
+<span class="codeline" id="line-353"><code>		}</code></span>
+<span class="codeline" id="line-354"><code>		value = rune(c)</code></span>
+<span class="codeline" id="line-355"><code>	default:</code></span>
+<span class="codeline" id="line-356"><code>		err = ErrSyntax</code></span>
+<span class="codeline" id="line-357"><code>		return</code></span>
+<span class="codeline" id="line-358"><code>	}</code></span>
+<span class="codeline" id="line-359"><code>	tail = s</code></span>
+<span class="codeline" id="line-360"><code>	return</code></span>
+<span class="codeline" id="line-361"><code>}</code></span>
+<span class="codeline" id="line-362"><code></code></span>
+<span class="codeline" id="line-363"><code>// Unquote interprets s as a single-quoted, double-quoted,</code></span>
+<span class="codeline" id="line-364"><code>// or backquoted Go string literal, returning the string value</code></span>
+<span class="codeline" id="line-365"><code>// that s quotes.  (If s is single-quoted, it would be a Go</code></span>
+<span class="codeline" id="line-366"><code>// character literal; Unquote returns the corresponding</code></span>
+<span class="codeline" id="line-367"><code>// one-character string.)</code></span>
+<span class="codeline" id="line-368"><code>func Unquote(s string) (string, error) {</code></span>
+<span class="codeline" id="line-369"><code>	n := len(s)</code></span>
+<span class="codeline" id="line-370"><code>	if n &lt; 2 {</code></span>
+<span class="codeline" id="line-371"><code>		return "", ErrSyntax</code></span>
+<span class="codeline" id="line-372"><code>	}</code></span>
+<span class="codeline" id="line-373"><code>	quote := s[0]</code></span>
+<span class="codeline" id="line-374"><code>	if quote != s[n-1] {</code></span>
+<span class="codeline" id="line-375"><code>		return "", ErrSyntax</code></span>
+<span class="codeline" id="line-376"><code>	}</code></span>
+<span class="codeline" id="line-377"><code>	s = s[1 : n-1]</code></span>
+<span class="codeline" id="line-378"><code></code></span>
+<span class="codeline" id="line-379"><code>	if quote == '`' {</code></span>
+<span class="codeline" id="line-380"><code>		if contains(s, '`') {</code></span>
+<span class="codeline" id="line-381"><code>			return "", ErrSyntax</code></span>
+<span class="codeline" id="line-382"><code>		}</code></span>
+<span class="codeline" id="line-383"><code>		if contains(s, '\r') {</code></span>
+<span class="codeline" id="line-384"><code>			// -1 because we know there is at least one \r to remove.</code></span>
+<span class="codeline" id="line-385"><code>			buf := make([]byte, 0, len(s)-1)</code></span>
+<span class="codeline" id="line-386"><code>			for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-387"><code>				if s[i] != '\r' {</code></span>
+<span class="codeline" id="line-388"><code>					buf = append(buf, s[i])</code></span>
+<span class="codeline" id="line-389"><code>				}</code></span>
+<span class="codeline" id="line-390"><code>			}</code></span>
+<span class="codeline" id="line-391"><code>			return string(buf), nil</code></span>
+<span class="codeline" id="line-392"><code>		}</code></span>
+<span class="codeline" id="line-393"><code>		return s, nil</code></span>
+<span class="codeline" id="line-394"><code>	}</code></span>
+<span class="codeline" id="line-395"><code>	if quote != '"' &amp;&amp; quote != '\'' {</code></span>
+<span class="codeline" id="line-396"><code>		return "", ErrSyntax</code></span>
+<span class="codeline" id="line-397"><code>	}</code></span>
+<span class="codeline" id="line-398"><code>	if contains(s, '\n') {</code></span>
+<span class="codeline" id="line-399"><code>		return "", ErrSyntax</code></span>
+<span class="codeline" id="line-400"><code>	}</code></span>
+<span class="codeline" id="line-401"><code></code></span>
+<span class="codeline" id="line-402"><code>	// Is it trivial? Avoid allocation.</code></span>
+<span class="codeline" id="line-403"><code>	if !contains(s, '\\') &amp;&amp; !contains(s, quote) {</code></span>
+<span class="codeline" id="line-404"><code>		switch quote {</code></span>
+<span class="codeline" id="line-405"><code>		case '"':</code></span>
+<span class="codeline" id="line-406"><code>			if utf8.ValidString(s) {</code></span>
+<span class="codeline" id="line-407"><code>				return s, nil</code></span>
+<span class="codeline" id="line-408"><code>			}</code></span>
+<span class="codeline" id="line-409"><code>		case '\'':</code></span>
+<span class="codeline" id="line-410"><code>			r, size := utf8.DecodeRuneInString(s)</code></span>
+<span class="codeline" id="line-411"><code>			if size == len(s) &amp;&amp; (r != utf8.RuneError || size != 1) {</code></span>
+<span class="codeline" id="line-412"><code>				return s, nil</code></span>
+<span class="codeline" id="line-413"><code>			}</code></span>
+<span class="codeline" id="line-414"><code>		}</code></span>
+<span class="codeline" id="line-415"><code>	}</code></span>
+<span class="codeline" id="line-416"><code></code></span>
+<span class="codeline" id="line-417"><code>	var runeTmp [utf8.UTFMax]byte</code></span>
+<span class="codeline" id="line-418"><code>	buf := make([]byte, 0, 3*len(s)/2) // Try to avoid more allocations.</code></span>
+<span class="codeline" id="line-419"><code>	for len(s) &gt; 0 {</code></span>
+<span class="codeline" id="line-420"><code>		c, multibyte, ss, err := UnquoteChar(s, quote)</code></span>
+<span class="codeline" id="line-421"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-422"><code>			return "", err</code></span>
+<span class="codeline" id="line-423"><code>		}</code></span>
+<span class="codeline" id="line-424"><code>		s = ss</code></span>
+<span class="codeline" id="line-425"><code>		if c &lt; utf8.RuneSelf || !multibyte {</code></span>
+<span class="codeline" id="line-426"><code>			buf = append(buf, byte(c))</code></span>
+<span class="codeline" id="line-427"><code>		} else {</code></span>
+<span class="codeline" id="line-428"><code>			n := utf8.EncodeRune(runeTmp[:], c)</code></span>
+<span class="codeline" id="line-429"><code>			buf = append(buf, runeTmp[:n]...)</code></span>
+<span class="codeline" id="line-430"><code>		}</code></span>
+<span class="codeline" id="line-431"><code>		if quote == '\'' &amp;&amp; len(s) != 0 {</code></span>
+<span class="codeline" id="line-432"><code>			// single-quoted must be single character</code></span>
+<span class="codeline" id="line-433"><code>			return "", ErrSyntax</code></span>
+<span class="codeline" id="line-434"><code>		}</code></span>
+<span class="codeline" id="line-435"><code>	}</code></span>
+<span class="codeline" id="line-436"><code>	return string(buf), nil</code></span>
+<span class="codeline" id="line-437"><code>}</code></span>
+<span class="codeline" id="line-438"><code></code></span>
+<span class="codeline" id="line-439"><code>// contains reports whether the string contains the byte c.</code></span>
+<span class="codeline" id="line-440"><code>func contains(s string, c byte) bool {</code></span>
+<span class="codeline" id="line-441"><code>	return bytealg.IndexByteString(s, c) != -1</code></span>
+<span class="codeline" id="line-442"><code>}</code></span>
+<span class="codeline" id="line-443"><code></code></span>
+<span class="codeline" id="line-444"><code>// bsearch16 returns the smallest i such that a[i] &gt;= x.</code></span>
+<span class="codeline" id="line-445"><code>// If there is no such i, bsearch16 returns len(a).</code></span>
+<span class="codeline" id="line-446"><code>func bsearch16(a []uint16, x uint16) int {</code></span>
+<span class="codeline" id="line-447"><code>	i, j := 0, len(a)</code></span>
+<span class="codeline" id="line-448"><code>	for i &lt; j {</code></span>
+<span class="codeline" id="line-449"><code>		h := i + (j-i)/2</code></span>
+<span class="codeline" id="line-450"><code>		if a[h] &lt; x {</code></span>
+<span class="codeline" id="line-451"><code>			i = h + 1</code></span>
+<span class="codeline" id="line-452"><code>		} else {</code></span>
+<span class="codeline" id="line-453"><code>			j = h</code></span>
+<span class="codeline" id="line-454"><code>		}</code></span>
+<span class="codeline" id="line-455"><code>	}</code></span>
+<span class="codeline" id="line-456"><code>	return i</code></span>
+<span class="codeline" id="line-457"><code>}</code></span>
+<span class="codeline" id="line-458"><code></code></span>
+<span class="codeline" id="line-459"><code>// bsearch32 returns the smallest i such that a[i] &gt;= x.</code></span>
+<span class="codeline" id="line-460"><code>// If there is no such i, bsearch32 returns len(a).</code></span>
+<span class="codeline" id="line-461"><code>func bsearch32(a []uint32, x uint32) int {</code></span>
+<span class="codeline" id="line-462"><code>	i, j := 0, len(a)</code></span>
+<span class="codeline" id="line-463"><code>	for i &lt; j {</code></span>
+<span class="codeline" id="line-464"><code>		h := i + (j-i)/2</code></span>
+<span class="codeline" id="line-465"><code>		if a[h] &lt; x {</code></span>
+<span class="codeline" id="line-466"><code>			i = h + 1</code></span>
+<span class="codeline" id="line-467"><code>		} else {</code></span>
+<span class="codeline" id="line-468"><code>			j = h</code></span>
+<span class="codeline" id="line-469"><code>		}</code></span>
+<span class="codeline" id="line-470"><code>	}</code></span>
+<span class="codeline" id="line-471"><code>	return i</code></span>
+<span class="codeline" id="line-472"><code>}</code></span>
+<span class="codeline" id="line-473"><code></code></span>
+<span class="codeline" id="line-474"><code>// TODO: IsPrint is a local implementation of unicode.IsPrint, verified by the tests</code></span>
+<span class="codeline" id="line-475"><code>// to give the same answer. It allows this package not to depend on unicode,</code></span>
+<span class="codeline" id="line-476"><code>// and therefore not pull in all the Unicode tables. If the linker were better</code></span>
+<span class="codeline" id="line-477"><code>// at tossing unused tables, we could get rid of this implementation.</code></span>
+<span class="codeline" id="line-478"><code>// That would be nice.</code></span>
+<span class="codeline" id="line-479"><code></code></span>
+<span class="codeline" id="line-480"><code>// IsPrint reports whether the rune is defined as printable by Go, with</code></span>
+<span class="codeline" id="line-481"><code>// the same definition as unicode.IsPrint: letters, numbers, punctuation,</code></span>
+<span class="codeline" id="line-482"><code>// symbols and ASCII space.</code></span>
+<span class="codeline" id="line-483"><code>func IsPrint(r rune) bool {</code></span>
+<span class="codeline" id="line-484"><code>	// Fast check for Latin-1</code></span>
+<span class="codeline" id="line-485"><code>	if r &lt;= 0xFF {</code></span>
+<span class="codeline" id="line-486"><code>		if 0x20 &lt;= r &amp;&amp; r &lt;= 0x7E {</code></span>
+<span class="codeline" id="line-487"><code>			// All the ASCII is printable from space through DEL-1.</code></span>
+<span class="codeline" id="line-488"><code>			return true</code></span>
+<span class="codeline" id="line-489"><code>		}</code></span>
+<span class="codeline" id="line-490"><code>		if 0xA1 &lt;= r &amp;&amp; r &lt;= 0xFF {</code></span>
+<span class="codeline" id="line-491"><code>			// Similarly for ¡ through ÿ...</code></span>
+<span class="codeline" id="line-492"><code>			return r != 0xAD // ...except for the bizarre soft hyphen.</code></span>
+<span class="codeline" id="line-493"><code>		}</code></span>
+<span class="codeline" id="line-494"><code>		return false</code></span>
+<span class="codeline" id="line-495"><code>	}</code></span>
+<span class="codeline" id="line-496"><code></code></span>
+<span class="codeline" id="line-497"><code>	// Same algorithm, either on uint16 or uint32 value.</code></span>
+<span class="codeline" id="line-498"><code>	// First, find first i such that isPrint[i] &gt;= x.</code></span>
+<span class="codeline" id="line-499"><code>	// This is the index of either the start or end of a pair that might span x.</code></span>
+<span class="codeline" id="line-500"><code>	// The start is even (isPrint[i&amp;^1]) and the end is odd (isPrint[i|1]).</code></span>
+<span class="codeline" id="line-501"><code>	// If we find x in a range, make sure x is not in isNotPrint list.</code></span>
+<span class="codeline" id="line-502"><code></code></span>
+<span class="codeline" id="line-503"><code>	if 0 &lt;= r &amp;&amp; r &lt; 1&lt;&lt;16 {</code></span>
+<span class="codeline" id="line-504"><code>		rr, isPrint, isNotPrint := uint16(r), isPrint16, isNotPrint16</code></span>
+<span class="codeline" id="line-505"><code>		i := bsearch16(isPrint, rr)</code></span>
+<span class="codeline" id="line-506"><code>		if i &gt;= len(isPrint) || rr &lt; isPrint[i&amp;^1] || isPrint[i|1] &lt; rr {</code></span>
+<span class="codeline" id="line-507"><code>			return false</code></span>
+<span class="codeline" id="line-508"><code>		}</code></span>
+<span class="codeline" id="line-509"><code>		j := bsearch16(isNotPrint, rr)</code></span>
+<span class="codeline" id="line-510"><code>		return j &gt;= len(isNotPrint) || isNotPrint[j] != rr</code></span>
+<span class="codeline" id="line-511"><code>	}</code></span>
+<span class="codeline" id="line-512"><code></code></span>
+<span class="codeline" id="line-513"><code>	rr, isPrint, isNotPrint := uint32(r), isPrint32, isNotPrint32</code></span>
+<span class="codeline" id="line-514"><code>	i := bsearch32(isPrint, rr)</code></span>
+<span class="codeline" id="line-515"><code>	if i &gt;= len(isPrint) || rr &lt; isPrint[i&amp;^1] || isPrint[i|1] &lt; rr {</code></span>
+<span class="codeline" id="line-516"><code>		return false</code></span>
+<span class="codeline" id="line-517"><code>	}</code></span>
+<span class="codeline" id="line-518"><code>	if r &gt;= 0x20000 {</code></span>
+<span class="codeline" id="line-519"><code>		return true</code></span>
+<span class="codeline" id="line-520"><code>	}</code></span>
+<span class="codeline" id="line-521"><code>	r -= 0x10000</code></span>
+<span class="codeline" id="line-522"><code>	j := bsearch16(isNotPrint, uint16(r))</code></span>
+<span class="codeline" id="line-523"><code>	return j &gt;= len(isNotPrint) || isNotPrint[j] != uint16(r)</code></span>
+<span class="codeline" id="line-524"><code>}</code></span>
+<span class="codeline" id="line-525"><code></code></span>
+<span class="codeline" id="line-526"><code>// IsGraphic reports whether the rune is defined as a Graphic by Unicode. Such</code></span>
+<span class="codeline" id="line-527"><code>// characters include letters, marks, numbers, punctuation, symbols, and</code></span>
+<span class="codeline" id="line-528"><code>// spaces, from categories L, M, N, P, S, and Zs.</code></span>
+<span class="codeline" id="line-529"><code>func IsGraphic(r rune) bool {</code></span>
+<span class="codeline" id="line-530"><code>	if IsPrint(r) {</code></span>
+<span class="codeline" id="line-531"><code>		return true</code></span>
+<span class="codeline" id="line-532"><code>	}</code></span>
+<span class="codeline" id="line-533"><code>	return isInGraphicList(r)</code></span>
+<span class="codeline" id="line-534"><code>}</code></span>
+<span class="codeline" id="line-535"><code></code></span>
+<span class="codeline" id="line-536"><code>// isInGraphicList reports whether the rune is in the isGraphic list. This separation</code></span>
+<span class="codeline" id="line-537"><code>// from IsGraphic allows quoteWith to avoid two calls to IsPrint.</code></span>
+<span class="codeline" id="line-538"><code>// Should be called only if IsPrint fails.</code></span>
+<span class="codeline" id="line-539"><code>func isInGraphicList(r rune) bool {</code></span>
+<span class="codeline" id="line-540"><code>	// We know r must fit in 16 bits - see makeisprint.go.</code></span>
+<span class="codeline" id="line-541"><code>	if r &gt; 0xFFFF {</code></span>
+<span class="codeline" id="line-542"><code>		return false</code></span>
+<span class="codeline" id="line-543"><code>	}</code></span>
+<span class="codeline" id="line-544"><code>	rr := uint16(r)</code></span>
+<span class="codeline" id="line-545"><code>	i := bsearch16(isGraphic, rr)</code></span>
+<span class="codeline" id="line-546"><code>	return i &lt; len(isGraphic) &amp;&amp; rr == isGraphic[i]</code></span>
+<span class="codeline" id="line-547"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

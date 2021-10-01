@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: wait_waitid.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	wait_waitid.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2016 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// We used to used this code for Darwin, but according to issue #19314</code></span>
+<span class="codeline" id="line-6"><code>// waitid returns if the process is stopped, even when using WEXITED.</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>// +build linux</code></span>
+<span class="codeline" id="line-9"><code></code></span>
+<span class="codeline" id="line-10"><code>package os</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>import (</code></span>
+<span class="codeline" id="line-13"><code>	"runtime"</code></span>
+<span class="codeline" id="line-14"><code>	"syscall"</code></span>
+<span class="codeline" id="line-15"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-16"><code>)</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>const _P_PID = 1</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// blockUntilWaitable attempts to block until a call to p.Wait will</code></span>
+<span class="codeline" id="line-21"><code>// succeed immediately, and reports whether it has done so.</code></span>
+<span class="codeline" id="line-22"><code>// It does not actually call p.Wait.</code></span>
+<span class="codeline" id="line-23"><code>func (p *Process) blockUntilWaitable() (bool, error) {</code></span>
+<span class="codeline" id="line-24"><code>	// The waitid system call expects a pointer to a siginfo_t,</code></span>
+<span class="codeline" id="line-25"><code>	// which is 128 bytes on all GNU/Linux systems.</code></span>
+<span class="codeline" id="line-26"><code>	// On darwin/amd64, it requires 104 bytes.</code></span>
+<span class="codeline" id="line-27"><code>	// We don't care about the values it returns.</code></span>
+<span class="codeline" id="line-28"><code>	var siginfo [16]uint64</code></span>
+<span class="codeline" id="line-29"><code>	psig := &amp;siginfo[0]</code></span>
+<span class="codeline" id="line-30"><code>	var e syscall.Errno</code></span>
+<span class="codeline" id="line-31"><code>	for {</code></span>
+<span class="codeline" id="line-32"><code>		_, _, e = syscall.Syscall6(syscall.SYS_WAITID, _P_PID, uintptr(p.Pid), uintptr(unsafe.Pointer(psig)), syscall.WEXITED|syscall.WNOWAIT, 0, 0)</code></span>
+<span class="codeline" id="line-33"><code>		if e != syscall.EINTR {</code></span>
+<span class="codeline" id="line-34"><code>			break</code></span>
+<span class="codeline" id="line-35"><code>		}</code></span>
+<span class="codeline" id="line-36"><code>	}</code></span>
+<span class="codeline" id="line-37"><code>	runtime.KeepAlive(p)</code></span>
+<span class="codeline" id="line-38"><code>	if e != 0 {</code></span>
+<span class="codeline" id="line-39"><code>		// waitid has been available since Linux 2.6.9, but</code></span>
+<span class="codeline" id="line-40"><code>		// reportedly is not available in Ubuntu on Windows.</code></span>
+<span class="codeline" id="line-41"><code>		// See issue 16610.</code></span>
+<span class="codeline" id="line-42"><code>		if e == syscall.ENOSYS {</code></span>
+<span class="codeline" id="line-43"><code>			return false, nil</code></span>
+<span class="codeline" id="line-44"><code>		}</code></span>
+<span class="codeline" id="line-45"><code>		return false, NewSyscallError("waitid", e)</code></span>
+<span class="codeline" id="line-46"><code>	}</code></span>
+<span class="codeline" id="line-47"><code>	return true, nil</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

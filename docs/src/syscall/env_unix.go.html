@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: env_unix.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	env_unix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd js,wasm linux netbsd openbsd solaris plan9</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Unix environment variables.</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>package syscall</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>import (</code></span>
+<span class="codeline" id="line-12"><code>	"runtime"</code></span>
+<span class="codeline" id="line-13"><code>	"sync"</code></span>
+<span class="codeline" id="line-14"><code>)</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>var (</code></span>
+<span class="codeline" id="line-17"><code>	// envOnce guards initialization by copyenv, which populates env.</code></span>
+<span class="codeline" id="line-18"><code>	envOnce sync.Once</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>	// envLock guards env and envs.</code></span>
+<span class="codeline" id="line-21"><code>	envLock sync.RWMutex</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>	// env maps from an environment variable to its first occurrence in envs.</code></span>
+<span class="codeline" id="line-24"><code>	env map[string]int</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>	// envs is provided by the runtime. elements are expected to</code></span>
+<span class="codeline" id="line-27"><code>	// be of the form "key=value". An empty string means deleted</code></span>
+<span class="codeline" id="line-28"><code>	// (or a duplicate to be ignored).</code></span>
+<span class="codeline" id="line-29"><code>	envs []string = runtime_envs()</code></span>
+<span class="codeline" id="line-30"><code>)</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>func runtime_envs() []string // in package runtime</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>// setenv_c and unsetenv_c are provided by the runtime but are no-ops</code></span>
+<span class="codeline" id="line-35"><code>// if cgo isn't loaded.</code></span>
+<span class="codeline" id="line-36"><code>func setenv_c(k, v string)</code></span>
+<span class="codeline" id="line-37"><code>func unsetenv_c(k string)</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>func copyenv() {</code></span>
+<span class="codeline" id="line-40"><code>	env = make(map[string]int)</code></span>
+<span class="codeline" id="line-41"><code>	for i, s := range envs {</code></span>
+<span class="codeline" id="line-42"><code>		for j := 0; j &lt; len(s); j++ {</code></span>
+<span class="codeline" id="line-43"><code>			if s[j] == '=' {</code></span>
+<span class="codeline" id="line-44"><code>				key := s[:j]</code></span>
+<span class="codeline" id="line-45"><code>				if _, ok := env[key]; !ok {</code></span>
+<span class="codeline" id="line-46"><code>					env[key] = i // first mention of key</code></span>
+<span class="codeline" id="line-47"><code>				} else {</code></span>
+<span class="codeline" id="line-48"><code>					// Clear duplicate keys. This permits Unsetenv to</code></span>
+<span class="codeline" id="line-49"><code>					// safely delete only the first item without</code></span>
+<span class="codeline" id="line-50"><code>					// worrying about unshadowing a later one,</code></span>
+<span class="codeline" id="line-51"><code>					// which might be a security problem.</code></span>
+<span class="codeline" id="line-52"><code>					envs[i] = ""</code></span>
+<span class="codeline" id="line-53"><code>				}</code></span>
+<span class="codeline" id="line-54"><code>				break</code></span>
+<span class="codeline" id="line-55"><code>			}</code></span>
+<span class="codeline" id="line-56"><code>		}</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code>}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>func Unsetenv(key string) error {</code></span>
+<span class="codeline" id="line-61"><code>	envOnce.Do(copyenv)</code></span>
+<span class="codeline" id="line-62"><code></code></span>
+<span class="codeline" id="line-63"><code>	envLock.Lock()</code></span>
+<span class="codeline" id="line-64"><code>	defer envLock.Unlock()</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>	if i, ok := env[key]; ok {</code></span>
+<span class="codeline" id="line-67"><code>		envs[i] = ""</code></span>
+<span class="codeline" id="line-68"><code>		delete(env, key)</code></span>
+<span class="codeline" id="line-69"><code>	}</code></span>
+<span class="codeline" id="line-70"><code>	unsetenv_c(key)</code></span>
+<span class="codeline" id="line-71"><code>	return nil</code></span>
+<span class="codeline" id="line-72"><code>}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>func Getenv(key string) (value string, found bool) {</code></span>
+<span class="codeline" id="line-75"><code>	envOnce.Do(copyenv)</code></span>
+<span class="codeline" id="line-76"><code>	if len(key) == 0 {</code></span>
+<span class="codeline" id="line-77"><code>		return "", false</code></span>
+<span class="codeline" id="line-78"><code>	}</code></span>
+<span class="codeline" id="line-79"><code></code></span>
+<span class="codeline" id="line-80"><code>	envLock.RLock()</code></span>
+<span class="codeline" id="line-81"><code>	defer envLock.RUnlock()</code></span>
+<span class="codeline" id="line-82"><code></code></span>
+<span class="codeline" id="line-83"><code>	i, ok := env[key]</code></span>
+<span class="codeline" id="line-84"><code>	if !ok {</code></span>
+<span class="codeline" id="line-85"><code>		return "", false</code></span>
+<span class="codeline" id="line-86"><code>	}</code></span>
+<span class="codeline" id="line-87"><code>	s := envs[i]</code></span>
+<span class="codeline" id="line-88"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-89"><code>		if s[i] == '=' {</code></span>
+<span class="codeline" id="line-90"><code>			return s[i+1:], true</code></span>
+<span class="codeline" id="line-91"><code>		}</code></span>
+<span class="codeline" id="line-92"><code>	}</code></span>
+<span class="codeline" id="line-93"><code>	return "", false</code></span>
+<span class="codeline" id="line-94"><code>}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>func Setenv(key, value string) error {</code></span>
+<span class="codeline" id="line-97"><code>	envOnce.Do(copyenv)</code></span>
+<span class="codeline" id="line-98"><code>	if len(key) == 0 {</code></span>
+<span class="codeline" id="line-99"><code>		return EINVAL</code></span>
+<span class="codeline" id="line-100"><code>	}</code></span>
+<span class="codeline" id="line-101"><code>	for i := 0; i &lt; len(key); i++ {</code></span>
+<span class="codeline" id="line-102"><code>		if key[i] == '=' || key[i] == 0 {</code></span>
+<span class="codeline" id="line-103"><code>			return EINVAL</code></span>
+<span class="codeline" id="line-104"><code>		}</code></span>
+<span class="codeline" id="line-105"><code>	}</code></span>
+<span class="codeline" id="line-106"><code>	// On Plan 9, null is used as a separator, eg in $path.</code></span>
+<span class="codeline" id="line-107"><code>	if runtime.GOOS != "plan9" {</code></span>
+<span class="codeline" id="line-108"><code>		for i := 0; i &lt; len(value); i++ {</code></span>
+<span class="codeline" id="line-109"><code>			if value[i] == 0 {</code></span>
+<span class="codeline" id="line-110"><code>				return EINVAL</code></span>
+<span class="codeline" id="line-111"><code>			}</code></span>
+<span class="codeline" id="line-112"><code>		}</code></span>
+<span class="codeline" id="line-113"><code>	}</code></span>
+<span class="codeline" id="line-114"><code></code></span>
+<span class="codeline" id="line-115"><code>	envLock.Lock()</code></span>
+<span class="codeline" id="line-116"><code>	defer envLock.Unlock()</code></span>
+<span class="codeline" id="line-117"><code></code></span>
+<span class="codeline" id="line-118"><code>	i, ok := env[key]</code></span>
+<span class="codeline" id="line-119"><code>	kv := key + "=" + value</code></span>
+<span class="codeline" id="line-120"><code>	if ok {</code></span>
+<span class="codeline" id="line-121"><code>		envs[i] = kv</code></span>
+<span class="codeline" id="line-122"><code>	} else {</code></span>
+<span class="codeline" id="line-123"><code>		i = len(envs)</code></span>
+<span class="codeline" id="line-124"><code>		envs = append(envs, kv)</code></span>
+<span class="codeline" id="line-125"><code>	}</code></span>
+<span class="codeline" id="line-126"><code>	env[key] = i</code></span>
+<span class="codeline" id="line-127"><code>	setenv_c(key, value)</code></span>
+<span class="codeline" id="line-128"><code>	return nil</code></span>
+<span class="codeline" id="line-129"><code>}</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>func Clearenv() {</code></span>
+<span class="codeline" id="line-132"><code>	envOnce.Do(copyenv) // prevent copyenv in Getenv/Setenv</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>	envLock.Lock()</code></span>
+<span class="codeline" id="line-135"><code>	defer envLock.Unlock()</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>	for k := range env {</code></span>
+<span class="codeline" id="line-138"><code>		unsetenv_c(k)</code></span>
+<span class="codeline" id="line-139"><code>	}</code></span>
+<span class="codeline" id="line-140"><code>	env = make(map[string]int)</code></span>
+<span class="codeline" id="line-141"><code>	envs = []string{}</code></span>
+<span class="codeline" id="line-142"><code>}</code></span>
+<span class="codeline" id="line-143"><code></code></span>
+<span class="codeline" id="line-144"><code>func Environ() []string {</code></span>
+<span class="codeline" id="line-145"><code>	envOnce.Do(copyenv)</code></span>
+<span class="codeline" id="line-146"><code>	envLock.RLock()</code></span>
+<span class="codeline" id="line-147"><code>	defer envLock.RUnlock()</code></span>
+<span class="codeline" id="line-148"><code>	a := make([]string, 0, len(envs))</code></span>
+<span class="codeline" id="line-149"><code>	for _, env := range envs {</code></span>
+<span class="codeline" id="line-150"><code>		if env != "" {</code></span>
+<span class="codeline" id="line-151"><code>			a = append(a, env)</code></span>
+<span class="codeline" id="line-152"><code>		}</code></span>
+<span class="codeline" id="line-153"><code>	}</code></span>
+<span class="codeline" id="line-154"><code>	return a</code></span>
+<span class="codeline" id="line-155"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

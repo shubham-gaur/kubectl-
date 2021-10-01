@@ -1,0 +1,1256 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: trace.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	trace.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Go execution tracer.</code></span>
+<span class="codeline" id="line-6"><code>// The tracer captures a wide range of execution events like goroutine</code></span>
+<span class="codeline" id="line-7"><code>// creation/blocking/unblocking, syscall enter/exit/block, GC-related events,</code></span>
+<span class="codeline" id="line-8"><code>// changes of heap size, processor start/stop, etc and writes them to a buffer</code></span>
+<span class="codeline" id="line-9"><code>// in a compact form. A precise nanosecond-precision timestamp and a stack</code></span>
+<span class="codeline" id="line-10"><code>// trace is captured for most events.</code></span>
+<span class="codeline" id="line-11"><code>// See https://golang.org/s/go15trace for more info.</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>package runtime</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>import (</code></span>
+<span class="codeline" id="line-16"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-17"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-18"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-19"><code>)</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>// Event types in the trace, args are given in square brackets.</code></span>
+<span class="codeline" id="line-22"><code>const (</code></span>
+<span class="codeline" id="line-23"><code>	traceEvNone              = 0  // unused</code></span>
+<span class="codeline" id="line-24"><code>	traceEvBatch             = 1  // start of per-P batch of events [pid, timestamp]</code></span>
+<span class="codeline" id="line-25"><code>	traceEvFrequency         = 2  // contains tracer timer frequency [frequency (ticks per second)]</code></span>
+<span class="codeline" id="line-26"><code>	traceEvStack             = 3  // stack [stack id, number of PCs, array of {PC, func string ID, file string ID, line}]</code></span>
+<span class="codeline" id="line-27"><code>	traceEvGomaxprocs        = 4  // current value of GOMAXPROCS [timestamp, GOMAXPROCS, stack id]</code></span>
+<span class="codeline" id="line-28"><code>	traceEvProcStart         = 5  // start of P [timestamp, thread id]</code></span>
+<span class="codeline" id="line-29"><code>	traceEvProcStop          = 6  // stop of P [timestamp]</code></span>
+<span class="codeline" id="line-30"><code>	traceEvGCStart           = 7  // GC start [timestamp, seq, stack id]</code></span>
+<span class="codeline" id="line-31"><code>	traceEvGCDone            = 8  // GC done [timestamp]</code></span>
+<span class="codeline" id="line-32"><code>	traceEvGCSTWStart        = 9  // GC STW start [timestamp, kind]</code></span>
+<span class="codeline" id="line-33"><code>	traceEvGCSTWDone         = 10 // GC STW done [timestamp]</code></span>
+<span class="codeline" id="line-34"><code>	traceEvGCSweepStart      = 11 // GC sweep start [timestamp, stack id]</code></span>
+<span class="codeline" id="line-35"><code>	traceEvGCSweepDone       = 12 // GC sweep done [timestamp, swept, reclaimed]</code></span>
+<span class="codeline" id="line-36"><code>	traceEvGoCreate          = 13 // goroutine creation [timestamp, new goroutine id, new stack id, stack id]</code></span>
+<span class="codeline" id="line-37"><code>	traceEvGoStart           = 14 // goroutine starts running [timestamp, goroutine id, seq]</code></span>
+<span class="codeline" id="line-38"><code>	traceEvGoEnd             = 15 // goroutine ends [timestamp]</code></span>
+<span class="codeline" id="line-39"><code>	traceEvGoStop            = 16 // goroutine stops (like in select{}) [timestamp, stack]</code></span>
+<span class="codeline" id="line-40"><code>	traceEvGoSched           = 17 // goroutine calls Gosched [timestamp, stack]</code></span>
+<span class="codeline" id="line-41"><code>	traceEvGoPreempt         = 18 // goroutine is preempted [timestamp, stack]</code></span>
+<span class="codeline" id="line-42"><code>	traceEvGoSleep           = 19 // goroutine calls Sleep [timestamp, stack]</code></span>
+<span class="codeline" id="line-43"><code>	traceEvGoBlock           = 20 // goroutine blocks [timestamp, stack]</code></span>
+<span class="codeline" id="line-44"><code>	traceEvGoUnblock         = 21 // goroutine is unblocked [timestamp, goroutine id, seq, stack]</code></span>
+<span class="codeline" id="line-45"><code>	traceEvGoBlockSend       = 22 // goroutine blocks on chan send [timestamp, stack]</code></span>
+<span class="codeline" id="line-46"><code>	traceEvGoBlockRecv       = 23 // goroutine blocks on chan recv [timestamp, stack]</code></span>
+<span class="codeline" id="line-47"><code>	traceEvGoBlockSelect     = 24 // goroutine blocks on select [timestamp, stack]</code></span>
+<span class="codeline" id="line-48"><code>	traceEvGoBlockSync       = 25 // goroutine blocks on Mutex/RWMutex [timestamp, stack]</code></span>
+<span class="codeline" id="line-49"><code>	traceEvGoBlockCond       = 26 // goroutine blocks on Cond [timestamp, stack]</code></span>
+<span class="codeline" id="line-50"><code>	traceEvGoBlockNet        = 27 // goroutine blocks on network [timestamp, stack]</code></span>
+<span class="codeline" id="line-51"><code>	traceEvGoSysCall         = 28 // syscall enter [timestamp, stack]</code></span>
+<span class="codeline" id="line-52"><code>	traceEvGoSysExit         = 29 // syscall exit [timestamp, goroutine id, seq, real timestamp]</code></span>
+<span class="codeline" id="line-53"><code>	traceEvGoSysBlock        = 30 // syscall blocks [timestamp]</code></span>
+<span class="codeline" id="line-54"><code>	traceEvGoWaiting         = 31 // denotes that goroutine is blocked when tracing starts [timestamp, goroutine id]</code></span>
+<span class="codeline" id="line-55"><code>	traceEvGoInSyscall       = 32 // denotes that goroutine is in syscall when tracing starts [timestamp, goroutine id]</code></span>
+<span class="codeline" id="line-56"><code>	traceEvHeapAlloc         = 33 // memstats.heap_live change [timestamp, heap_alloc]</code></span>
+<span class="codeline" id="line-57"><code>	traceEvNextGC            = 34 // memstats.next_gc change [timestamp, next_gc]</code></span>
+<span class="codeline" id="line-58"><code>	traceEvTimerGoroutine    = 35 // not currently used; previously denoted timer goroutine [timer goroutine id]</code></span>
+<span class="codeline" id="line-59"><code>	traceEvFutileWakeup      = 36 // denotes that the previous wakeup of this goroutine was futile [timestamp]</code></span>
+<span class="codeline" id="line-60"><code>	traceEvString            = 37 // string dictionary entry [ID, length, string]</code></span>
+<span class="codeline" id="line-61"><code>	traceEvGoStartLocal      = 38 // goroutine starts running on the same P as the last event [timestamp, goroutine id]</code></span>
+<span class="codeline" id="line-62"><code>	traceEvGoUnblockLocal    = 39 // goroutine is unblocked on the same P as the last event [timestamp, goroutine id, stack]</code></span>
+<span class="codeline" id="line-63"><code>	traceEvGoSysExitLocal    = 40 // syscall exit on the same P as the last event [timestamp, goroutine id, real timestamp]</code></span>
+<span class="codeline" id="line-64"><code>	traceEvGoStartLabel      = 41 // goroutine starts running with label [timestamp, goroutine id, seq, label string id]</code></span>
+<span class="codeline" id="line-65"><code>	traceEvGoBlockGC         = 42 // goroutine blocks on GC assist [timestamp, stack]</code></span>
+<span class="codeline" id="line-66"><code>	traceEvGCMarkAssistStart = 43 // GC mark assist start [timestamp, stack]</code></span>
+<span class="codeline" id="line-67"><code>	traceEvGCMarkAssistDone  = 44 // GC mark assist done [timestamp]</code></span>
+<span class="codeline" id="line-68"><code>	traceEvUserTaskCreate    = 45 // trace.NewContext [timestamp, internal task id, internal parent task id, stack, name string]</code></span>
+<span class="codeline" id="line-69"><code>	traceEvUserTaskEnd       = 46 // end of a task [timestamp, internal task id, stack]</code></span>
+<span class="codeline" id="line-70"><code>	traceEvUserRegion        = 47 // trace.WithRegion [timestamp, internal task id, mode(0:start, 1:end), stack, name string]</code></span>
+<span class="codeline" id="line-71"><code>	traceEvUserLog           = 48 // trace.Log [timestamp, internal task id, key string id, stack, value string]</code></span>
+<span class="codeline" id="line-72"><code>	traceEvCount             = 49</code></span>
+<span class="codeline" id="line-73"><code>	// Byte is used but only 6 bits are available for event type.</code></span>
+<span class="codeline" id="line-74"><code>	// The remaining 2 bits are used to specify the number of arguments.</code></span>
+<span class="codeline" id="line-75"><code>	// That means, the max event type value is 63.</code></span>
+<span class="codeline" id="line-76"><code>)</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>const (</code></span>
+<span class="codeline" id="line-79"><code>	// Timestamps in trace are cputicks/traceTickDiv.</code></span>
+<span class="codeline" id="line-80"><code>	// This makes absolute values of timestamp diffs smaller,</code></span>
+<span class="codeline" id="line-81"><code>	// and so they are encoded in less number of bytes.</code></span>
+<span class="codeline" id="line-82"><code>	// 64 on x86 is somewhat arbitrary (one tick is ~20ns on a 3GHz machine).</code></span>
+<span class="codeline" id="line-83"><code>	// The suggested increment frequency for PowerPC's time base register is</code></span>
+<span class="codeline" id="line-84"><code>	// 512 MHz according to Power ISA v2.07 section 6.2, so we use 16 on ppc64</code></span>
+<span class="codeline" id="line-85"><code>	// and ppc64le.</code></span>
+<span class="codeline" id="line-86"><code>	// Tracing won't work reliably for architectures where cputicks is emulated</code></span>
+<span class="codeline" id="line-87"><code>	// by nanotime, so the value doesn't matter for those architectures.</code></span>
+<span class="codeline" id="line-88"><code>	traceTickDiv = 16 + 48*(sys.Goarch386|sys.GoarchAmd64)</code></span>
+<span class="codeline" id="line-89"><code>	// Maximum number of PCs in a single stack trace.</code></span>
+<span class="codeline" id="line-90"><code>	// Since events contain only stack id rather than whole stack trace,</code></span>
+<span class="codeline" id="line-91"><code>	// we can allow quite large values here.</code></span>
+<span class="codeline" id="line-92"><code>	traceStackSize = 128</code></span>
+<span class="codeline" id="line-93"><code>	// Identifier of a fake P that is used when we trace without a real P.</code></span>
+<span class="codeline" id="line-94"><code>	traceGlobProc = -1</code></span>
+<span class="codeline" id="line-95"><code>	// Maximum number of bytes to encode uint64 in base-128.</code></span>
+<span class="codeline" id="line-96"><code>	traceBytesPerNumber = 10</code></span>
+<span class="codeline" id="line-97"><code>	// Shift of the number of arguments in the first event byte.</code></span>
+<span class="codeline" id="line-98"><code>	traceArgCountShift = 6</code></span>
+<span class="codeline" id="line-99"><code>	// Flag passed to traceGoPark to denote that the previous wakeup of this</code></span>
+<span class="codeline" id="line-100"><code>	// goroutine was futile. For example, a goroutine was unblocked on a mutex,</code></span>
+<span class="codeline" id="line-101"><code>	// but another goroutine got ahead and acquired the mutex before the first</code></span>
+<span class="codeline" id="line-102"><code>	// goroutine is scheduled, so the first goroutine has to block again.</code></span>
+<span class="codeline" id="line-103"><code>	// Such wakeups happen on buffered channels and sync.Mutex,</code></span>
+<span class="codeline" id="line-104"><code>	// but are generally not interesting for end user.</code></span>
+<span class="codeline" id="line-105"><code>	traceFutileWakeup byte = 128</code></span>
+<span class="codeline" id="line-106"><code>)</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>// trace is global tracing context.</code></span>
+<span class="codeline" id="line-109"><code>var trace struct {</code></span>
+<span class="codeline" id="line-110"><code>	lock          mutex       // protects the following members</code></span>
+<span class="codeline" id="line-111"><code>	lockOwner     *g          // to avoid deadlocks during recursive lock locks</code></span>
+<span class="codeline" id="line-112"><code>	enabled       bool        // when set runtime traces events</code></span>
+<span class="codeline" id="line-113"><code>	shutdown      bool        // set when we are waiting for trace reader to finish after setting enabled to false</code></span>
+<span class="codeline" id="line-114"><code>	headerWritten bool        // whether ReadTrace has emitted trace header</code></span>
+<span class="codeline" id="line-115"><code>	footerWritten bool        // whether ReadTrace has emitted trace footer</code></span>
+<span class="codeline" id="line-116"><code>	shutdownSema  uint32      // used to wait for ReadTrace completion</code></span>
+<span class="codeline" id="line-117"><code>	seqStart      uint64      // sequence number when tracing was started</code></span>
+<span class="codeline" id="line-118"><code>	ticksStart    int64       // cputicks when tracing was started</code></span>
+<span class="codeline" id="line-119"><code>	ticksEnd      int64       // cputicks when tracing was stopped</code></span>
+<span class="codeline" id="line-120"><code>	timeStart     int64       // nanotime when tracing was started</code></span>
+<span class="codeline" id="line-121"><code>	timeEnd       int64       // nanotime when tracing was stopped</code></span>
+<span class="codeline" id="line-122"><code>	seqGC         uint64      // GC start/done sequencer</code></span>
+<span class="codeline" id="line-123"><code>	reading       traceBufPtr // buffer currently handed off to user</code></span>
+<span class="codeline" id="line-124"><code>	empty         traceBufPtr // stack of empty buffers</code></span>
+<span class="codeline" id="line-125"><code>	fullHead      traceBufPtr // queue of full buffers</code></span>
+<span class="codeline" id="line-126"><code>	fullTail      traceBufPtr</code></span>
+<span class="codeline" id="line-127"><code>	reader        guintptr        // goroutine that called ReadTrace, or nil</code></span>
+<span class="codeline" id="line-128"><code>	stackTab      traceStackTable // maps stack traces to unique ids</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	// Dictionary for traceEvString.</code></span>
+<span class="codeline" id="line-131"><code>	//</code></span>
+<span class="codeline" id="line-132"><code>	// TODO: central lock to access the map is not ideal.</code></span>
+<span class="codeline" id="line-133"><code>	//   option: pre-assign ids to all user annotation region names and tags</code></span>
+<span class="codeline" id="line-134"><code>	//   option: per-P cache</code></span>
+<span class="codeline" id="line-135"><code>	//   option: sync.Map like data structure</code></span>
+<span class="codeline" id="line-136"><code>	stringsLock mutex</code></span>
+<span class="codeline" id="line-137"><code>	strings     map[string]uint64</code></span>
+<span class="codeline" id="line-138"><code>	stringSeq   uint64</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>	// markWorkerLabels maps gcMarkWorkerMode to string ID.</code></span>
+<span class="codeline" id="line-141"><code>	markWorkerLabels [len(gcMarkWorkerModeStrings)]uint64</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>	bufLock mutex       // protects buf</code></span>
+<span class="codeline" id="line-144"><code>	buf     traceBufPtr // global trace buffer, used when running without a p</code></span>
+<span class="codeline" id="line-145"><code>}</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>// traceBufHeader is per-P tracing buffer.</code></span>
+<span class="codeline" id="line-148"><code>type traceBufHeader struct {</code></span>
+<span class="codeline" id="line-149"><code>	link      traceBufPtr             // in trace.empty/full</code></span>
+<span class="codeline" id="line-150"><code>	lastTicks uint64                  // when we wrote the last event</code></span>
+<span class="codeline" id="line-151"><code>	pos       int                     // next write offset in arr</code></span>
+<span class="codeline" id="line-152"><code>	stk       [traceStackSize]uintptr // scratch buffer for traceback</code></span>
+<span class="codeline" id="line-153"><code>}</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>// traceBuf is per-P tracing buffer.</code></span>
+<span class="codeline" id="line-156"><code>//</code></span>
+<span class="codeline" id="line-157"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-158"><code>type traceBuf struct {</code></span>
+<span class="codeline" id="line-159"><code>	traceBufHeader</code></span>
+<span class="codeline" id="line-160"><code>	arr [64&lt;&lt;10 - unsafe.Sizeof(traceBufHeader{})]byte // underlying buffer for traceBufHeader.buf</code></span>
+<span class="codeline" id="line-161"><code>}</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>// traceBufPtr is a *traceBuf that is not traced by the garbage</code></span>
+<span class="codeline" id="line-164"><code>// collector and doesn't have write barriers. traceBufs are not</code></span>
+<span class="codeline" id="line-165"><code>// allocated from the GC'd heap, so this is safe, and are often</code></span>
+<span class="codeline" id="line-166"><code>// manipulated in contexts where write barriers are not allowed, so</code></span>
+<span class="codeline" id="line-167"><code>// this is necessary.</code></span>
+<span class="codeline" id="line-168"><code>//</code></span>
+<span class="codeline" id="line-169"><code>// TODO: Since traceBuf is now go:notinheap, this isn't necessary.</code></span>
+<span class="codeline" id="line-170"><code>type traceBufPtr uintptr</code></span>
+<span class="codeline" id="line-171"><code></code></span>
+<span class="codeline" id="line-172"><code>func (tp traceBufPtr) ptr() *traceBuf   { return (*traceBuf)(unsafe.Pointer(tp)) }</code></span>
+<span class="codeline" id="line-173"><code>func (tp *traceBufPtr) set(b *traceBuf) { *tp = traceBufPtr(unsafe.Pointer(b)) }</code></span>
+<span class="codeline" id="line-174"><code>func traceBufPtrOf(b *traceBuf) traceBufPtr {</code></span>
+<span class="codeline" id="line-175"><code>	return traceBufPtr(unsafe.Pointer(b))</code></span>
+<span class="codeline" id="line-176"><code>}</code></span>
+<span class="codeline" id="line-177"><code></code></span>
+<span class="codeline" id="line-178"><code>// StartTrace enables tracing for the current process.</code></span>
+<span class="codeline" id="line-179"><code>// While tracing, the data will be buffered and available via ReadTrace.</code></span>
+<span class="codeline" id="line-180"><code>// StartTrace returns an error if tracing is already enabled.</code></span>
+<span class="codeline" id="line-181"><code>// Most clients should use the runtime/trace package or the testing package's</code></span>
+<span class="codeline" id="line-182"><code>// -test.trace flag instead of calling StartTrace directly.</code></span>
+<span class="codeline" id="line-183"><code>func StartTrace() error {</code></span>
+<span class="codeline" id="line-184"><code>	// Stop the world so that we can take a consistent snapshot</code></span>
+<span class="codeline" id="line-185"><code>	// of all goroutines at the beginning of the trace.</code></span>
+<span class="codeline" id="line-186"><code>	// Do not stop the world during GC so we ensure we always see</code></span>
+<span class="codeline" id="line-187"><code>	// a consistent view of GC-related events (e.g. a start is always</code></span>
+<span class="codeline" id="line-188"><code>	// paired with an end).</code></span>
+<span class="codeline" id="line-189"><code>	stopTheWorldGC("start tracing")</code></span>
+<span class="codeline" id="line-190"><code></code></span>
+<span class="codeline" id="line-191"><code>	// Prevent sysmon from running any code that could generate events.</code></span>
+<span class="codeline" id="line-192"><code>	lock(&amp;sched.sysmonlock)</code></span>
+<span class="codeline" id="line-193"><code></code></span>
+<span class="codeline" id="line-194"><code>	// We are in stop-the-world, but syscalls can finish and write to trace concurrently.</code></span>
+<span class="codeline" id="line-195"><code>	// Exitsyscall could check trace.enabled long before and then suddenly wake up</code></span>
+<span class="codeline" id="line-196"><code>	// and decide to write to trace at a random point in time.</code></span>
+<span class="codeline" id="line-197"><code>	// However, such syscall will use the global trace.buf buffer, because we've</code></span>
+<span class="codeline" id="line-198"><code>	// acquired all p's by doing stop-the-world. So this protects us from such races.</code></span>
+<span class="codeline" id="line-199"><code>	lock(&amp;trace.bufLock)</code></span>
+<span class="codeline" id="line-200"><code></code></span>
+<span class="codeline" id="line-201"><code>	if trace.enabled || trace.shutdown {</code></span>
+<span class="codeline" id="line-202"><code>		unlock(&amp;trace.bufLock)</code></span>
+<span class="codeline" id="line-203"><code>		unlock(&amp;sched.sysmonlock)</code></span>
+<span class="codeline" id="line-204"><code>		startTheWorldGC()</code></span>
+<span class="codeline" id="line-205"><code>		return errorString("tracing is already enabled")</code></span>
+<span class="codeline" id="line-206"><code>	}</code></span>
+<span class="codeline" id="line-207"><code></code></span>
+<span class="codeline" id="line-208"><code>	// Can't set trace.enabled yet. While the world is stopped, exitsyscall could</code></span>
+<span class="codeline" id="line-209"><code>	// already emit a delayed event (see exitTicks in exitsyscall) if we set trace.enabled here.</code></span>
+<span class="codeline" id="line-210"><code>	// That would lead to an inconsistent trace:</code></span>
+<span class="codeline" id="line-211"><code>	// - either GoSysExit appears before EvGoInSyscall,</code></span>
+<span class="codeline" id="line-212"><code>	// - or GoSysExit appears for a goroutine for which we don't emit EvGoInSyscall below.</code></span>
+<span class="codeline" id="line-213"><code>	// To instruct traceEvent that it must not ignore events below, we set startingtrace.</code></span>
+<span class="codeline" id="line-214"><code>	// trace.enabled is set afterwards once we have emitted all preliminary events.</code></span>
+<span class="codeline" id="line-215"><code>	_g_ := getg()</code></span>
+<span class="codeline" id="line-216"><code>	_g_.m.startingtrace = true</code></span>
+<span class="codeline" id="line-217"><code></code></span>
+<span class="codeline" id="line-218"><code>	// Obtain current stack ID to use in all traceEvGoCreate events below.</code></span>
+<span class="codeline" id="line-219"><code>	mp := acquirem()</code></span>
+<span class="codeline" id="line-220"><code>	stkBuf := make([]uintptr, traceStackSize)</code></span>
+<span class="codeline" id="line-221"><code>	stackID := traceStackID(mp, stkBuf, 2)</code></span>
+<span class="codeline" id="line-222"><code>	releasem(mp)</code></span>
+<span class="codeline" id="line-223"><code></code></span>
+<span class="codeline" id="line-224"><code>	for _, gp := range allgs {</code></span>
+<span class="codeline" id="line-225"><code>		status := readgstatus(gp)</code></span>
+<span class="codeline" id="line-226"><code>		if status != _Gdead {</code></span>
+<span class="codeline" id="line-227"><code>			gp.traceseq = 0</code></span>
+<span class="codeline" id="line-228"><code>			gp.tracelastp = getg().m.p</code></span>
+<span class="codeline" id="line-229"><code>			// +PCQuantum because traceFrameForPC expects return PCs and subtracts PCQuantum.</code></span>
+<span class="codeline" id="line-230"><code>			id := trace.stackTab.put([]uintptr{gp.startpc + sys.PCQuantum})</code></span>
+<span class="codeline" id="line-231"><code>			traceEvent(traceEvGoCreate, -1, uint64(gp.goid), uint64(id), stackID)</code></span>
+<span class="codeline" id="line-232"><code>		}</code></span>
+<span class="codeline" id="line-233"><code>		if status == _Gwaiting {</code></span>
+<span class="codeline" id="line-234"><code>			// traceEvGoWaiting is implied to have seq=1.</code></span>
+<span class="codeline" id="line-235"><code>			gp.traceseq++</code></span>
+<span class="codeline" id="line-236"><code>			traceEvent(traceEvGoWaiting, -1, uint64(gp.goid))</code></span>
+<span class="codeline" id="line-237"><code>		}</code></span>
+<span class="codeline" id="line-238"><code>		if status == _Gsyscall {</code></span>
+<span class="codeline" id="line-239"><code>			gp.traceseq++</code></span>
+<span class="codeline" id="line-240"><code>			traceEvent(traceEvGoInSyscall, -1, uint64(gp.goid))</code></span>
+<span class="codeline" id="line-241"><code>		} else {</code></span>
+<span class="codeline" id="line-242"><code>			gp.sysblocktraced = false</code></span>
+<span class="codeline" id="line-243"><code>		}</code></span>
+<span class="codeline" id="line-244"><code>	}</code></span>
+<span class="codeline" id="line-245"><code>	traceProcStart()</code></span>
+<span class="codeline" id="line-246"><code>	traceGoStart()</code></span>
+<span class="codeline" id="line-247"><code>	// Note: ticksStart needs to be set after we emit traceEvGoInSyscall events.</code></span>
+<span class="codeline" id="line-248"><code>	// If we do it the other way around, it is possible that exitsyscall will</code></span>
+<span class="codeline" id="line-249"><code>	// query sysexitticks after ticksStart but before traceEvGoInSyscall timestamp.</code></span>
+<span class="codeline" id="line-250"><code>	// It will lead to a false conclusion that cputicks is broken.</code></span>
+<span class="codeline" id="line-251"><code>	trace.ticksStart = cputicks()</code></span>
+<span class="codeline" id="line-252"><code>	trace.timeStart = nanotime()</code></span>
+<span class="codeline" id="line-253"><code>	trace.headerWritten = false</code></span>
+<span class="codeline" id="line-254"><code>	trace.footerWritten = false</code></span>
+<span class="codeline" id="line-255"><code></code></span>
+<span class="codeline" id="line-256"><code>	// string to id mapping</code></span>
+<span class="codeline" id="line-257"><code>	//  0 : reserved for an empty string</code></span>
+<span class="codeline" id="line-258"><code>	//  remaining: other strings registered by traceString</code></span>
+<span class="codeline" id="line-259"><code>	trace.stringSeq = 0</code></span>
+<span class="codeline" id="line-260"><code>	trace.strings = make(map[string]uint64)</code></span>
+<span class="codeline" id="line-261"><code></code></span>
+<span class="codeline" id="line-262"><code>	trace.seqGC = 0</code></span>
+<span class="codeline" id="line-263"><code>	_g_.m.startingtrace = false</code></span>
+<span class="codeline" id="line-264"><code>	trace.enabled = true</code></span>
+<span class="codeline" id="line-265"><code></code></span>
+<span class="codeline" id="line-266"><code>	// Register runtime goroutine labels.</code></span>
+<span class="codeline" id="line-267"><code>	_, pid, bufp := traceAcquireBuffer()</code></span>
+<span class="codeline" id="line-268"><code>	for i, label := range gcMarkWorkerModeStrings[:] {</code></span>
+<span class="codeline" id="line-269"><code>		trace.markWorkerLabels[i], bufp = traceString(bufp, pid, label)</code></span>
+<span class="codeline" id="line-270"><code>	}</code></span>
+<span class="codeline" id="line-271"><code>	traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-272"><code></code></span>
+<span class="codeline" id="line-273"><code>	unlock(&amp;trace.bufLock)</code></span>
+<span class="codeline" id="line-274"><code></code></span>
+<span class="codeline" id="line-275"><code>	unlock(&amp;sched.sysmonlock)</code></span>
+<span class="codeline" id="line-276"><code></code></span>
+<span class="codeline" id="line-277"><code>	startTheWorldGC()</code></span>
+<span class="codeline" id="line-278"><code>	return nil</code></span>
+<span class="codeline" id="line-279"><code>}</code></span>
+<span class="codeline" id="line-280"><code></code></span>
+<span class="codeline" id="line-281"><code>// StopTrace stops tracing, if it was previously enabled.</code></span>
+<span class="codeline" id="line-282"><code>// StopTrace only returns after all the reads for the trace have completed.</code></span>
+<span class="codeline" id="line-283"><code>func StopTrace() {</code></span>
+<span class="codeline" id="line-284"><code>	// Stop the world so that we can collect the trace buffers from all p's below,</code></span>
+<span class="codeline" id="line-285"><code>	// and also to avoid races with traceEvent.</code></span>
+<span class="codeline" id="line-286"><code>	stopTheWorldGC("stop tracing")</code></span>
+<span class="codeline" id="line-287"><code></code></span>
+<span class="codeline" id="line-288"><code>	// See the comment in StartTrace.</code></span>
+<span class="codeline" id="line-289"><code>	lock(&amp;sched.sysmonlock)</code></span>
+<span class="codeline" id="line-290"><code></code></span>
+<span class="codeline" id="line-291"><code>	// See the comment in StartTrace.</code></span>
+<span class="codeline" id="line-292"><code>	lock(&amp;trace.bufLock)</code></span>
+<span class="codeline" id="line-293"><code></code></span>
+<span class="codeline" id="line-294"><code>	if !trace.enabled {</code></span>
+<span class="codeline" id="line-295"><code>		unlock(&amp;trace.bufLock)</code></span>
+<span class="codeline" id="line-296"><code>		unlock(&amp;sched.sysmonlock)</code></span>
+<span class="codeline" id="line-297"><code>		startTheWorldGC()</code></span>
+<span class="codeline" id="line-298"><code>		return</code></span>
+<span class="codeline" id="line-299"><code>	}</code></span>
+<span class="codeline" id="line-300"><code></code></span>
+<span class="codeline" id="line-301"><code>	traceGoSched()</code></span>
+<span class="codeline" id="line-302"><code></code></span>
+<span class="codeline" id="line-303"><code>	// Loop over all allocated Ps because dead Ps may still have</code></span>
+<span class="codeline" id="line-304"><code>	// trace buffers.</code></span>
+<span class="codeline" id="line-305"><code>	for _, p := range allp[:cap(allp)] {</code></span>
+<span class="codeline" id="line-306"><code>		buf := p.tracebuf</code></span>
+<span class="codeline" id="line-307"><code>		if buf != 0 {</code></span>
+<span class="codeline" id="line-308"><code>			traceFullQueue(buf)</code></span>
+<span class="codeline" id="line-309"><code>			p.tracebuf = 0</code></span>
+<span class="codeline" id="line-310"><code>		}</code></span>
+<span class="codeline" id="line-311"><code>	}</code></span>
+<span class="codeline" id="line-312"><code>	if trace.buf != 0 {</code></span>
+<span class="codeline" id="line-313"><code>		buf := trace.buf</code></span>
+<span class="codeline" id="line-314"><code>		trace.buf = 0</code></span>
+<span class="codeline" id="line-315"><code>		if buf.ptr().pos != 0 {</code></span>
+<span class="codeline" id="line-316"><code>			traceFullQueue(buf)</code></span>
+<span class="codeline" id="line-317"><code>		}</code></span>
+<span class="codeline" id="line-318"><code>	}</code></span>
+<span class="codeline" id="line-319"><code></code></span>
+<span class="codeline" id="line-320"><code>	for {</code></span>
+<span class="codeline" id="line-321"><code>		trace.ticksEnd = cputicks()</code></span>
+<span class="codeline" id="line-322"><code>		trace.timeEnd = nanotime()</code></span>
+<span class="codeline" id="line-323"><code>		// Windows time can tick only every 15ms, wait for at least one tick.</code></span>
+<span class="codeline" id="line-324"><code>		if trace.timeEnd != trace.timeStart {</code></span>
+<span class="codeline" id="line-325"><code>			break</code></span>
+<span class="codeline" id="line-326"><code>		}</code></span>
+<span class="codeline" id="line-327"><code>		osyield()</code></span>
+<span class="codeline" id="line-328"><code>	}</code></span>
+<span class="codeline" id="line-329"><code></code></span>
+<span class="codeline" id="line-330"><code>	trace.enabled = false</code></span>
+<span class="codeline" id="line-331"><code>	trace.shutdown = true</code></span>
+<span class="codeline" id="line-332"><code>	unlock(&amp;trace.bufLock)</code></span>
+<span class="codeline" id="line-333"><code></code></span>
+<span class="codeline" id="line-334"><code>	unlock(&amp;sched.sysmonlock)</code></span>
+<span class="codeline" id="line-335"><code></code></span>
+<span class="codeline" id="line-336"><code>	startTheWorldGC()</code></span>
+<span class="codeline" id="line-337"><code></code></span>
+<span class="codeline" id="line-338"><code>	// The world is started but we've set trace.shutdown, so new tracing can't start.</code></span>
+<span class="codeline" id="line-339"><code>	// Wait for the trace reader to flush pending buffers and stop.</code></span>
+<span class="codeline" id="line-340"><code>	semacquire(&amp;trace.shutdownSema)</code></span>
+<span class="codeline" id="line-341"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-342"><code>		raceacquire(unsafe.Pointer(&amp;trace.shutdownSema))</code></span>
+<span class="codeline" id="line-343"><code>	}</code></span>
+<span class="codeline" id="line-344"><code></code></span>
+<span class="codeline" id="line-345"><code>	// The lock protects us from races with StartTrace/StopTrace because they do stop-the-world.</code></span>
+<span class="codeline" id="line-346"><code>	lock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-347"><code>	for _, p := range allp[:cap(allp)] {</code></span>
+<span class="codeline" id="line-348"><code>		if p.tracebuf != 0 {</code></span>
+<span class="codeline" id="line-349"><code>			throw("trace: non-empty trace buffer in proc")</code></span>
+<span class="codeline" id="line-350"><code>		}</code></span>
+<span class="codeline" id="line-351"><code>	}</code></span>
+<span class="codeline" id="line-352"><code>	if trace.buf != 0 {</code></span>
+<span class="codeline" id="line-353"><code>		throw("trace: non-empty global trace buffer")</code></span>
+<span class="codeline" id="line-354"><code>	}</code></span>
+<span class="codeline" id="line-355"><code>	if trace.fullHead != 0 || trace.fullTail != 0 {</code></span>
+<span class="codeline" id="line-356"><code>		throw("trace: non-empty full trace buffer")</code></span>
+<span class="codeline" id="line-357"><code>	}</code></span>
+<span class="codeline" id="line-358"><code>	if trace.reading != 0 || trace.reader != 0 {</code></span>
+<span class="codeline" id="line-359"><code>		throw("trace: reading after shutdown")</code></span>
+<span class="codeline" id="line-360"><code>	}</code></span>
+<span class="codeline" id="line-361"><code>	for trace.empty != 0 {</code></span>
+<span class="codeline" id="line-362"><code>		buf := trace.empty</code></span>
+<span class="codeline" id="line-363"><code>		trace.empty = buf.ptr().link</code></span>
+<span class="codeline" id="line-364"><code>		sysFree(unsafe.Pointer(buf), unsafe.Sizeof(*buf.ptr()), &amp;memstats.other_sys)</code></span>
+<span class="codeline" id="line-365"><code>	}</code></span>
+<span class="codeline" id="line-366"><code>	trace.strings = nil</code></span>
+<span class="codeline" id="line-367"><code>	trace.shutdown = false</code></span>
+<span class="codeline" id="line-368"><code>	unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-369"><code>}</code></span>
+<span class="codeline" id="line-370"><code></code></span>
+<span class="codeline" id="line-371"><code>// ReadTrace returns the next chunk of binary tracing data, blocking until data</code></span>
+<span class="codeline" id="line-372"><code>// is available. If tracing is turned off and all the data accumulated while it</code></span>
+<span class="codeline" id="line-373"><code>// was on has been returned, ReadTrace returns nil. The caller must copy the</code></span>
+<span class="codeline" id="line-374"><code>// returned data before calling ReadTrace again.</code></span>
+<span class="codeline" id="line-375"><code>// ReadTrace must be called from one goroutine at a time.</code></span>
+<span class="codeline" id="line-376"><code>func ReadTrace() []byte {</code></span>
+<span class="codeline" id="line-377"><code>	// This function may need to lock trace.lock recursively</code></span>
+<span class="codeline" id="line-378"><code>	// (goparkunlock -&gt; traceGoPark -&gt; traceEvent -&gt; traceFlush).</code></span>
+<span class="codeline" id="line-379"><code>	// To allow this we use trace.lockOwner.</code></span>
+<span class="codeline" id="line-380"><code>	// Also this function must not allocate while holding trace.lock:</code></span>
+<span class="codeline" id="line-381"><code>	// allocation can call heap allocate, which will try to emit a trace</code></span>
+<span class="codeline" id="line-382"><code>	// event while holding heap lock.</code></span>
+<span class="codeline" id="line-383"><code>	lock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-384"><code>	trace.lockOwner = getg()</code></span>
+<span class="codeline" id="line-385"><code></code></span>
+<span class="codeline" id="line-386"><code>	if trace.reader != 0 {</code></span>
+<span class="codeline" id="line-387"><code>		// More than one goroutine reads trace. This is bad.</code></span>
+<span class="codeline" id="line-388"><code>		// But we rather do not crash the program because of tracing,</code></span>
+<span class="codeline" id="line-389"><code>		// because tracing can be enabled at runtime on prod servers.</code></span>
+<span class="codeline" id="line-390"><code>		trace.lockOwner = nil</code></span>
+<span class="codeline" id="line-391"><code>		unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-392"><code>		println("runtime: ReadTrace called from multiple goroutines simultaneously")</code></span>
+<span class="codeline" id="line-393"><code>		return nil</code></span>
+<span class="codeline" id="line-394"><code>	}</code></span>
+<span class="codeline" id="line-395"><code>	// Recycle the old buffer.</code></span>
+<span class="codeline" id="line-396"><code>	if buf := trace.reading; buf != 0 {</code></span>
+<span class="codeline" id="line-397"><code>		buf.ptr().link = trace.empty</code></span>
+<span class="codeline" id="line-398"><code>		trace.empty = buf</code></span>
+<span class="codeline" id="line-399"><code>		trace.reading = 0</code></span>
+<span class="codeline" id="line-400"><code>	}</code></span>
+<span class="codeline" id="line-401"><code>	// Write trace header.</code></span>
+<span class="codeline" id="line-402"><code>	if !trace.headerWritten {</code></span>
+<span class="codeline" id="line-403"><code>		trace.headerWritten = true</code></span>
+<span class="codeline" id="line-404"><code>		trace.lockOwner = nil</code></span>
+<span class="codeline" id="line-405"><code>		unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-406"><code>		return []byte("go 1.11 trace\x00\x00\x00")</code></span>
+<span class="codeline" id="line-407"><code>	}</code></span>
+<span class="codeline" id="line-408"><code>	// Wait for new data.</code></span>
+<span class="codeline" id="line-409"><code>	if trace.fullHead == 0 &amp;&amp; !trace.shutdown {</code></span>
+<span class="codeline" id="line-410"><code>		trace.reader.set(getg())</code></span>
+<span class="codeline" id="line-411"><code>		goparkunlock(&amp;trace.lock, waitReasonTraceReaderBlocked, traceEvGoBlock, 2)</code></span>
+<span class="codeline" id="line-412"><code>		lock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-413"><code>	}</code></span>
+<span class="codeline" id="line-414"><code>	// Write a buffer.</code></span>
+<span class="codeline" id="line-415"><code>	if trace.fullHead != 0 {</code></span>
+<span class="codeline" id="line-416"><code>		buf := traceFullDequeue()</code></span>
+<span class="codeline" id="line-417"><code>		trace.reading = buf</code></span>
+<span class="codeline" id="line-418"><code>		trace.lockOwner = nil</code></span>
+<span class="codeline" id="line-419"><code>		unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-420"><code>		return buf.ptr().arr[:buf.ptr().pos]</code></span>
+<span class="codeline" id="line-421"><code>	}</code></span>
+<span class="codeline" id="line-422"><code>	// Write footer with timer frequency.</code></span>
+<span class="codeline" id="line-423"><code>	if !trace.footerWritten {</code></span>
+<span class="codeline" id="line-424"><code>		trace.footerWritten = true</code></span>
+<span class="codeline" id="line-425"><code>		// Use float64 because (trace.ticksEnd - trace.ticksStart) * 1e9 can overflow int64.</code></span>
+<span class="codeline" id="line-426"><code>		freq := float64(trace.ticksEnd-trace.ticksStart) * 1e9 / float64(trace.timeEnd-trace.timeStart) / traceTickDiv</code></span>
+<span class="codeline" id="line-427"><code>		trace.lockOwner = nil</code></span>
+<span class="codeline" id="line-428"><code>		unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-429"><code>		var data []byte</code></span>
+<span class="codeline" id="line-430"><code>		data = append(data, traceEvFrequency|0&lt;&lt;traceArgCountShift)</code></span>
+<span class="codeline" id="line-431"><code>		data = traceAppend(data, uint64(freq))</code></span>
+<span class="codeline" id="line-432"><code>		// This will emit a bunch of full buffers, we will pick them up</code></span>
+<span class="codeline" id="line-433"><code>		// on the next iteration.</code></span>
+<span class="codeline" id="line-434"><code>		trace.stackTab.dump()</code></span>
+<span class="codeline" id="line-435"><code>		return data</code></span>
+<span class="codeline" id="line-436"><code>	}</code></span>
+<span class="codeline" id="line-437"><code>	// Done.</code></span>
+<span class="codeline" id="line-438"><code>	if trace.shutdown {</code></span>
+<span class="codeline" id="line-439"><code>		trace.lockOwner = nil</code></span>
+<span class="codeline" id="line-440"><code>		unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-441"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-442"><code>			// Model synchronization on trace.shutdownSema, which race</code></span>
+<span class="codeline" id="line-443"><code>			// detector does not see. This is required to avoid false</code></span>
+<span class="codeline" id="line-444"><code>			// race reports on writer passed to trace.Start.</code></span>
+<span class="codeline" id="line-445"><code>			racerelease(unsafe.Pointer(&amp;trace.shutdownSema))</code></span>
+<span class="codeline" id="line-446"><code>		}</code></span>
+<span class="codeline" id="line-447"><code>		// trace.enabled is already reset, so can call traceable functions.</code></span>
+<span class="codeline" id="line-448"><code>		semrelease(&amp;trace.shutdownSema)</code></span>
+<span class="codeline" id="line-449"><code>		return nil</code></span>
+<span class="codeline" id="line-450"><code>	}</code></span>
+<span class="codeline" id="line-451"><code>	// Also bad, but see the comment above.</code></span>
+<span class="codeline" id="line-452"><code>	trace.lockOwner = nil</code></span>
+<span class="codeline" id="line-453"><code>	unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-454"><code>	println("runtime: spurious wakeup of trace reader")</code></span>
+<span class="codeline" id="line-455"><code>	return nil</code></span>
+<span class="codeline" id="line-456"><code>}</code></span>
+<span class="codeline" id="line-457"><code></code></span>
+<span class="codeline" id="line-458"><code>// traceReader returns the trace reader that should be woken up, if any.</code></span>
+<span class="codeline" id="line-459"><code>func traceReader() *g {</code></span>
+<span class="codeline" id="line-460"><code>	if trace.reader == 0 || (trace.fullHead == 0 &amp;&amp; !trace.shutdown) {</code></span>
+<span class="codeline" id="line-461"><code>		return nil</code></span>
+<span class="codeline" id="line-462"><code>	}</code></span>
+<span class="codeline" id="line-463"><code>	lock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-464"><code>	if trace.reader == 0 || (trace.fullHead == 0 &amp;&amp; !trace.shutdown) {</code></span>
+<span class="codeline" id="line-465"><code>		unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-466"><code>		return nil</code></span>
+<span class="codeline" id="line-467"><code>	}</code></span>
+<span class="codeline" id="line-468"><code>	gp := trace.reader.ptr()</code></span>
+<span class="codeline" id="line-469"><code>	trace.reader.set(nil)</code></span>
+<span class="codeline" id="line-470"><code>	unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-471"><code>	return gp</code></span>
+<span class="codeline" id="line-472"><code>}</code></span>
+<span class="codeline" id="line-473"><code></code></span>
+<span class="codeline" id="line-474"><code>// traceProcFree frees trace buffer associated with pp.</code></span>
+<span class="codeline" id="line-475"><code>func traceProcFree(pp *p) {</code></span>
+<span class="codeline" id="line-476"><code>	buf := pp.tracebuf</code></span>
+<span class="codeline" id="line-477"><code>	pp.tracebuf = 0</code></span>
+<span class="codeline" id="line-478"><code>	if buf == 0 {</code></span>
+<span class="codeline" id="line-479"><code>		return</code></span>
+<span class="codeline" id="line-480"><code>	}</code></span>
+<span class="codeline" id="line-481"><code>	lock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-482"><code>	traceFullQueue(buf)</code></span>
+<span class="codeline" id="line-483"><code>	unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-484"><code>}</code></span>
+<span class="codeline" id="line-485"><code></code></span>
+<span class="codeline" id="line-486"><code>// traceFullQueue queues buf into queue of full buffers.</code></span>
+<span class="codeline" id="line-487"><code>func traceFullQueue(buf traceBufPtr) {</code></span>
+<span class="codeline" id="line-488"><code>	buf.ptr().link = 0</code></span>
+<span class="codeline" id="line-489"><code>	if trace.fullHead == 0 {</code></span>
+<span class="codeline" id="line-490"><code>		trace.fullHead = buf</code></span>
+<span class="codeline" id="line-491"><code>	} else {</code></span>
+<span class="codeline" id="line-492"><code>		trace.fullTail.ptr().link = buf</code></span>
+<span class="codeline" id="line-493"><code>	}</code></span>
+<span class="codeline" id="line-494"><code>	trace.fullTail = buf</code></span>
+<span class="codeline" id="line-495"><code>}</code></span>
+<span class="codeline" id="line-496"><code></code></span>
+<span class="codeline" id="line-497"><code>// traceFullDequeue dequeues from queue of full buffers.</code></span>
+<span class="codeline" id="line-498"><code>func traceFullDequeue() traceBufPtr {</code></span>
+<span class="codeline" id="line-499"><code>	buf := trace.fullHead</code></span>
+<span class="codeline" id="line-500"><code>	if buf == 0 {</code></span>
+<span class="codeline" id="line-501"><code>		return 0</code></span>
+<span class="codeline" id="line-502"><code>	}</code></span>
+<span class="codeline" id="line-503"><code>	trace.fullHead = buf.ptr().link</code></span>
+<span class="codeline" id="line-504"><code>	if trace.fullHead == 0 {</code></span>
+<span class="codeline" id="line-505"><code>		trace.fullTail = 0</code></span>
+<span class="codeline" id="line-506"><code>	}</code></span>
+<span class="codeline" id="line-507"><code>	buf.ptr().link = 0</code></span>
+<span class="codeline" id="line-508"><code>	return buf</code></span>
+<span class="codeline" id="line-509"><code>}</code></span>
+<span class="codeline" id="line-510"><code></code></span>
+<span class="codeline" id="line-511"><code>// traceEvent writes a single event to trace buffer, flushing the buffer if necessary.</code></span>
+<span class="codeline" id="line-512"><code>// ev is event type.</code></span>
+<span class="codeline" id="line-513"><code>// If skip &gt; 0, write current stack id as the last argument (skipping skip top frames).</code></span>
+<span class="codeline" id="line-514"><code>// If skip = 0, this event type should contain a stack, but we don't want</code></span>
+<span class="codeline" id="line-515"><code>// to collect and remember it for this particular call.</code></span>
+<span class="codeline" id="line-516"><code>func traceEvent(ev byte, skip int, args ...uint64) {</code></span>
+<span class="codeline" id="line-517"><code>	mp, pid, bufp := traceAcquireBuffer()</code></span>
+<span class="codeline" id="line-518"><code>	// Double-check trace.enabled now that we've done m.locks++ and acquired bufLock.</code></span>
+<span class="codeline" id="line-519"><code>	// This protects from races between traceEvent and StartTrace/StopTrace.</code></span>
+<span class="codeline" id="line-520"><code></code></span>
+<span class="codeline" id="line-521"><code>	// The caller checked that trace.enabled == true, but trace.enabled might have been</code></span>
+<span class="codeline" id="line-522"><code>	// turned off between the check and now. Check again. traceLockBuffer did mp.locks++,</code></span>
+<span class="codeline" id="line-523"><code>	// StopTrace does stopTheWorld, and stopTheWorld waits for mp.locks to go back to zero,</code></span>
+<span class="codeline" id="line-524"><code>	// so if we see trace.enabled == true now, we know it's true for the rest of the function.</code></span>
+<span class="codeline" id="line-525"><code>	// Exitsyscall can run even during stopTheWorld. The race with StartTrace/StopTrace</code></span>
+<span class="codeline" id="line-526"><code>	// during tracing in exitsyscall is resolved by locking trace.bufLock in traceLockBuffer.</code></span>
+<span class="codeline" id="line-527"><code>	//</code></span>
+<span class="codeline" id="line-528"><code>	// Note trace_userTaskCreate runs the same check.</code></span>
+<span class="codeline" id="line-529"><code>	if !trace.enabled &amp;&amp; !mp.startingtrace {</code></span>
+<span class="codeline" id="line-530"><code>		traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-531"><code>		return</code></span>
+<span class="codeline" id="line-532"><code>	}</code></span>
+<span class="codeline" id="line-533"><code></code></span>
+<span class="codeline" id="line-534"><code>	if skip &gt; 0 {</code></span>
+<span class="codeline" id="line-535"><code>		if getg() == mp.curg {</code></span>
+<span class="codeline" id="line-536"><code>			skip++ // +1 because stack is captured in traceEventLocked.</code></span>
+<span class="codeline" id="line-537"><code>		}</code></span>
+<span class="codeline" id="line-538"><code>	}</code></span>
+<span class="codeline" id="line-539"><code>	traceEventLocked(0, mp, pid, bufp, ev, skip, args...)</code></span>
+<span class="codeline" id="line-540"><code>	traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-541"><code>}</code></span>
+<span class="codeline" id="line-542"><code></code></span>
+<span class="codeline" id="line-543"><code>func traceEventLocked(extraBytes int, mp *m, pid int32, bufp *traceBufPtr, ev byte, skip int, args ...uint64) {</code></span>
+<span class="codeline" id="line-544"><code>	buf := bufp.ptr()</code></span>
+<span class="codeline" id="line-545"><code>	// TODO: test on non-zero extraBytes param.</code></span>
+<span class="codeline" id="line-546"><code>	maxSize := 2 + 5*traceBytesPerNumber + extraBytes // event type, length, sequence, timestamp, stack id and two add params</code></span>
+<span class="codeline" id="line-547"><code>	if buf == nil || len(buf.arr)-buf.pos &lt; maxSize {</code></span>
+<span class="codeline" id="line-548"><code>		buf = traceFlush(traceBufPtrOf(buf), pid).ptr()</code></span>
+<span class="codeline" id="line-549"><code>		bufp.set(buf)</code></span>
+<span class="codeline" id="line-550"><code>	}</code></span>
+<span class="codeline" id="line-551"><code></code></span>
+<span class="codeline" id="line-552"><code>	ticks := uint64(cputicks()) / traceTickDiv</code></span>
+<span class="codeline" id="line-553"><code>	tickDiff := ticks - buf.lastTicks</code></span>
+<span class="codeline" id="line-554"><code>	buf.lastTicks = ticks</code></span>
+<span class="codeline" id="line-555"><code>	narg := byte(len(args))</code></span>
+<span class="codeline" id="line-556"><code>	if skip &gt;= 0 {</code></span>
+<span class="codeline" id="line-557"><code>		narg++</code></span>
+<span class="codeline" id="line-558"><code>	}</code></span>
+<span class="codeline" id="line-559"><code>	// We have only 2 bits for number of arguments.</code></span>
+<span class="codeline" id="line-560"><code>	// If number is &gt;= 3, then the event type is followed by event length in bytes.</code></span>
+<span class="codeline" id="line-561"><code>	if narg &gt; 3 {</code></span>
+<span class="codeline" id="line-562"><code>		narg = 3</code></span>
+<span class="codeline" id="line-563"><code>	}</code></span>
+<span class="codeline" id="line-564"><code>	startPos := buf.pos</code></span>
+<span class="codeline" id="line-565"><code>	buf.byte(ev | narg&lt;&lt;traceArgCountShift)</code></span>
+<span class="codeline" id="line-566"><code>	var lenp *byte</code></span>
+<span class="codeline" id="line-567"><code>	if narg == 3 {</code></span>
+<span class="codeline" id="line-568"><code>		// Reserve the byte for length assuming that length &lt; 128.</code></span>
+<span class="codeline" id="line-569"><code>		buf.varint(0)</code></span>
+<span class="codeline" id="line-570"><code>		lenp = &amp;buf.arr[buf.pos-1]</code></span>
+<span class="codeline" id="line-571"><code>	}</code></span>
+<span class="codeline" id="line-572"><code>	buf.varint(tickDiff)</code></span>
+<span class="codeline" id="line-573"><code>	for _, a := range args {</code></span>
+<span class="codeline" id="line-574"><code>		buf.varint(a)</code></span>
+<span class="codeline" id="line-575"><code>	}</code></span>
+<span class="codeline" id="line-576"><code>	if skip == 0 {</code></span>
+<span class="codeline" id="line-577"><code>		buf.varint(0)</code></span>
+<span class="codeline" id="line-578"><code>	} else if skip &gt; 0 {</code></span>
+<span class="codeline" id="line-579"><code>		buf.varint(traceStackID(mp, buf.stk[:], skip))</code></span>
+<span class="codeline" id="line-580"><code>	}</code></span>
+<span class="codeline" id="line-581"><code>	evSize := buf.pos - startPos</code></span>
+<span class="codeline" id="line-582"><code>	if evSize &gt; maxSize {</code></span>
+<span class="codeline" id="line-583"><code>		throw("invalid length of trace event")</code></span>
+<span class="codeline" id="line-584"><code>	}</code></span>
+<span class="codeline" id="line-585"><code>	if lenp != nil {</code></span>
+<span class="codeline" id="line-586"><code>		// Fill in actual length.</code></span>
+<span class="codeline" id="line-587"><code>		*lenp = byte(evSize - 2)</code></span>
+<span class="codeline" id="line-588"><code>	}</code></span>
+<span class="codeline" id="line-589"><code>}</code></span>
+<span class="codeline" id="line-590"><code></code></span>
+<span class="codeline" id="line-591"><code>func traceStackID(mp *m, buf []uintptr, skip int) uint64 {</code></span>
+<span class="codeline" id="line-592"><code>	_g_ := getg()</code></span>
+<span class="codeline" id="line-593"><code>	gp := mp.curg</code></span>
+<span class="codeline" id="line-594"><code>	var nstk int</code></span>
+<span class="codeline" id="line-595"><code>	if gp == _g_ {</code></span>
+<span class="codeline" id="line-596"><code>		nstk = callers(skip+1, buf)</code></span>
+<span class="codeline" id="line-597"><code>	} else if gp != nil {</code></span>
+<span class="codeline" id="line-598"><code>		gp = mp.curg</code></span>
+<span class="codeline" id="line-599"><code>		nstk = gcallers(gp, skip, buf)</code></span>
+<span class="codeline" id="line-600"><code>	}</code></span>
+<span class="codeline" id="line-601"><code>	if nstk &gt; 0 {</code></span>
+<span class="codeline" id="line-602"><code>		nstk-- // skip runtime.goexit</code></span>
+<span class="codeline" id="line-603"><code>	}</code></span>
+<span class="codeline" id="line-604"><code>	if nstk &gt; 0 &amp;&amp; gp.goid == 1 {</code></span>
+<span class="codeline" id="line-605"><code>		nstk-- // skip runtime.main</code></span>
+<span class="codeline" id="line-606"><code>	}</code></span>
+<span class="codeline" id="line-607"><code>	id := trace.stackTab.put(buf[:nstk])</code></span>
+<span class="codeline" id="line-608"><code>	return uint64(id)</code></span>
+<span class="codeline" id="line-609"><code>}</code></span>
+<span class="codeline" id="line-610"><code></code></span>
+<span class="codeline" id="line-611"><code>// traceAcquireBuffer returns trace buffer to use and, if necessary, locks it.</code></span>
+<span class="codeline" id="line-612"><code>func traceAcquireBuffer() (mp *m, pid int32, bufp *traceBufPtr) {</code></span>
+<span class="codeline" id="line-613"><code>	mp = acquirem()</code></span>
+<span class="codeline" id="line-614"><code>	if p := mp.p.ptr(); p != nil {</code></span>
+<span class="codeline" id="line-615"><code>		return mp, p.id, &amp;p.tracebuf</code></span>
+<span class="codeline" id="line-616"><code>	}</code></span>
+<span class="codeline" id="line-617"><code>	lock(&amp;trace.bufLock)</code></span>
+<span class="codeline" id="line-618"><code>	return mp, traceGlobProc, &amp;trace.buf</code></span>
+<span class="codeline" id="line-619"><code>}</code></span>
+<span class="codeline" id="line-620"><code></code></span>
+<span class="codeline" id="line-621"><code>// traceReleaseBuffer releases a buffer previously acquired with traceAcquireBuffer.</code></span>
+<span class="codeline" id="line-622"><code>func traceReleaseBuffer(pid int32) {</code></span>
+<span class="codeline" id="line-623"><code>	if pid == traceGlobProc {</code></span>
+<span class="codeline" id="line-624"><code>		unlock(&amp;trace.bufLock)</code></span>
+<span class="codeline" id="line-625"><code>	}</code></span>
+<span class="codeline" id="line-626"><code>	releasem(getg().m)</code></span>
+<span class="codeline" id="line-627"><code>}</code></span>
+<span class="codeline" id="line-628"><code></code></span>
+<span class="codeline" id="line-629"><code>// traceFlush puts buf onto stack of full buffers and returns an empty buffer.</code></span>
+<span class="codeline" id="line-630"><code>func traceFlush(buf traceBufPtr, pid int32) traceBufPtr {</code></span>
+<span class="codeline" id="line-631"><code>	owner := trace.lockOwner</code></span>
+<span class="codeline" id="line-632"><code>	dolock := owner == nil || owner != getg().m.curg</code></span>
+<span class="codeline" id="line-633"><code>	if dolock {</code></span>
+<span class="codeline" id="line-634"><code>		lock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-635"><code>	}</code></span>
+<span class="codeline" id="line-636"><code>	if buf != 0 {</code></span>
+<span class="codeline" id="line-637"><code>		traceFullQueue(buf)</code></span>
+<span class="codeline" id="line-638"><code>	}</code></span>
+<span class="codeline" id="line-639"><code>	if trace.empty != 0 {</code></span>
+<span class="codeline" id="line-640"><code>		buf = trace.empty</code></span>
+<span class="codeline" id="line-641"><code>		trace.empty = buf.ptr().link</code></span>
+<span class="codeline" id="line-642"><code>	} else {</code></span>
+<span class="codeline" id="line-643"><code>		buf = traceBufPtr(sysAlloc(unsafe.Sizeof(traceBuf{}), &amp;memstats.other_sys))</code></span>
+<span class="codeline" id="line-644"><code>		if buf == 0 {</code></span>
+<span class="codeline" id="line-645"><code>			throw("trace: out of memory")</code></span>
+<span class="codeline" id="line-646"><code>		}</code></span>
+<span class="codeline" id="line-647"><code>	}</code></span>
+<span class="codeline" id="line-648"><code>	bufp := buf.ptr()</code></span>
+<span class="codeline" id="line-649"><code>	bufp.link.set(nil)</code></span>
+<span class="codeline" id="line-650"><code>	bufp.pos = 0</code></span>
+<span class="codeline" id="line-651"><code></code></span>
+<span class="codeline" id="line-652"><code>	// initialize the buffer for a new batch</code></span>
+<span class="codeline" id="line-653"><code>	ticks := uint64(cputicks()) / traceTickDiv</code></span>
+<span class="codeline" id="line-654"><code>	bufp.lastTicks = ticks</code></span>
+<span class="codeline" id="line-655"><code>	bufp.byte(traceEvBatch | 1&lt;&lt;traceArgCountShift)</code></span>
+<span class="codeline" id="line-656"><code>	bufp.varint(uint64(pid))</code></span>
+<span class="codeline" id="line-657"><code>	bufp.varint(ticks)</code></span>
+<span class="codeline" id="line-658"><code></code></span>
+<span class="codeline" id="line-659"><code>	if dolock {</code></span>
+<span class="codeline" id="line-660"><code>		unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-661"><code>	}</code></span>
+<span class="codeline" id="line-662"><code>	return buf</code></span>
+<span class="codeline" id="line-663"><code>}</code></span>
+<span class="codeline" id="line-664"><code></code></span>
+<span class="codeline" id="line-665"><code>// traceString adds a string to the trace.strings and returns the id.</code></span>
+<span class="codeline" id="line-666"><code>func traceString(bufp *traceBufPtr, pid int32, s string) (uint64, *traceBufPtr) {</code></span>
+<span class="codeline" id="line-667"><code>	if s == "" {</code></span>
+<span class="codeline" id="line-668"><code>		return 0, bufp</code></span>
+<span class="codeline" id="line-669"><code>	}</code></span>
+<span class="codeline" id="line-670"><code></code></span>
+<span class="codeline" id="line-671"><code>	lock(&amp;trace.stringsLock)</code></span>
+<span class="codeline" id="line-672"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-673"><code>		// raceacquire is necessary because the map access</code></span>
+<span class="codeline" id="line-674"><code>		// below is race annotated.</code></span>
+<span class="codeline" id="line-675"><code>		raceacquire(unsafe.Pointer(&amp;trace.stringsLock))</code></span>
+<span class="codeline" id="line-676"><code>	}</code></span>
+<span class="codeline" id="line-677"><code></code></span>
+<span class="codeline" id="line-678"><code>	if id, ok := trace.strings[s]; ok {</code></span>
+<span class="codeline" id="line-679"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-680"><code>			racerelease(unsafe.Pointer(&amp;trace.stringsLock))</code></span>
+<span class="codeline" id="line-681"><code>		}</code></span>
+<span class="codeline" id="line-682"><code>		unlock(&amp;trace.stringsLock)</code></span>
+<span class="codeline" id="line-683"><code></code></span>
+<span class="codeline" id="line-684"><code>		return id, bufp</code></span>
+<span class="codeline" id="line-685"><code>	}</code></span>
+<span class="codeline" id="line-686"><code></code></span>
+<span class="codeline" id="line-687"><code>	trace.stringSeq++</code></span>
+<span class="codeline" id="line-688"><code>	id := trace.stringSeq</code></span>
+<span class="codeline" id="line-689"><code>	trace.strings[s] = id</code></span>
+<span class="codeline" id="line-690"><code></code></span>
+<span class="codeline" id="line-691"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-692"><code>		racerelease(unsafe.Pointer(&amp;trace.stringsLock))</code></span>
+<span class="codeline" id="line-693"><code>	}</code></span>
+<span class="codeline" id="line-694"><code>	unlock(&amp;trace.stringsLock)</code></span>
+<span class="codeline" id="line-695"><code></code></span>
+<span class="codeline" id="line-696"><code>	// memory allocation in above may trigger tracing and</code></span>
+<span class="codeline" id="line-697"><code>	// cause *bufp changes. Following code now works with *bufp,</code></span>
+<span class="codeline" id="line-698"><code>	// so there must be no memory allocation or any activities</code></span>
+<span class="codeline" id="line-699"><code>	// that causes tracing after this point.</code></span>
+<span class="codeline" id="line-700"><code></code></span>
+<span class="codeline" id="line-701"><code>	buf := bufp.ptr()</code></span>
+<span class="codeline" id="line-702"><code>	size := 1 + 2*traceBytesPerNumber + len(s)</code></span>
+<span class="codeline" id="line-703"><code>	if buf == nil || len(buf.arr)-buf.pos &lt; size {</code></span>
+<span class="codeline" id="line-704"><code>		buf = traceFlush(traceBufPtrOf(buf), pid).ptr()</code></span>
+<span class="codeline" id="line-705"><code>		bufp.set(buf)</code></span>
+<span class="codeline" id="line-706"><code>	}</code></span>
+<span class="codeline" id="line-707"><code>	buf.byte(traceEvString)</code></span>
+<span class="codeline" id="line-708"><code>	buf.varint(id)</code></span>
+<span class="codeline" id="line-709"><code></code></span>
+<span class="codeline" id="line-710"><code>	// double-check the string and the length can fit.</code></span>
+<span class="codeline" id="line-711"><code>	// Otherwise, truncate the string.</code></span>
+<span class="codeline" id="line-712"><code>	slen := len(s)</code></span>
+<span class="codeline" id="line-713"><code>	if room := len(buf.arr) - buf.pos; room &lt; slen+traceBytesPerNumber {</code></span>
+<span class="codeline" id="line-714"><code>		slen = room</code></span>
+<span class="codeline" id="line-715"><code>	}</code></span>
+<span class="codeline" id="line-716"><code></code></span>
+<span class="codeline" id="line-717"><code>	buf.varint(uint64(slen))</code></span>
+<span class="codeline" id="line-718"><code>	buf.pos += copy(buf.arr[buf.pos:], s[:slen])</code></span>
+<span class="codeline" id="line-719"><code></code></span>
+<span class="codeline" id="line-720"><code>	bufp.set(buf)</code></span>
+<span class="codeline" id="line-721"><code>	return id, bufp</code></span>
+<span class="codeline" id="line-722"><code>}</code></span>
+<span class="codeline" id="line-723"><code></code></span>
+<span class="codeline" id="line-724"><code>// traceAppend appends v to buf in little-endian-base-128 encoding.</code></span>
+<span class="codeline" id="line-725"><code>func traceAppend(buf []byte, v uint64) []byte {</code></span>
+<span class="codeline" id="line-726"><code>	for ; v &gt;= 0x80; v &gt;&gt;= 7 {</code></span>
+<span class="codeline" id="line-727"><code>		buf = append(buf, 0x80|byte(v))</code></span>
+<span class="codeline" id="line-728"><code>	}</code></span>
+<span class="codeline" id="line-729"><code>	buf = append(buf, byte(v))</code></span>
+<span class="codeline" id="line-730"><code>	return buf</code></span>
+<span class="codeline" id="line-731"><code>}</code></span>
+<span class="codeline" id="line-732"><code></code></span>
+<span class="codeline" id="line-733"><code>// varint appends v to buf in little-endian-base-128 encoding.</code></span>
+<span class="codeline" id="line-734"><code>func (buf *traceBuf) varint(v uint64) {</code></span>
+<span class="codeline" id="line-735"><code>	pos := buf.pos</code></span>
+<span class="codeline" id="line-736"><code>	for ; v &gt;= 0x80; v &gt;&gt;= 7 {</code></span>
+<span class="codeline" id="line-737"><code>		buf.arr[pos] = 0x80 | byte(v)</code></span>
+<span class="codeline" id="line-738"><code>		pos++</code></span>
+<span class="codeline" id="line-739"><code>	}</code></span>
+<span class="codeline" id="line-740"><code>	buf.arr[pos] = byte(v)</code></span>
+<span class="codeline" id="line-741"><code>	pos++</code></span>
+<span class="codeline" id="line-742"><code>	buf.pos = pos</code></span>
+<span class="codeline" id="line-743"><code>}</code></span>
+<span class="codeline" id="line-744"><code></code></span>
+<span class="codeline" id="line-745"><code>// byte appends v to buf.</code></span>
+<span class="codeline" id="line-746"><code>func (buf *traceBuf) byte(v byte) {</code></span>
+<span class="codeline" id="line-747"><code>	buf.arr[buf.pos] = v</code></span>
+<span class="codeline" id="line-748"><code>	buf.pos++</code></span>
+<span class="codeline" id="line-749"><code>}</code></span>
+<span class="codeline" id="line-750"><code></code></span>
+<span class="codeline" id="line-751"><code>// traceStackTable maps stack traces (arrays of PC's) to unique uint32 ids.</code></span>
+<span class="codeline" id="line-752"><code>// It is lock-free for reading.</code></span>
+<span class="codeline" id="line-753"><code>type traceStackTable struct {</code></span>
+<span class="codeline" id="line-754"><code>	lock mutex</code></span>
+<span class="codeline" id="line-755"><code>	seq  uint32</code></span>
+<span class="codeline" id="line-756"><code>	mem  traceAlloc</code></span>
+<span class="codeline" id="line-757"><code>	tab  [1 &lt;&lt; 13]traceStackPtr</code></span>
+<span class="codeline" id="line-758"><code>}</code></span>
+<span class="codeline" id="line-759"><code></code></span>
+<span class="codeline" id="line-760"><code>// traceStack is a single stack in traceStackTable.</code></span>
+<span class="codeline" id="line-761"><code>type traceStack struct {</code></span>
+<span class="codeline" id="line-762"><code>	link traceStackPtr</code></span>
+<span class="codeline" id="line-763"><code>	hash uintptr</code></span>
+<span class="codeline" id="line-764"><code>	id   uint32</code></span>
+<span class="codeline" id="line-765"><code>	n    int</code></span>
+<span class="codeline" id="line-766"><code>	stk  [0]uintptr // real type [n]uintptr</code></span>
+<span class="codeline" id="line-767"><code>}</code></span>
+<span class="codeline" id="line-768"><code></code></span>
+<span class="codeline" id="line-769"><code>type traceStackPtr uintptr</code></span>
+<span class="codeline" id="line-770"><code></code></span>
+<span class="codeline" id="line-771"><code>func (tp traceStackPtr) ptr() *traceStack { return (*traceStack)(unsafe.Pointer(tp)) }</code></span>
+<span class="codeline" id="line-772"><code></code></span>
+<span class="codeline" id="line-773"><code>// stack returns slice of PCs.</code></span>
+<span class="codeline" id="line-774"><code>func (ts *traceStack) stack() []uintptr {</code></span>
+<span class="codeline" id="line-775"><code>	return (*[traceStackSize]uintptr)(unsafe.Pointer(&amp;ts.stk))[:ts.n]</code></span>
+<span class="codeline" id="line-776"><code>}</code></span>
+<span class="codeline" id="line-777"><code></code></span>
+<span class="codeline" id="line-778"><code>// put returns a unique id for the stack trace pcs and caches it in the table,</code></span>
+<span class="codeline" id="line-779"><code>// if it sees the trace for the first time.</code></span>
+<span class="codeline" id="line-780"><code>func (tab *traceStackTable) put(pcs []uintptr) uint32 {</code></span>
+<span class="codeline" id="line-781"><code>	if len(pcs) == 0 {</code></span>
+<span class="codeline" id="line-782"><code>		return 0</code></span>
+<span class="codeline" id="line-783"><code>	}</code></span>
+<span class="codeline" id="line-784"><code>	hash := memhash(unsafe.Pointer(&amp;pcs[0]), 0, uintptr(len(pcs))*unsafe.Sizeof(pcs[0]))</code></span>
+<span class="codeline" id="line-785"><code>	// First, search the hashtable w/o the mutex.</code></span>
+<span class="codeline" id="line-786"><code>	if id := tab.find(pcs, hash); id != 0 {</code></span>
+<span class="codeline" id="line-787"><code>		return id</code></span>
+<span class="codeline" id="line-788"><code>	}</code></span>
+<span class="codeline" id="line-789"><code>	// Now, double check under the mutex.</code></span>
+<span class="codeline" id="line-790"><code>	lock(&amp;tab.lock)</code></span>
+<span class="codeline" id="line-791"><code>	if id := tab.find(pcs, hash); id != 0 {</code></span>
+<span class="codeline" id="line-792"><code>		unlock(&amp;tab.lock)</code></span>
+<span class="codeline" id="line-793"><code>		return id</code></span>
+<span class="codeline" id="line-794"><code>	}</code></span>
+<span class="codeline" id="line-795"><code>	// Create new record.</code></span>
+<span class="codeline" id="line-796"><code>	tab.seq++</code></span>
+<span class="codeline" id="line-797"><code>	stk := tab.newStack(len(pcs))</code></span>
+<span class="codeline" id="line-798"><code>	stk.hash = hash</code></span>
+<span class="codeline" id="line-799"><code>	stk.id = tab.seq</code></span>
+<span class="codeline" id="line-800"><code>	stk.n = len(pcs)</code></span>
+<span class="codeline" id="line-801"><code>	stkpc := stk.stack()</code></span>
+<span class="codeline" id="line-802"><code>	for i, pc := range pcs {</code></span>
+<span class="codeline" id="line-803"><code>		stkpc[i] = pc</code></span>
+<span class="codeline" id="line-804"><code>	}</code></span>
+<span class="codeline" id="line-805"><code>	part := int(hash % uintptr(len(tab.tab)))</code></span>
+<span class="codeline" id="line-806"><code>	stk.link = tab.tab[part]</code></span>
+<span class="codeline" id="line-807"><code>	atomicstorep(unsafe.Pointer(&amp;tab.tab[part]), unsafe.Pointer(stk))</code></span>
+<span class="codeline" id="line-808"><code>	unlock(&amp;tab.lock)</code></span>
+<span class="codeline" id="line-809"><code>	return stk.id</code></span>
+<span class="codeline" id="line-810"><code>}</code></span>
+<span class="codeline" id="line-811"><code></code></span>
+<span class="codeline" id="line-812"><code>// find checks if the stack trace pcs is already present in the table.</code></span>
+<span class="codeline" id="line-813"><code>func (tab *traceStackTable) find(pcs []uintptr, hash uintptr) uint32 {</code></span>
+<span class="codeline" id="line-814"><code>	part := int(hash % uintptr(len(tab.tab)))</code></span>
+<span class="codeline" id="line-815"><code>Search:</code></span>
+<span class="codeline" id="line-816"><code>	for stk := tab.tab[part].ptr(); stk != nil; stk = stk.link.ptr() {</code></span>
+<span class="codeline" id="line-817"><code>		if stk.hash == hash &amp;&amp; stk.n == len(pcs) {</code></span>
+<span class="codeline" id="line-818"><code>			for i, stkpc := range stk.stack() {</code></span>
+<span class="codeline" id="line-819"><code>				if stkpc != pcs[i] {</code></span>
+<span class="codeline" id="line-820"><code>					continue Search</code></span>
+<span class="codeline" id="line-821"><code>				}</code></span>
+<span class="codeline" id="line-822"><code>			}</code></span>
+<span class="codeline" id="line-823"><code>			return stk.id</code></span>
+<span class="codeline" id="line-824"><code>		}</code></span>
+<span class="codeline" id="line-825"><code>	}</code></span>
+<span class="codeline" id="line-826"><code>	return 0</code></span>
+<span class="codeline" id="line-827"><code>}</code></span>
+<span class="codeline" id="line-828"><code></code></span>
+<span class="codeline" id="line-829"><code>// newStack allocates a new stack of size n.</code></span>
+<span class="codeline" id="line-830"><code>func (tab *traceStackTable) newStack(n int) *traceStack {</code></span>
+<span class="codeline" id="line-831"><code>	return (*traceStack)(tab.mem.alloc(unsafe.Sizeof(traceStack{}) + uintptr(n)*sys.PtrSize))</code></span>
+<span class="codeline" id="line-832"><code>}</code></span>
+<span class="codeline" id="line-833"><code></code></span>
+<span class="codeline" id="line-834"><code>// allFrames returns all of the Frames corresponding to pcs.</code></span>
+<span class="codeline" id="line-835"><code>func allFrames(pcs []uintptr) []Frame {</code></span>
+<span class="codeline" id="line-836"><code>	frames := make([]Frame, 0, len(pcs))</code></span>
+<span class="codeline" id="line-837"><code>	ci := CallersFrames(pcs)</code></span>
+<span class="codeline" id="line-838"><code>	for {</code></span>
+<span class="codeline" id="line-839"><code>		f, more := ci.Next()</code></span>
+<span class="codeline" id="line-840"><code>		frames = append(frames, f)</code></span>
+<span class="codeline" id="line-841"><code>		if !more {</code></span>
+<span class="codeline" id="line-842"><code>			return frames</code></span>
+<span class="codeline" id="line-843"><code>		}</code></span>
+<span class="codeline" id="line-844"><code>	}</code></span>
+<span class="codeline" id="line-845"><code>}</code></span>
+<span class="codeline" id="line-846"><code></code></span>
+<span class="codeline" id="line-847"><code>// dump writes all previously cached stacks to trace buffers,</code></span>
+<span class="codeline" id="line-848"><code>// releases all memory and resets state.</code></span>
+<span class="codeline" id="line-849"><code>func (tab *traceStackTable) dump() {</code></span>
+<span class="codeline" id="line-850"><code>	var tmp [(2 + 4*traceStackSize) * traceBytesPerNumber]byte</code></span>
+<span class="codeline" id="line-851"><code>	bufp := traceFlush(0, 0)</code></span>
+<span class="codeline" id="line-852"><code>	for _, stk := range tab.tab {</code></span>
+<span class="codeline" id="line-853"><code>		stk := stk.ptr()</code></span>
+<span class="codeline" id="line-854"><code>		for ; stk != nil; stk = stk.link.ptr() {</code></span>
+<span class="codeline" id="line-855"><code>			tmpbuf := tmp[:0]</code></span>
+<span class="codeline" id="line-856"><code>			tmpbuf = traceAppend(tmpbuf, uint64(stk.id))</code></span>
+<span class="codeline" id="line-857"><code>			frames := allFrames(stk.stack())</code></span>
+<span class="codeline" id="line-858"><code>			tmpbuf = traceAppend(tmpbuf, uint64(len(frames)))</code></span>
+<span class="codeline" id="line-859"><code>			for _, f := range frames {</code></span>
+<span class="codeline" id="line-860"><code>				var frame traceFrame</code></span>
+<span class="codeline" id="line-861"><code>				frame, bufp = traceFrameForPC(bufp, 0, f)</code></span>
+<span class="codeline" id="line-862"><code>				tmpbuf = traceAppend(tmpbuf, uint64(f.PC))</code></span>
+<span class="codeline" id="line-863"><code>				tmpbuf = traceAppend(tmpbuf, uint64(frame.funcID))</code></span>
+<span class="codeline" id="line-864"><code>				tmpbuf = traceAppend(tmpbuf, uint64(frame.fileID))</code></span>
+<span class="codeline" id="line-865"><code>				tmpbuf = traceAppend(tmpbuf, uint64(frame.line))</code></span>
+<span class="codeline" id="line-866"><code>			}</code></span>
+<span class="codeline" id="line-867"><code>			// Now copy to the buffer.</code></span>
+<span class="codeline" id="line-868"><code>			size := 1 + traceBytesPerNumber + len(tmpbuf)</code></span>
+<span class="codeline" id="line-869"><code>			if buf := bufp.ptr(); len(buf.arr)-buf.pos &lt; size {</code></span>
+<span class="codeline" id="line-870"><code>				bufp = traceFlush(bufp, 0)</code></span>
+<span class="codeline" id="line-871"><code>			}</code></span>
+<span class="codeline" id="line-872"><code>			buf := bufp.ptr()</code></span>
+<span class="codeline" id="line-873"><code>			buf.byte(traceEvStack | 3&lt;&lt;traceArgCountShift)</code></span>
+<span class="codeline" id="line-874"><code>			buf.varint(uint64(len(tmpbuf)))</code></span>
+<span class="codeline" id="line-875"><code>			buf.pos += copy(buf.arr[buf.pos:], tmpbuf)</code></span>
+<span class="codeline" id="line-876"><code>		}</code></span>
+<span class="codeline" id="line-877"><code>	}</code></span>
+<span class="codeline" id="line-878"><code></code></span>
+<span class="codeline" id="line-879"><code>	lock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-880"><code>	traceFullQueue(bufp)</code></span>
+<span class="codeline" id="line-881"><code>	unlock(&amp;trace.lock)</code></span>
+<span class="codeline" id="line-882"><code></code></span>
+<span class="codeline" id="line-883"><code>	tab.mem.drop()</code></span>
+<span class="codeline" id="line-884"><code>	*tab = traceStackTable{}</code></span>
+<span class="codeline" id="line-885"><code>	lockInit(&amp;((*tab).lock), lockRankTraceStackTab)</code></span>
+<span class="codeline" id="line-886"><code>}</code></span>
+<span class="codeline" id="line-887"><code></code></span>
+<span class="codeline" id="line-888"><code>type traceFrame struct {</code></span>
+<span class="codeline" id="line-889"><code>	funcID uint64</code></span>
+<span class="codeline" id="line-890"><code>	fileID uint64</code></span>
+<span class="codeline" id="line-891"><code>	line   uint64</code></span>
+<span class="codeline" id="line-892"><code>}</code></span>
+<span class="codeline" id="line-893"><code></code></span>
+<span class="codeline" id="line-894"><code>// traceFrameForPC records the frame information.</code></span>
+<span class="codeline" id="line-895"><code>// It may allocate memory.</code></span>
+<span class="codeline" id="line-896"><code>func traceFrameForPC(buf traceBufPtr, pid int32, f Frame) (traceFrame, traceBufPtr) {</code></span>
+<span class="codeline" id="line-897"><code>	bufp := &amp;buf</code></span>
+<span class="codeline" id="line-898"><code>	var frame traceFrame</code></span>
+<span class="codeline" id="line-899"><code></code></span>
+<span class="codeline" id="line-900"><code>	fn := f.Function</code></span>
+<span class="codeline" id="line-901"><code>	const maxLen = 1 &lt;&lt; 10</code></span>
+<span class="codeline" id="line-902"><code>	if len(fn) &gt; maxLen {</code></span>
+<span class="codeline" id="line-903"><code>		fn = fn[len(fn)-maxLen:]</code></span>
+<span class="codeline" id="line-904"><code>	}</code></span>
+<span class="codeline" id="line-905"><code>	frame.funcID, bufp = traceString(bufp, pid, fn)</code></span>
+<span class="codeline" id="line-906"><code>	frame.line = uint64(f.Line)</code></span>
+<span class="codeline" id="line-907"><code>	file := f.File</code></span>
+<span class="codeline" id="line-908"><code>	if len(file) &gt; maxLen {</code></span>
+<span class="codeline" id="line-909"><code>		file = file[len(file)-maxLen:]</code></span>
+<span class="codeline" id="line-910"><code>	}</code></span>
+<span class="codeline" id="line-911"><code>	frame.fileID, bufp = traceString(bufp, pid, file)</code></span>
+<span class="codeline" id="line-912"><code>	return frame, (*bufp)</code></span>
+<span class="codeline" id="line-913"><code>}</code></span>
+<span class="codeline" id="line-914"><code></code></span>
+<span class="codeline" id="line-915"><code>// traceAlloc is a non-thread-safe region allocator.</code></span>
+<span class="codeline" id="line-916"><code>// It holds a linked list of traceAllocBlock.</code></span>
+<span class="codeline" id="line-917"><code>type traceAlloc struct {</code></span>
+<span class="codeline" id="line-918"><code>	head traceAllocBlockPtr</code></span>
+<span class="codeline" id="line-919"><code>	off  uintptr</code></span>
+<span class="codeline" id="line-920"><code>}</code></span>
+<span class="codeline" id="line-921"><code></code></span>
+<span class="codeline" id="line-922"><code>// traceAllocBlock is a block in traceAlloc.</code></span>
+<span class="codeline" id="line-923"><code>//</code></span>
+<span class="codeline" id="line-924"><code>// traceAllocBlock is allocated from non-GC'd memory, so it must not</code></span>
+<span class="codeline" id="line-925"><code>// contain heap pointers. Writes to pointers to traceAllocBlocks do</code></span>
+<span class="codeline" id="line-926"><code>// not need write barriers.</code></span>
+<span class="codeline" id="line-927"><code>//</code></span>
+<span class="codeline" id="line-928"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-929"><code>type traceAllocBlock struct {</code></span>
+<span class="codeline" id="line-930"><code>	next traceAllocBlockPtr</code></span>
+<span class="codeline" id="line-931"><code>	data [64&lt;&lt;10 - sys.PtrSize]byte</code></span>
+<span class="codeline" id="line-932"><code>}</code></span>
+<span class="codeline" id="line-933"><code></code></span>
+<span class="codeline" id="line-934"><code>// TODO: Since traceAllocBlock is now go:notinheap, this isn't necessary.</code></span>
+<span class="codeline" id="line-935"><code>type traceAllocBlockPtr uintptr</code></span>
+<span class="codeline" id="line-936"><code></code></span>
+<span class="codeline" id="line-937"><code>func (p traceAllocBlockPtr) ptr() *traceAllocBlock   { return (*traceAllocBlock)(unsafe.Pointer(p)) }</code></span>
+<span class="codeline" id="line-938"><code>func (p *traceAllocBlockPtr) set(x *traceAllocBlock) { *p = traceAllocBlockPtr(unsafe.Pointer(x)) }</code></span>
+<span class="codeline" id="line-939"><code></code></span>
+<span class="codeline" id="line-940"><code>// alloc allocates n-byte block.</code></span>
+<span class="codeline" id="line-941"><code>func (a *traceAlloc) alloc(n uintptr) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-942"><code>	n = alignUp(n, sys.PtrSize)</code></span>
+<span class="codeline" id="line-943"><code>	if a.head == 0 || a.off+n &gt; uintptr(len(a.head.ptr().data)) {</code></span>
+<span class="codeline" id="line-944"><code>		if n &gt; uintptr(len(a.head.ptr().data)) {</code></span>
+<span class="codeline" id="line-945"><code>			throw("trace: alloc too large")</code></span>
+<span class="codeline" id="line-946"><code>		}</code></span>
+<span class="codeline" id="line-947"><code>		block := (*traceAllocBlock)(sysAlloc(unsafe.Sizeof(traceAllocBlock{}), &amp;memstats.other_sys))</code></span>
+<span class="codeline" id="line-948"><code>		if block == nil {</code></span>
+<span class="codeline" id="line-949"><code>			throw("trace: out of memory")</code></span>
+<span class="codeline" id="line-950"><code>		}</code></span>
+<span class="codeline" id="line-951"><code>		block.next.set(a.head.ptr())</code></span>
+<span class="codeline" id="line-952"><code>		a.head.set(block)</code></span>
+<span class="codeline" id="line-953"><code>		a.off = 0</code></span>
+<span class="codeline" id="line-954"><code>	}</code></span>
+<span class="codeline" id="line-955"><code>	p := &amp;a.head.ptr().data[a.off]</code></span>
+<span class="codeline" id="line-956"><code>	a.off += n</code></span>
+<span class="codeline" id="line-957"><code>	return unsafe.Pointer(p)</code></span>
+<span class="codeline" id="line-958"><code>}</code></span>
+<span class="codeline" id="line-959"><code></code></span>
+<span class="codeline" id="line-960"><code>// drop frees all previously allocated memory and resets the allocator.</code></span>
+<span class="codeline" id="line-961"><code>func (a *traceAlloc) drop() {</code></span>
+<span class="codeline" id="line-962"><code>	for a.head != 0 {</code></span>
+<span class="codeline" id="line-963"><code>		block := a.head.ptr()</code></span>
+<span class="codeline" id="line-964"><code>		a.head.set(block.next.ptr())</code></span>
+<span class="codeline" id="line-965"><code>		sysFree(unsafe.Pointer(block), unsafe.Sizeof(traceAllocBlock{}), &amp;memstats.other_sys)</code></span>
+<span class="codeline" id="line-966"><code>	}</code></span>
+<span class="codeline" id="line-967"><code>}</code></span>
+<span class="codeline" id="line-968"><code></code></span>
+<span class="codeline" id="line-969"><code>// The following functions write specific events to trace.</code></span>
+<span class="codeline" id="line-970"><code></code></span>
+<span class="codeline" id="line-971"><code>func traceGomaxprocs(procs int32) {</code></span>
+<span class="codeline" id="line-972"><code>	traceEvent(traceEvGomaxprocs, 1, uint64(procs))</code></span>
+<span class="codeline" id="line-973"><code>}</code></span>
+<span class="codeline" id="line-974"><code></code></span>
+<span class="codeline" id="line-975"><code>func traceProcStart() {</code></span>
+<span class="codeline" id="line-976"><code>	traceEvent(traceEvProcStart, -1, uint64(getg().m.id))</code></span>
+<span class="codeline" id="line-977"><code>}</code></span>
+<span class="codeline" id="line-978"><code></code></span>
+<span class="codeline" id="line-979"><code>func traceProcStop(pp *p) {</code></span>
+<span class="codeline" id="line-980"><code>	// Sysmon and stopTheWorld can stop Ps blocked in syscalls,</code></span>
+<span class="codeline" id="line-981"><code>	// to handle this we temporary employ the P.</code></span>
+<span class="codeline" id="line-982"><code>	mp := acquirem()</code></span>
+<span class="codeline" id="line-983"><code>	oldp := mp.p</code></span>
+<span class="codeline" id="line-984"><code>	mp.p.set(pp)</code></span>
+<span class="codeline" id="line-985"><code>	traceEvent(traceEvProcStop, -1)</code></span>
+<span class="codeline" id="line-986"><code>	mp.p = oldp</code></span>
+<span class="codeline" id="line-987"><code>	releasem(mp)</code></span>
+<span class="codeline" id="line-988"><code>}</code></span>
+<span class="codeline" id="line-989"><code></code></span>
+<span class="codeline" id="line-990"><code>func traceGCStart() {</code></span>
+<span class="codeline" id="line-991"><code>	traceEvent(traceEvGCStart, 3, trace.seqGC)</code></span>
+<span class="codeline" id="line-992"><code>	trace.seqGC++</code></span>
+<span class="codeline" id="line-993"><code>}</code></span>
+<span class="codeline" id="line-994"><code></code></span>
+<span class="codeline" id="line-995"><code>func traceGCDone() {</code></span>
+<span class="codeline" id="line-996"><code>	traceEvent(traceEvGCDone, -1)</code></span>
+<span class="codeline" id="line-997"><code>}</code></span>
+<span class="codeline" id="line-998"><code></code></span>
+<span class="codeline" id="line-999"><code>func traceGCSTWStart(kind int) {</code></span>
+<span class="codeline" id="line-1000"><code>	traceEvent(traceEvGCSTWStart, -1, uint64(kind))</code></span>
+<span class="codeline" id="line-1001"><code>}</code></span>
+<span class="codeline" id="line-1002"><code></code></span>
+<span class="codeline" id="line-1003"><code>func traceGCSTWDone() {</code></span>
+<span class="codeline" id="line-1004"><code>	traceEvent(traceEvGCSTWDone, -1)</code></span>
+<span class="codeline" id="line-1005"><code>}</code></span>
+<span class="codeline" id="line-1006"><code></code></span>
+<span class="codeline" id="line-1007"><code>// traceGCSweepStart prepares to trace a sweep loop. This does not</code></span>
+<span class="codeline" id="line-1008"><code>// emit any events until traceGCSweepSpan is called.</code></span>
+<span class="codeline" id="line-1009"><code>//</code></span>
+<span class="codeline" id="line-1010"><code>// traceGCSweepStart must be paired with traceGCSweepDone and there</code></span>
+<span class="codeline" id="line-1011"><code>// must be no preemption points between these two calls.</code></span>
+<span class="codeline" id="line-1012"><code>func traceGCSweepStart() {</code></span>
+<span class="codeline" id="line-1013"><code>	// Delay the actual GCSweepStart event until the first span</code></span>
+<span class="codeline" id="line-1014"><code>	// sweep. If we don't sweep anything, don't emit any events.</code></span>
+<span class="codeline" id="line-1015"><code>	_p_ := getg().m.p.ptr()</code></span>
+<span class="codeline" id="line-1016"><code>	if _p_.traceSweep {</code></span>
+<span class="codeline" id="line-1017"><code>		throw("double traceGCSweepStart")</code></span>
+<span class="codeline" id="line-1018"><code>	}</code></span>
+<span class="codeline" id="line-1019"><code>	_p_.traceSweep, _p_.traceSwept, _p_.traceReclaimed = true, 0, 0</code></span>
+<span class="codeline" id="line-1020"><code>}</code></span>
+<span class="codeline" id="line-1021"><code></code></span>
+<span class="codeline" id="line-1022"><code>// traceGCSweepSpan traces the sweep of a single page.</code></span>
+<span class="codeline" id="line-1023"><code>//</code></span>
+<span class="codeline" id="line-1024"><code>// This may be called outside a traceGCSweepStart/traceGCSweepDone</code></span>
+<span class="codeline" id="line-1025"><code>// pair; however, it will not emit any trace events in this case.</code></span>
+<span class="codeline" id="line-1026"><code>func traceGCSweepSpan(bytesSwept uintptr) {</code></span>
+<span class="codeline" id="line-1027"><code>	_p_ := getg().m.p.ptr()</code></span>
+<span class="codeline" id="line-1028"><code>	if _p_.traceSweep {</code></span>
+<span class="codeline" id="line-1029"><code>		if _p_.traceSwept == 0 {</code></span>
+<span class="codeline" id="line-1030"><code>			traceEvent(traceEvGCSweepStart, 1)</code></span>
+<span class="codeline" id="line-1031"><code>		}</code></span>
+<span class="codeline" id="line-1032"><code>		_p_.traceSwept += bytesSwept</code></span>
+<span class="codeline" id="line-1033"><code>	}</code></span>
+<span class="codeline" id="line-1034"><code>}</code></span>
+<span class="codeline" id="line-1035"><code></code></span>
+<span class="codeline" id="line-1036"><code>func traceGCSweepDone() {</code></span>
+<span class="codeline" id="line-1037"><code>	_p_ := getg().m.p.ptr()</code></span>
+<span class="codeline" id="line-1038"><code>	if !_p_.traceSweep {</code></span>
+<span class="codeline" id="line-1039"><code>		throw("missing traceGCSweepStart")</code></span>
+<span class="codeline" id="line-1040"><code>	}</code></span>
+<span class="codeline" id="line-1041"><code>	if _p_.traceSwept != 0 {</code></span>
+<span class="codeline" id="line-1042"><code>		traceEvent(traceEvGCSweepDone, -1, uint64(_p_.traceSwept), uint64(_p_.traceReclaimed))</code></span>
+<span class="codeline" id="line-1043"><code>	}</code></span>
+<span class="codeline" id="line-1044"><code>	_p_.traceSweep = false</code></span>
+<span class="codeline" id="line-1045"><code>}</code></span>
+<span class="codeline" id="line-1046"><code></code></span>
+<span class="codeline" id="line-1047"><code>func traceGCMarkAssistStart() {</code></span>
+<span class="codeline" id="line-1048"><code>	traceEvent(traceEvGCMarkAssistStart, 1)</code></span>
+<span class="codeline" id="line-1049"><code>}</code></span>
+<span class="codeline" id="line-1050"><code></code></span>
+<span class="codeline" id="line-1051"><code>func traceGCMarkAssistDone() {</code></span>
+<span class="codeline" id="line-1052"><code>	traceEvent(traceEvGCMarkAssistDone, -1)</code></span>
+<span class="codeline" id="line-1053"><code>}</code></span>
+<span class="codeline" id="line-1054"><code></code></span>
+<span class="codeline" id="line-1055"><code>func traceGoCreate(newg *g, pc uintptr) {</code></span>
+<span class="codeline" id="line-1056"><code>	newg.traceseq = 0</code></span>
+<span class="codeline" id="line-1057"><code>	newg.tracelastp = getg().m.p</code></span>
+<span class="codeline" id="line-1058"><code>	// +PCQuantum because traceFrameForPC expects return PCs and subtracts PCQuantum.</code></span>
+<span class="codeline" id="line-1059"><code>	id := trace.stackTab.put([]uintptr{pc + sys.PCQuantum})</code></span>
+<span class="codeline" id="line-1060"><code>	traceEvent(traceEvGoCreate, 2, uint64(newg.goid), uint64(id))</code></span>
+<span class="codeline" id="line-1061"><code>}</code></span>
+<span class="codeline" id="line-1062"><code></code></span>
+<span class="codeline" id="line-1063"><code>func traceGoStart() {</code></span>
+<span class="codeline" id="line-1064"><code>	_g_ := getg().m.curg</code></span>
+<span class="codeline" id="line-1065"><code>	_p_ := _g_.m.p</code></span>
+<span class="codeline" id="line-1066"><code>	_g_.traceseq++</code></span>
+<span class="codeline" id="line-1067"><code>	if _p_.ptr().gcMarkWorkerMode != gcMarkWorkerNotWorker {</code></span>
+<span class="codeline" id="line-1068"><code>		traceEvent(traceEvGoStartLabel, -1, uint64(_g_.goid), _g_.traceseq, trace.markWorkerLabels[_p_.ptr().gcMarkWorkerMode])</code></span>
+<span class="codeline" id="line-1069"><code>	} else if _g_.tracelastp == _p_ {</code></span>
+<span class="codeline" id="line-1070"><code>		traceEvent(traceEvGoStartLocal, -1, uint64(_g_.goid))</code></span>
+<span class="codeline" id="line-1071"><code>	} else {</code></span>
+<span class="codeline" id="line-1072"><code>		_g_.tracelastp = _p_</code></span>
+<span class="codeline" id="line-1073"><code>		traceEvent(traceEvGoStart, -1, uint64(_g_.goid), _g_.traceseq)</code></span>
+<span class="codeline" id="line-1074"><code>	}</code></span>
+<span class="codeline" id="line-1075"><code>}</code></span>
+<span class="codeline" id="line-1076"><code></code></span>
+<span class="codeline" id="line-1077"><code>func traceGoEnd() {</code></span>
+<span class="codeline" id="line-1078"><code>	traceEvent(traceEvGoEnd, -1)</code></span>
+<span class="codeline" id="line-1079"><code>}</code></span>
+<span class="codeline" id="line-1080"><code></code></span>
+<span class="codeline" id="line-1081"><code>func traceGoSched() {</code></span>
+<span class="codeline" id="line-1082"><code>	_g_ := getg()</code></span>
+<span class="codeline" id="line-1083"><code>	_g_.tracelastp = _g_.m.p</code></span>
+<span class="codeline" id="line-1084"><code>	traceEvent(traceEvGoSched, 1)</code></span>
+<span class="codeline" id="line-1085"><code>}</code></span>
+<span class="codeline" id="line-1086"><code></code></span>
+<span class="codeline" id="line-1087"><code>func traceGoPreempt() {</code></span>
+<span class="codeline" id="line-1088"><code>	_g_ := getg()</code></span>
+<span class="codeline" id="line-1089"><code>	_g_.tracelastp = _g_.m.p</code></span>
+<span class="codeline" id="line-1090"><code>	traceEvent(traceEvGoPreempt, 1)</code></span>
+<span class="codeline" id="line-1091"><code>}</code></span>
+<span class="codeline" id="line-1092"><code></code></span>
+<span class="codeline" id="line-1093"><code>func traceGoPark(traceEv byte, skip int) {</code></span>
+<span class="codeline" id="line-1094"><code>	if traceEv&amp;traceFutileWakeup != 0 {</code></span>
+<span class="codeline" id="line-1095"><code>		traceEvent(traceEvFutileWakeup, -1)</code></span>
+<span class="codeline" id="line-1096"><code>	}</code></span>
+<span class="codeline" id="line-1097"><code>	traceEvent(traceEv &amp; ^traceFutileWakeup, skip)</code></span>
+<span class="codeline" id="line-1098"><code>}</code></span>
+<span class="codeline" id="line-1099"><code></code></span>
+<span class="codeline" id="line-1100"><code>func traceGoUnpark(gp *g, skip int) {</code></span>
+<span class="codeline" id="line-1101"><code>	_p_ := getg().m.p</code></span>
+<span class="codeline" id="line-1102"><code>	gp.traceseq++</code></span>
+<span class="codeline" id="line-1103"><code>	if gp.tracelastp == _p_ {</code></span>
+<span class="codeline" id="line-1104"><code>		traceEvent(traceEvGoUnblockLocal, skip, uint64(gp.goid))</code></span>
+<span class="codeline" id="line-1105"><code>	} else {</code></span>
+<span class="codeline" id="line-1106"><code>		gp.tracelastp = _p_</code></span>
+<span class="codeline" id="line-1107"><code>		traceEvent(traceEvGoUnblock, skip, uint64(gp.goid), gp.traceseq)</code></span>
+<span class="codeline" id="line-1108"><code>	}</code></span>
+<span class="codeline" id="line-1109"><code>}</code></span>
+<span class="codeline" id="line-1110"><code></code></span>
+<span class="codeline" id="line-1111"><code>func traceGoSysCall() {</code></span>
+<span class="codeline" id="line-1112"><code>	traceEvent(traceEvGoSysCall, 1)</code></span>
+<span class="codeline" id="line-1113"><code>}</code></span>
+<span class="codeline" id="line-1114"><code></code></span>
+<span class="codeline" id="line-1115"><code>func traceGoSysExit(ts int64) {</code></span>
+<span class="codeline" id="line-1116"><code>	if ts != 0 &amp;&amp; ts &lt; trace.ticksStart {</code></span>
+<span class="codeline" id="line-1117"><code>		// There is a race between the code that initializes sysexitticks</code></span>
+<span class="codeline" id="line-1118"><code>		// (in exitsyscall, which runs without a P, and therefore is not</code></span>
+<span class="codeline" id="line-1119"><code>		// stopped with the rest of the world) and the code that initializes</code></span>
+<span class="codeline" id="line-1120"><code>		// a new trace. The recorded sysexitticks must therefore be treated</code></span>
+<span class="codeline" id="line-1121"><code>		// as "best effort". If they are valid for this trace, then great,</code></span>
+<span class="codeline" id="line-1122"><code>		// use them for greater accuracy. But if they're not valid for this</code></span>
+<span class="codeline" id="line-1123"><code>		// trace, assume that the trace was started after the actual syscall</code></span>
+<span class="codeline" id="line-1124"><code>		// exit (but before we actually managed to start the goroutine,</code></span>
+<span class="codeline" id="line-1125"><code>		// aka right now), and assign a fresh time stamp to keep the log consistent.</code></span>
+<span class="codeline" id="line-1126"><code>		ts = 0</code></span>
+<span class="codeline" id="line-1127"><code>	}</code></span>
+<span class="codeline" id="line-1128"><code>	_g_ := getg().m.curg</code></span>
+<span class="codeline" id="line-1129"><code>	_g_.traceseq++</code></span>
+<span class="codeline" id="line-1130"><code>	_g_.tracelastp = _g_.m.p</code></span>
+<span class="codeline" id="line-1131"><code>	traceEvent(traceEvGoSysExit, -1, uint64(_g_.goid), _g_.traceseq, uint64(ts)/traceTickDiv)</code></span>
+<span class="codeline" id="line-1132"><code>}</code></span>
+<span class="codeline" id="line-1133"><code></code></span>
+<span class="codeline" id="line-1134"><code>func traceGoSysBlock(pp *p) {</code></span>
+<span class="codeline" id="line-1135"><code>	// Sysmon and stopTheWorld can declare syscalls running on remote Ps as blocked,</code></span>
+<span class="codeline" id="line-1136"><code>	// to handle this we temporary employ the P.</code></span>
+<span class="codeline" id="line-1137"><code>	mp := acquirem()</code></span>
+<span class="codeline" id="line-1138"><code>	oldp := mp.p</code></span>
+<span class="codeline" id="line-1139"><code>	mp.p.set(pp)</code></span>
+<span class="codeline" id="line-1140"><code>	traceEvent(traceEvGoSysBlock, -1)</code></span>
+<span class="codeline" id="line-1141"><code>	mp.p = oldp</code></span>
+<span class="codeline" id="line-1142"><code>	releasem(mp)</code></span>
+<span class="codeline" id="line-1143"><code>}</code></span>
+<span class="codeline" id="line-1144"><code></code></span>
+<span class="codeline" id="line-1145"><code>func traceHeapAlloc() {</code></span>
+<span class="codeline" id="line-1146"><code>	traceEvent(traceEvHeapAlloc, -1, memstats.heap_live)</code></span>
+<span class="codeline" id="line-1147"><code>}</code></span>
+<span class="codeline" id="line-1148"><code></code></span>
+<span class="codeline" id="line-1149"><code>func traceNextGC() {</code></span>
+<span class="codeline" id="line-1150"><code>	if nextGC := atomic.Load64(&amp;memstats.next_gc); nextGC == ^uint64(0) {</code></span>
+<span class="codeline" id="line-1151"><code>		// Heap-based triggering is disabled.</code></span>
+<span class="codeline" id="line-1152"><code>		traceEvent(traceEvNextGC, -1, 0)</code></span>
+<span class="codeline" id="line-1153"><code>	} else {</code></span>
+<span class="codeline" id="line-1154"><code>		traceEvent(traceEvNextGC, -1, nextGC)</code></span>
+<span class="codeline" id="line-1155"><code>	}</code></span>
+<span class="codeline" id="line-1156"><code>}</code></span>
+<span class="codeline" id="line-1157"><code></code></span>
+<span class="codeline" id="line-1158"><code>// To access runtime functions from runtime/trace.</code></span>
+<span class="codeline" id="line-1159"><code>// See runtime/trace/annotation.go</code></span>
+<span class="codeline" id="line-1160"><code></code></span>
+<span class="codeline" id="line-1161"><code>//go:linkname trace_userTaskCreate runtime/trace.userTaskCreate</code></span>
+<span class="codeline" id="line-1162"><code>func trace_userTaskCreate(id, parentID uint64, taskType string) {</code></span>
+<span class="codeline" id="line-1163"><code>	if !trace.enabled {</code></span>
+<span class="codeline" id="line-1164"><code>		return</code></span>
+<span class="codeline" id="line-1165"><code>	}</code></span>
+<span class="codeline" id="line-1166"><code></code></span>
+<span class="codeline" id="line-1167"><code>	// Same as in traceEvent.</code></span>
+<span class="codeline" id="line-1168"><code>	mp, pid, bufp := traceAcquireBuffer()</code></span>
+<span class="codeline" id="line-1169"><code>	if !trace.enabled &amp;&amp; !mp.startingtrace {</code></span>
+<span class="codeline" id="line-1170"><code>		traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-1171"><code>		return</code></span>
+<span class="codeline" id="line-1172"><code>	}</code></span>
+<span class="codeline" id="line-1173"><code></code></span>
+<span class="codeline" id="line-1174"><code>	typeStringID, bufp := traceString(bufp, pid, taskType)</code></span>
+<span class="codeline" id="line-1175"><code>	traceEventLocked(0, mp, pid, bufp, traceEvUserTaskCreate, 3, id, parentID, typeStringID)</code></span>
+<span class="codeline" id="line-1176"><code>	traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-1177"><code>}</code></span>
+<span class="codeline" id="line-1178"><code></code></span>
+<span class="codeline" id="line-1179"><code>//go:linkname trace_userTaskEnd runtime/trace.userTaskEnd</code></span>
+<span class="codeline" id="line-1180"><code>func trace_userTaskEnd(id uint64) {</code></span>
+<span class="codeline" id="line-1181"><code>	traceEvent(traceEvUserTaskEnd, 2, id)</code></span>
+<span class="codeline" id="line-1182"><code>}</code></span>
+<span class="codeline" id="line-1183"><code></code></span>
+<span class="codeline" id="line-1184"><code>//go:linkname trace_userRegion runtime/trace.userRegion</code></span>
+<span class="codeline" id="line-1185"><code>func trace_userRegion(id, mode uint64, name string) {</code></span>
+<span class="codeline" id="line-1186"><code>	if !trace.enabled {</code></span>
+<span class="codeline" id="line-1187"><code>		return</code></span>
+<span class="codeline" id="line-1188"><code>	}</code></span>
+<span class="codeline" id="line-1189"><code></code></span>
+<span class="codeline" id="line-1190"><code>	mp, pid, bufp := traceAcquireBuffer()</code></span>
+<span class="codeline" id="line-1191"><code>	if !trace.enabled &amp;&amp; !mp.startingtrace {</code></span>
+<span class="codeline" id="line-1192"><code>		traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-1193"><code>		return</code></span>
+<span class="codeline" id="line-1194"><code>	}</code></span>
+<span class="codeline" id="line-1195"><code></code></span>
+<span class="codeline" id="line-1196"><code>	nameStringID, bufp := traceString(bufp, pid, name)</code></span>
+<span class="codeline" id="line-1197"><code>	traceEventLocked(0, mp, pid, bufp, traceEvUserRegion, 3, id, mode, nameStringID)</code></span>
+<span class="codeline" id="line-1198"><code>	traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-1199"><code>}</code></span>
+<span class="codeline" id="line-1200"><code></code></span>
+<span class="codeline" id="line-1201"><code>//go:linkname trace_userLog runtime/trace.userLog</code></span>
+<span class="codeline" id="line-1202"><code>func trace_userLog(id uint64, category, message string) {</code></span>
+<span class="codeline" id="line-1203"><code>	if !trace.enabled {</code></span>
+<span class="codeline" id="line-1204"><code>		return</code></span>
+<span class="codeline" id="line-1205"><code>	}</code></span>
+<span class="codeline" id="line-1206"><code></code></span>
+<span class="codeline" id="line-1207"><code>	mp, pid, bufp := traceAcquireBuffer()</code></span>
+<span class="codeline" id="line-1208"><code>	if !trace.enabled &amp;&amp; !mp.startingtrace {</code></span>
+<span class="codeline" id="line-1209"><code>		traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-1210"><code>		return</code></span>
+<span class="codeline" id="line-1211"><code>	}</code></span>
+<span class="codeline" id="line-1212"><code></code></span>
+<span class="codeline" id="line-1213"><code>	categoryID, bufp := traceString(bufp, pid, category)</code></span>
+<span class="codeline" id="line-1214"><code></code></span>
+<span class="codeline" id="line-1215"><code>	extraSpace := traceBytesPerNumber + len(message) // extraSpace for the value string</code></span>
+<span class="codeline" id="line-1216"><code>	traceEventLocked(extraSpace, mp, pid, bufp, traceEvUserLog, 3, id, categoryID)</code></span>
+<span class="codeline" id="line-1217"><code>	// traceEventLocked reserved extra space for val and len(val)</code></span>
+<span class="codeline" id="line-1218"><code>	// in buf, so buf now has room for the following.</code></span>
+<span class="codeline" id="line-1219"><code>	buf := bufp.ptr()</code></span>
+<span class="codeline" id="line-1220"><code></code></span>
+<span class="codeline" id="line-1221"><code>	// double-check the message and its length can fit.</code></span>
+<span class="codeline" id="line-1222"><code>	// Otherwise, truncate the message.</code></span>
+<span class="codeline" id="line-1223"><code>	slen := len(message)</code></span>
+<span class="codeline" id="line-1224"><code>	if room := len(buf.arr) - buf.pos; room &lt; slen+traceBytesPerNumber {</code></span>
+<span class="codeline" id="line-1225"><code>		slen = room</code></span>
+<span class="codeline" id="line-1226"><code>	}</code></span>
+<span class="codeline" id="line-1227"><code>	buf.varint(uint64(slen))</code></span>
+<span class="codeline" id="line-1228"><code>	buf.pos += copy(buf.arr[buf.pos:], message[:slen])</code></span>
+<span class="codeline" id="line-1229"><code></code></span>
+<span class="codeline" id="line-1230"><code>	traceReleaseBuffer(pid)</code></span>
+<span class="codeline" id="line-1231"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

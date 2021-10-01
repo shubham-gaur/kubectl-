@@ -1,0 +1,1200 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: bytes.go in package bytes</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	bytes.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/bytes.html">bytes</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package bytes implements functions for the manipulation of byte slices.</code></span>
+<span class="codeline" id="line-6"><code>// It is analogous to the facilities of the strings package.</code></span></div><span class="codeline" id="line-7"><code>package bytes</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"internal/bytealg"</code></span>
+<span class="codeline" id="line-11"><code>	"unicode"</code></span>
+<span class="codeline" id="line-12"><code>	"unicode/utf8"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// Equal reports whether a and b</code></span>
+<span class="codeline" id="line-16"><code>// are the same length and contain the same bytes.</code></span>
+<span class="codeline" id="line-17"><code>// A nil argument is equivalent to an empty slice.</code></span>
+<span class="codeline" id="line-18"><code>func Equal(a, b []byte) bool {</code></span>
+<span class="codeline" id="line-19"><code>	// Neither cmd/compile nor gccgo allocates for these string conversions.</code></span>
+<span class="codeline" id="line-20"><code>	return string(a) == string(b)</code></span>
+<span class="codeline" id="line-21"><code>}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>// Compare returns an integer comparing two byte slices lexicographically.</code></span>
+<span class="codeline" id="line-24"><code>// The result will be 0 if a==b, -1 if a &lt; b, and +1 if a &gt; b.</code></span>
+<span class="codeline" id="line-25"><code>// A nil argument is equivalent to an empty slice.</code></span>
+<span class="codeline" id="line-26"><code>func Compare(a, b []byte) int {</code></span>
+<span class="codeline" id="line-27"><code>	return bytealg.Compare(a, b)</code></span>
+<span class="codeline" id="line-28"><code>}</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>// explode splits s into a slice of UTF-8 sequences, one per Unicode code point (still slices of bytes),</code></span>
+<span class="codeline" id="line-31"><code>// up to a maximum of n byte slices. Invalid UTF-8 sequences are chopped into individual bytes.</code></span>
+<span class="codeline" id="line-32"><code>func explode(s []byte, n int) [][]byte {</code></span>
+<span class="codeline" id="line-33"><code>	if n &lt;= 0 {</code></span>
+<span class="codeline" id="line-34"><code>		n = len(s)</code></span>
+<span class="codeline" id="line-35"><code>	}</code></span>
+<span class="codeline" id="line-36"><code>	a := make([][]byte, n)</code></span>
+<span class="codeline" id="line-37"><code>	var size int</code></span>
+<span class="codeline" id="line-38"><code>	na := 0</code></span>
+<span class="codeline" id="line-39"><code>	for len(s) &gt; 0 {</code></span>
+<span class="codeline" id="line-40"><code>		if na+1 &gt;= n {</code></span>
+<span class="codeline" id="line-41"><code>			a[na] = s</code></span>
+<span class="codeline" id="line-42"><code>			na++</code></span>
+<span class="codeline" id="line-43"><code>			break</code></span>
+<span class="codeline" id="line-44"><code>		}</code></span>
+<span class="codeline" id="line-45"><code>		_, size = utf8.DecodeRune(s)</code></span>
+<span class="codeline" id="line-46"><code>		a[na] = s[0:size:size]</code></span>
+<span class="codeline" id="line-47"><code>		s = s[size:]</code></span>
+<span class="codeline" id="line-48"><code>		na++</code></span>
+<span class="codeline" id="line-49"><code>	}</code></span>
+<span class="codeline" id="line-50"><code>	return a[0:na]</code></span>
+<span class="codeline" id="line-51"><code>}</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>// Count counts the number of non-overlapping instances of sep in s.</code></span>
+<span class="codeline" id="line-54"><code>// If sep is an empty slice, Count returns 1 + the number of UTF-8-encoded code points in s.</code></span>
+<span class="codeline" id="line-55"><code>func Count(s, sep []byte) int {</code></span>
+<span class="codeline" id="line-56"><code>	// special case</code></span>
+<span class="codeline" id="line-57"><code>	if len(sep) == 0 {</code></span>
+<span class="codeline" id="line-58"><code>		return utf8.RuneCount(s) + 1</code></span>
+<span class="codeline" id="line-59"><code>	}</code></span>
+<span class="codeline" id="line-60"><code>	if len(sep) == 1 {</code></span>
+<span class="codeline" id="line-61"><code>		return bytealg.Count(s, sep[0])</code></span>
+<span class="codeline" id="line-62"><code>	}</code></span>
+<span class="codeline" id="line-63"><code>	n := 0</code></span>
+<span class="codeline" id="line-64"><code>	for {</code></span>
+<span class="codeline" id="line-65"><code>		i := Index(s, sep)</code></span>
+<span class="codeline" id="line-66"><code>		if i == -1 {</code></span>
+<span class="codeline" id="line-67"><code>			return n</code></span>
+<span class="codeline" id="line-68"><code>		}</code></span>
+<span class="codeline" id="line-69"><code>		n++</code></span>
+<span class="codeline" id="line-70"><code>		s = s[i+len(sep):]</code></span>
+<span class="codeline" id="line-71"><code>	}</code></span>
+<span class="codeline" id="line-72"><code>}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>// Contains reports whether subslice is within b.</code></span>
+<span class="codeline" id="line-75"><code>func Contains(b, subslice []byte) bool {</code></span>
+<span class="codeline" id="line-76"><code>	return Index(b, subslice) != -1</code></span>
+<span class="codeline" id="line-77"><code>}</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>// ContainsAny reports whether any of the UTF-8-encoded code points in chars are within b.</code></span>
+<span class="codeline" id="line-80"><code>func ContainsAny(b []byte, chars string) bool {</code></span>
+<span class="codeline" id="line-81"><code>	return IndexAny(b, chars) &gt;= 0</code></span>
+<span class="codeline" id="line-82"><code>}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>// ContainsRune reports whether the rune is contained in the UTF-8-encoded byte slice b.</code></span>
+<span class="codeline" id="line-85"><code>func ContainsRune(b []byte, r rune) bool {</code></span>
+<span class="codeline" id="line-86"><code>	return IndexRune(b, r) &gt;= 0</code></span>
+<span class="codeline" id="line-87"><code>}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>// IndexByte returns the index of the first instance of c in b, or -1 if c is not present in b.</code></span>
+<span class="codeline" id="line-90"><code>func IndexByte(b []byte, c byte) int {</code></span>
+<span class="codeline" id="line-91"><code>	return bytealg.IndexByte(b, c)</code></span>
+<span class="codeline" id="line-92"><code>}</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>func indexBytePortable(s []byte, c byte) int {</code></span>
+<span class="codeline" id="line-95"><code>	for i, b := range s {</code></span>
+<span class="codeline" id="line-96"><code>		if b == c {</code></span>
+<span class="codeline" id="line-97"><code>			return i</code></span>
+<span class="codeline" id="line-98"><code>		}</code></span>
+<span class="codeline" id="line-99"><code>	}</code></span>
+<span class="codeline" id="line-100"><code>	return -1</code></span>
+<span class="codeline" id="line-101"><code>}</code></span>
+<span class="codeline" id="line-102"><code></code></span>
+<span class="codeline" id="line-103"><code>// LastIndex returns the index of the last instance of sep in s, or -1 if sep is not present in s.</code></span>
+<span class="codeline" id="line-104"><code>func LastIndex(s, sep []byte) int {</code></span>
+<span class="codeline" id="line-105"><code>	n := len(sep)</code></span>
+<span class="codeline" id="line-106"><code>	switch {</code></span>
+<span class="codeline" id="line-107"><code>	case n == 0:</code></span>
+<span class="codeline" id="line-108"><code>		return len(s)</code></span>
+<span class="codeline" id="line-109"><code>	case n == 1:</code></span>
+<span class="codeline" id="line-110"><code>		return LastIndexByte(s, sep[0])</code></span>
+<span class="codeline" id="line-111"><code>	case n == len(s):</code></span>
+<span class="codeline" id="line-112"><code>		if Equal(s, sep) {</code></span>
+<span class="codeline" id="line-113"><code>			return 0</code></span>
+<span class="codeline" id="line-114"><code>		}</code></span>
+<span class="codeline" id="line-115"><code>		return -1</code></span>
+<span class="codeline" id="line-116"><code>	case n &gt; len(s):</code></span>
+<span class="codeline" id="line-117"><code>		return -1</code></span>
+<span class="codeline" id="line-118"><code>	}</code></span>
+<span class="codeline" id="line-119"><code>	// Rabin-Karp search from the end of the string</code></span>
+<span class="codeline" id="line-120"><code>	hashss, pow := bytealg.HashStrRevBytes(sep)</code></span>
+<span class="codeline" id="line-121"><code>	last := len(s) - n</code></span>
+<span class="codeline" id="line-122"><code>	var h uint32</code></span>
+<span class="codeline" id="line-123"><code>	for i := len(s) - 1; i &gt;= last; i-- {</code></span>
+<span class="codeline" id="line-124"><code>		h = h*bytealg.PrimeRK + uint32(s[i])</code></span>
+<span class="codeline" id="line-125"><code>	}</code></span>
+<span class="codeline" id="line-126"><code>	if h == hashss &amp;&amp; Equal(s[last:], sep) {</code></span>
+<span class="codeline" id="line-127"><code>		return last</code></span>
+<span class="codeline" id="line-128"><code>	}</code></span>
+<span class="codeline" id="line-129"><code>	for i := last - 1; i &gt;= 0; i-- {</code></span>
+<span class="codeline" id="line-130"><code>		h *= bytealg.PrimeRK</code></span>
+<span class="codeline" id="line-131"><code>		h += uint32(s[i])</code></span>
+<span class="codeline" id="line-132"><code>		h -= pow * uint32(s[i+n])</code></span>
+<span class="codeline" id="line-133"><code>		if h == hashss &amp;&amp; Equal(s[i:i+n], sep) {</code></span>
+<span class="codeline" id="line-134"><code>			return i</code></span>
+<span class="codeline" id="line-135"><code>		}</code></span>
+<span class="codeline" id="line-136"><code>	}</code></span>
+<span class="codeline" id="line-137"><code>	return -1</code></span>
+<span class="codeline" id="line-138"><code>}</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>// LastIndexByte returns the index of the last instance of c in s, or -1 if c is not present in s.</code></span>
+<span class="codeline" id="line-141"><code>func LastIndexByte(s []byte, c byte) int {</code></span>
+<span class="codeline" id="line-142"><code>	for i := len(s) - 1; i &gt;= 0; i-- {</code></span>
+<span class="codeline" id="line-143"><code>		if s[i] == c {</code></span>
+<span class="codeline" id="line-144"><code>			return i</code></span>
+<span class="codeline" id="line-145"><code>		}</code></span>
+<span class="codeline" id="line-146"><code>	}</code></span>
+<span class="codeline" id="line-147"><code>	return -1</code></span>
+<span class="codeline" id="line-148"><code>}</code></span>
+<span class="codeline" id="line-149"><code></code></span>
+<span class="codeline" id="line-150"><code>// IndexRune interprets s as a sequence of UTF-8-encoded code points.</code></span>
+<span class="codeline" id="line-151"><code>// It returns the byte index of the first occurrence in s of the given rune.</code></span>
+<span class="codeline" id="line-152"><code>// It returns -1 if rune is not present in s.</code></span>
+<span class="codeline" id="line-153"><code>// If r is utf8.RuneError, it returns the first instance of any</code></span>
+<span class="codeline" id="line-154"><code>// invalid UTF-8 byte sequence.</code></span>
+<span class="codeline" id="line-155"><code>func IndexRune(s []byte, r rune) int {</code></span>
+<span class="codeline" id="line-156"><code>	switch {</code></span>
+<span class="codeline" id="line-157"><code>	case 0 &lt;= r &amp;&amp; r &lt; utf8.RuneSelf:</code></span>
+<span class="codeline" id="line-158"><code>		return IndexByte(s, byte(r))</code></span>
+<span class="codeline" id="line-159"><code>	case r == utf8.RuneError:</code></span>
+<span class="codeline" id="line-160"><code>		for i := 0; i &lt; len(s); {</code></span>
+<span class="codeline" id="line-161"><code>			r1, n := utf8.DecodeRune(s[i:])</code></span>
+<span class="codeline" id="line-162"><code>			if r1 == utf8.RuneError {</code></span>
+<span class="codeline" id="line-163"><code>				return i</code></span>
+<span class="codeline" id="line-164"><code>			}</code></span>
+<span class="codeline" id="line-165"><code>			i += n</code></span>
+<span class="codeline" id="line-166"><code>		}</code></span>
+<span class="codeline" id="line-167"><code>		return -1</code></span>
+<span class="codeline" id="line-168"><code>	case !utf8.ValidRune(r):</code></span>
+<span class="codeline" id="line-169"><code>		return -1</code></span>
+<span class="codeline" id="line-170"><code>	default:</code></span>
+<span class="codeline" id="line-171"><code>		var b [utf8.UTFMax]byte</code></span>
+<span class="codeline" id="line-172"><code>		n := utf8.EncodeRune(b[:], r)</code></span>
+<span class="codeline" id="line-173"><code>		return Index(s, b[:n])</code></span>
+<span class="codeline" id="line-174"><code>	}</code></span>
+<span class="codeline" id="line-175"><code>}</code></span>
+<span class="codeline" id="line-176"><code></code></span>
+<span class="codeline" id="line-177"><code>// IndexAny interprets s as a sequence of UTF-8-encoded Unicode code points.</code></span>
+<span class="codeline" id="line-178"><code>// It returns the byte index of the first occurrence in s of any of the Unicode</code></span>
+<span class="codeline" id="line-179"><code>// code points in chars. It returns -1 if chars is empty or if there is no code</code></span>
+<span class="codeline" id="line-180"><code>// point in common.</code></span>
+<span class="codeline" id="line-181"><code>func IndexAny(s []byte, chars string) int {</code></span>
+<span class="codeline" id="line-182"><code>	if chars == "" {</code></span>
+<span class="codeline" id="line-183"><code>		// Avoid scanning all of s.</code></span>
+<span class="codeline" id="line-184"><code>		return -1</code></span>
+<span class="codeline" id="line-185"><code>	}</code></span>
+<span class="codeline" id="line-186"><code>	if len(s) == 1 {</code></span>
+<span class="codeline" id="line-187"><code>		r := rune(s[0])</code></span>
+<span class="codeline" id="line-188"><code>		if r &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-189"><code>			// search utf8.RuneError.</code></span>
+<span class="codeline" id="line-190"><code>			for _, r = range chars {</code></span>
+<span class="codeline" id="line-191"><code>				if r == utf8.RuneError {</code></span>
+<span class="codeline" id="line-192"><code>					return 0</code></span>
+<span class="codeline" id="line-193"><code>				}</code></span>
+<span class="codeline" id="line-194"><code>			}</code></span>
+<span class="codeline" id="line-195"><code>			return -1</code></span>
+<span class="codeline" id="line-196"><code>		}</code></span>
+<span class="codeline" id="line-197"><code>		if bytealg.IndexByteString(chars, s[0]) &gt;= 0 {</code></span>
+<span class="codeline" id="line-198"><code>			return 0</code></span>
+<span class="codeline" id="line-199"><code>		}</code></span>
+<span class="codeline" id="line-200"><code>		return -1</code></span>
+<span class="codeline" id="line-201"><code>	}</code></span>
+<span class="codeline" id="line-202"><code>	if len(chars) == 1 {</code></span>
+<span class="codeline" id="line-203"><code>		r := rune(chars[0])</code></span>
+<span class="codeline" id="line-204"><code>		if r &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-205"><code>			r = utf8.RuneError</code></span>
+<span class="codeline" id="line-206"><code>		}</code></span>
+<span class="codeline" id="line-207"><code>		return IndexRune(s, r)</code></span>
+<span class="codeline" id="line-208"><code>	}</code></span>
+<span class="codeline" id="line-209"><code>	if len(s) &gt; 8 {</code></span>
+<span class="codeline" id="line-210"><code>		if as, isASCII := makeASCIISet(chars); isASCII {</code></span>
+<span class="codeline" id="line-211"><code>			for i, c := range s {</code></span>
+<span class="codeline" id="line-212"><code>				if as.contains(c) {</code></span>
+<span class="codeline" id="line-213"><code>					return i</code></span>
+<span class="codeline" id="line-214"><code>				}</code></span>
+<span class="codeline" id="line-215"><code>			}</code></span>
+<span class="codeline" id="line-216"><code>			return -1</code></span>
+<span class="codeline" id="line-217"><code>		}</code></span>
+<span class="codeline" id="line-218"><code>	}</code></span>
+<span class="codeline" id="line-219"><code>	var width int</code></span>
+<span class="codeline" id="line-220"><code>	for i := 0; i &lt; len(s); i += width {</code></span>
+<span class="codeline" id="line-221"><code>		r := rune(s[i])</code></span>
+<span class="codeline" id="line-222"><code>		if r &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-223"><code>			if bytealg.IndexByteString(chars, s[i]) &gt;= 0 {</code></span>
+<span class="codeline" id="line-224"><code>				return i</code></span>
+<span class="codeline" id="line-225"><code>			}</code></span>
+<span class="codeline" id="line-226"><code>			width = 1</code></span>
+<span class="codeline" id="line-227"><code>			continue</code></span>
+<span class="codeline" id="line-228"><code>		}</code></span>
+<span class="codeline" id="line-229"><code>		r, width = utf8.DecodeRune(s[i:])</code></span>
+<span class="codeline" id="line-230"><code>		if r != utf8.RuneError {</code></span>
+<span class="codeline" id="line-231"><code>			// r is 2 to 4 bytes</code></span>
+<span class="codeline" id="line-232"><code>			if len(chars) == width {</code></span>
+<span class="codeline" id="line-233"><code>				if chars == string(r) {</code></span>
+<span class="codeline" id="line-234"><code>					return i</code></span>
+<span class="codeline" id="line-235"><code>				}</code></span>
+<span class="codeline" id="line-236"><code>				continue</code></span>
+<span class="codeline" id="line-237"><code>			}</code></span>
+<span class="codeline" id="line-238"><code>			// Use bytealg.IndexString for performance if available.</code></span>
+<span class="codeline" id="line-239"><code>			if bytealg.MaxLen &gt;= width {</code></span>
+<span class="codeline" id="line-240"><code>				if bytealg.IndexString(chars, string(r)) &gt;= 0 {</code></span>
+<span class="codeline" id="line-241"><code>					return i</code></span>
+<span class="codeline" id="line-242"><code>				}</code></span>
+<span class="codeline" id="line-243"><code>				continue</code></span>
+<span class="codeline" id="line-244"><code>			}</code></span>
+<span class="codeline" id="line-245"><code>		}</code></span>
+<span class="codeline" id="line-246"><code>		for _, ch := range chars {</code></span>
+<span class="codeline" id="line-247"><code>			if r == ch {</code></span>
+<span class="codeline" id="line-248"><code>				return i</code></span>
+<span class="codeline" id="line-249"><code>			}</code></span>
+<span class="codeline" id="line-250"><code>		}</code></span>
+<span class="codeline" id="line-251"><code>	}</code></span>
+<span class="codeline" id="line-252"><code>	return -1</code></span>
+<span class="codeline" id="line-253"><code>}</code></span>
+<span class="codeline" id="line-254"><code></code></span>
+<span class="codeline" id="line-255"><code>// LastIndexAny interprets s as a sequence of UTF-8-encoded Unicode code</code></span>
+<span class="codeline" id="line-256"><code>// points. It returns the byte index of the last occurrence in s of any of</code></span>
+<span class="codeline" id="line-257"><code>// the Unicode code points in chars. It returns -1 if chars is empty or if</code></span>
+<span class="codeline" id="line-258"><code>// there is no code point in common.</code></span>
+<span class="codeline" id="line-259"><code>func LastIndexAny(s []byte, chars string) int {</code></span>
+<span class="codeline" id="line-260"><code>	if chars == "" {</code></span>
+<span class="codeline" id="line-261"><code>		// Avoid scanning all of s.</code></span>
+<span class="codeline" id="line-262"><code>		return -1</code></span>
+<span class="codeline" id="line-263"><code>	}</code></span>
+<span class="codeline" id="line-264"><code>	if len(s) &gt; 8 {</code></span>
+<span class="codeline" id="line-265"><code>		if as, isASCII := makeASCIISet(chars); isASCII {</code></span>
+<span class="codeline" id="line-266"><code>			for i := len(s) - 1; i &gt;= 0; i-- {</code></span>
+<span class="codeline" id="line-267"><code>				if as.contains(s[i]) {</code></span>
+<span class="codeline" id="line-268"><code>					return i</code></span>
+<span class="codeline" id="line-269"><code>				}</code></span>
+<span class="codeline" id="line-270"><code>			}</code></span>
+<span class="codeline" id="line-271"><code>			return -1</code></span>
+<span class="codeline" id="line-272"><code>		}</code></span>
+<span class="codeline" id="line-273"><code>	}</code></span>
+<span class="codeline" id="line-274"><code>	if len(s) == 1 {</code></span>
+<span class="codeline" id="line-275"><code>		r := rune(s[0])</code></span>
+<span class="codeline" id="line-276"><code>		if r &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-277"><code>			for _, r = range chars {</code></span>
+<span class="codeline" id="line-278"><code>				if r == utf8.RuneError {</code></span>
+<span class="codeline" id="line-279"><code>					return 0</code></span>
+<span class="codeline" id="line-280"><code>				}</code></span>
+<span class="codeline" id="line-281"><code>			}</code></span>
+<span class="codeline" id="line-282"><code>			return -1</code></span>
+<span class="codeline" id="line-283"><code>		}</code></span>
+<span class="codeline" id="line-284"><code>		if bytealg.IndexByteString(chars, s[0]) &gt;= 0 {</code></span>
+<span class="codeline" id="line-285"><code>			return 0</code></span>
+<span class="codeline" id="line-286"><code>		}</code></span>
+<span class="codeline" id="line-287"><code>		return -1</code></span>
+<span class="codeline" id="line-288"><code>	}</code></span>
+<span class="codeline" id="line-289"><code>	if len(chars) == 1 {</code></span>
+<span class="codeline" id="line-290"><code>		cr := rune(chars[0])</code></span>
+<span class="codeline" id="line-291"><code>		if cr &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-292"><code>			cr = utf8.RuneError</code></span>
+<span class="codeline" id="line-293"><code>		}</code></span>
+<span class="codeline" id="line-294"><code>		for i := len(s); i &gt; 0; {</code></span>
+<span class="codeline" id="line-295"><code>			r, size := utf8.DecodeLastRune(s[:i])</code></span>
+<span class="codeline" id="line-296"><code>			i -= size</code></span>
+<span class="codeline" id="line-297"><code>			if r == cr {</code></span>
+<span class="codeline" id="line-298"><code>				return i</code></span>
+<span class="codeline" id="line-299"><code>			}</code></span>
+<span class="codeline" id="line-300"><code>		}</code></span>
+<span class="codeline" id="line-301"><code>		return -1</code></span>
+<span class="codeline" id="line-302"><code>	}</code></span>
+<span class="codeline" id="line-303"><code>	for i := len(s); i &gt; 0; {</code></span>
+<span class="codeline" id="line-304"><code>		r := rune(s[i-1])</code></span>
+<span class="codeline" id="line-305"><code>		if r &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-306"><code>			if bytealg.IndexByteString(chars, s[i-1]) &gt;= 0 {</code></span>
+<span class="codeline" id="line-307"><code>				return i - 1</code></span>
+<span class="codeline" id="line-308"><code>			}</code></span>
+<span class="codeline" id="line-309"><code>			i--</code></span>
+<span class="codeline" id="line-310"><code>			continue</code></span>
+<span class="codeline" id="line-311"><code>		}</code></span>
+<span class="codeline" id="line-312"><code>		r, size := utf8.DecodeLastRune(s[:i])</code></span>
+<span class="codeline" id="line-313"><code>		i -= size</code></span>
+<span class="codeline" id="line-314"><code>		if r != utf8.RuneError {</code></span>
+<span class="codeline" id="line-315"><code>			// r is 2 to 4 bytes</code></span>
+<span class="codeline" id="line-316"><code>			if len(chars) == size {</code></span>
+<span class="codeline" id="line-317"><code>				if chars == string(r) {</code></span>
+<span class="codeline" id="line-318"><code>					return i</code></span>
+<span class="codeline" id="line-319"><code>				}</code></span>
+<span class="codeline" id="line-320"><code>				continue</code></span>
+<span class="codeline" id="line-321"><code>			}</code></span>
+<span class="codeline" id="line-322"><code>			// Use bytealg.IndexString for performance if available.</code></span>
+<span class="codeline" id="line-323"><code>			if bytealg.MaxLen &gt;= size {</code></span>
+<span class="codeline" id="line-324"><code>				if bytealg.IndexString(chars, string(r)) &gt;= 0 {</code></span>
+<span class="codeline" id="line-325"><code>					return i</code></span>
+<span class="codeline" id="line-326"><code>				}</code></span>
+<span class="codeline" id="line-327"><code>				continue</code></span>
+<span class="codeline" id="line-328"><code>			}</code></span>
+<span class="codeline" id="line-329"><code>		}</code></span>
+<span class="codeline" id="line-330"><code>		for _, ch := range chars {</code></span>
+<span class="codeline" id="line-331"><code>			if r == ch {</code></span>
+<span class="codeline" id="line-332"><code>				return i</code></span>
+<span class="codeline" id="line-333"><code>			}</code></span>
+<span class="codeline" id="line-334"><code>		}</code></span>
+<span class="codeline" id="line-335"><code>	}</code></span>
+<span class="codeline" id="line-336"><code>	return -1</code></span>
+<span class="codeline" id="line-337"><code>}</code></span>
+<span class="codeline" id="line-338"><code></code></span>
+<span class="codeline" id="line-339"><code>// Generic split: splits after each instance of sep,</code></span>
+<span class="codeline" id="line-340"><code>// including sepSave bytes of sep in the subslices.</code></span>
+<span class="codeline" id="line-341"><code>func genSplit(s, sep []byte, sepSave, n int) [][]byte {</code></span>
+<span class="codeline" id="line-342"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-343"><code>		return nil</code></span>
+<span class="codeline" id="line-344"><code>	}</code></span>
+<span class="codeline" id="line-345"><code>	if len(sep) == 0 {</code></span>
+<span class="codeline" id="line-346"><code>		return explode(s, n)</code></span>
+<span class="codeline" id="line-347"><code>	}</code></span>
+<span class="codeline" id="line-348"><code>	if n &lt; 0 {</code></span>
+<span class="codeline" id="line-349"><code>		n = Count(s, sep) + 1</code></span>
+<span class="codeline" id="line-350"><code>	}</code></span>
+<span class="codeline" id="line-351"><code></code></span>
+<span class="codeline" id="line-352"><code>	a := make([][]byte, n)</code></span>
+<span class="codeline" id="line-353"><code>	n--</code></span>
+<span class="codeline" id="line-354"><code>	i := 0</code></span>
+<span class="codeline" id="line-355"><code>	for i &lt; n {</code></span>
+<span class="codeline" id="line-356"><code>		m := Index(s, sep)</code></span>
+<span class="codeline" id="line-357"><code>		if m &lt; 0 {</code></span>
+<span class="codeline" id="line-358"><code>			break</code></span>
+<span class="codeline" id="line-359"><code>		}</code></span>
+<span class="codeline" id="line-360"><code>		a[i] = s[: m+sepSave : m+sepSave]</code></span>
+<span class="codeline" id="line-361"><code>		s = s[m+len(sep):]</code></span>
+<span class="codeline" id="line-362"><code>		i++</code></span>
+<span class="codeline" id="line-363"><code>	}</code></span>
+<span class="codeline" id="line-364"><code>	a[i] = s</code></span>
+<span class="codeline" id="line-365"><code>	return a[:i+1]</code></span>
+<span class="codeline" id="line-366"><code>}</code></span>
+<span class="codeline" id="line-367"><code></code></span>
+<span class="codeline" id="line-368"><code>// SplitN slices s into subslices separated by sep and returns a slice of</code></span>
+<span class="codeline" id="line-369"><code>// the subslices between those separators.</code></span>
+<span class="codeline" id="line-370"><code>// If sep is empty, SplitN splits after each UTF-8 sequence.</code></span>
+<span class="codeline" id="line-371"><code>// The count determines the number of subslices to return:</code></span>
+<span class="codeline" id="line-372"><code>//   n &gt; 0: at most n subslices; the last subslice will be the unsplit remainder.</code></span>
+<span class="codeline" id="line-373"><code>//   n == 0: the result is nil (zero subslices)</code></span>
+<span class="codeline" id="line-374"><code>//   n &lt; 0: all subslices</code></span>
+<span class="codeline" id="line-375"><code>func SplitN(s, sep []byte, n int) [][]byte { return genSplit(s, sep, 0, n) }</code></span>
+<span class="codeline" id="line-376"><code></code></span>
+<span class="codeline" id="line-377"><code>// SplitAfterN slices s into subslices after each instance of sep and</code></span>
+<span class="codeline" id="line-378"><code>// returns a slice of those subslices.</code></span>
+<span class="codeline" id="line-379"><code>// If sep is empty, SplitAfterN splits after each UTF-8 sequence.</code></span>
+<span class="codeline" id="line-380"><code>// The count determines the number of subslices to return:</code></span>
+<span class="codeline" id="line-381"><code>//   n &gt; 0: at most n subslices; the last subslice will be the unsplit remainder.</code></span>
+<span class="codeline" id="line-382"><code>//   n == 0: the result is nil (zero subslices)</code></span>
+<span class="codeline" id="line-383"><code>//   n &lt; 0: all subslices</code></span>
+<span class="codeline" id="line-384"><code>func SplitAfterN(s, sep []byte, n int) [][]byte {</code></span>
+<span class="codeline" id="line-385"><code>	return genSplit(s, sep, len(sep), n)</code></span>
+<span class="codeline" id="line-386"><code>}</code></span>
+<span class="codeline" id="line-387"><code></code></span>
+<span class="codeline" id="line-388"><code>// Split slices s into all subslices separated by sep and returns a slice of</code></span>
+<span class="codeline" id="line-389"><code>// the subslices between those separators.</code></span>
+<span class="codeline" id="line-390"><code>// If sep is empty, Split splits after each UTF-8 sequence.</code></span>
+<span class="codeline" id="line-391"><code>// It is equivalent to SplitN with a count of -1.</code></span>
+<span class="codeline" id="line-392"><code>func Split(s, sep []byte) [][]byte { return genSplit(s, sep, 0, -1) }</code></span>
+<span class="codeline" id="line-393"><code></code></span>
+<span class="codeline" id="line-394"><code>// SplitAfter slices s into all subslices after each instance of sep and</code></span>
+<span class="codeline" id="line-395"><code>// returns a slice of those subslices.</code></span>
+<span class="codeline" id="line-396"><code>// If sep is empty, SplitAfter splits after each UTF-8 sequence.</code></span>
+<span class="codeline" id="line-397"><code>// It is equivalent to SplitAfterN with a count of -1.</code></span>
+<span class="codeline" id="line-398"><code>func SplitAfter(s, sep []byte) [][]byte {</code></span>
+<span class="codeline" id="line-399"><code>	return genSplit(s, sep, len(sep), -1)</code></span>
+<span class="codeline" id="line-400"><code>}</code></span>
+<span class="codeline" id="line-401"><code></code></span>
+<span class="codeline" id="line-402"><code>var asciiSpace = [256]uint8{'\t': 1, '\n': 1, '\v': 1, '\f': 1, '\r': 1, ' ': 1}</code></span>
+<span class="codeline" id="line-403"><code></code></span>
+<span class="codeline" id="line-404"><code>// Fields interprets s as a sequence of UTF-8-encoded code points.</code></span>
+<span class="codeline" id="line-405"><code>// It splits the slice s around each instance of one or more consecutive white space</code></span>
+<span class="codeline" id="line-406"><code>// characters, as defined by unicode.IsSpace, returning a slice of subslices of s or an</code></span>
+<span class="codeline" id="line-407"><code>// empty slice if s contains only white space.</code></span>
+<span class="codeline" id="line-408"><code>func Fields(s []byte) [][]byte {</code></span>
+<span class="codeline" id="line-409"><code>	// First count the fields.</code></span>
+<span class="codeline" id="line-410"><code>	// This is an exact count if s is ASCII, otherwise it is an approximation.</code></span>
+<span class="codeline" id="line-411"><code>	n := 0</code></span>
+<span class="codeline" id="line-412"><code>	wasSpace := 1</code></span>
+<span class="codeline" id="line-413"><code>	// setBits is used to track which bits are set in the bytes of s.</code></span>
+<span class="codeline" id="line-414"><code>	setBits := uint8(0)</code></span>
+<span class="codeline" id="line-415"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-416"><code>		r := s[i]</code></span>
+<span class="codeline" id="line-417"><code>		setBits |= r</code></span>
+<span class="codeline" id="line-418"><code>		isSpace := int(asciiSpace[r])</code></span>
+<span class="codeline" id="line-419"><code>		n += wasSpace &amp; ^isSpace</code></span>
+<span class="codeline" id="line-420"><code>		wasSpace = isSpace</code></span>
+<span class="codeline" id="line-421"><code>	}</code></span>
+<span class="codeline" id="line-422"><code></code></span>
+<span class="codeline" id="line-423"><code>	if setBits &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-424"><code>		// Some runes in the input slice are not ASCII.</code></span>
+<span class="codeline" id="line-425"><code>		return FieldsFunc(s, unicode.IsSpace)</code></span>
+<span class="codeline" id="line-426"><code>	}</code></span>
+<span class="codeline" id="line-427"><code></code></span>
+<span class="codeline" id="line-428"><code>	// ASCII fast path</code></span>
+<span class="codeline" id="line-429"><code>	a := make([][]byte, n)</code></span>
+<span class="codeline" id="line-430"><code>	na := 0</code></span>
+<span class="codeline" id="line-431"><code>	fieldStart := 0</code></span>
+<span class="codeline" id="line-432"><code>	i := 0</code></span>
+<span class="codeline" id="line-433"><code>	// Skip spaces in the front of the input.</code></span>
+<span class="codeline" id="line-434"><code>	for i &lt; len(s) &amp;&amp; asciiSpace[s[i]] != 0 {</code></span>
+<span class="codeline" id="line-435"><code>		i++</code></span>
+<span class="codeline" id="line-436"><code>	}</code></span>
+<span class="codeline" id="line-437"><code>	fieldStart = i</code></span>
+<span class="codeline" id="line-438"><code>	for i &lt; len(s) {</code></span>
+<span class="codeline" id="line-439"><code>		if asciiSpace[s[i]] == 0 {</code></span>
+<span class="codeline" id="line-440"><code>			i++</code></span>
+<span class="codeline" id="line-441"><code>			continue</code></span>
+<span class="codeline" id="line-442"><code>		}</code></span>
+<span class="codeline" id="line-443"><code>		a[na] = s[fieldStart:i:i]</code></span>
+<span class="codeline" id="line-444"><code>		na++</code></span>
+<span class="codeline" id="line-445"><code>		i++</code></span>
+<span class="codeline" id="line-446"><code>		// Skip spaces in between fields.</code></span>
+<span class="codeline" id="line-447"><code>		for i &lt; len(s) &amp;&amp; asciiSpace[s[i]] != 0 {</code></span>
+<span class="codeline" id="line-448"><code>			i++</code></span>
+<span class="codeline" id="line-449"><code>		}</code></span>
+<span class="codeline" id="line-450"><code>		fieldStart = i</code></span>
+<span class="codeline" id="line-451"><code>	}</code></span>
+<span class="codeline" id="line-452"><code>	if fieldStart &lt; len(s) { // Last field might end at EOF.</code></span>
+<span class="codeline" id="line-453"><code>		a[na] = s[fieldStart:len(s):len(s)]</code></span>
+<span class="codeline" id="line-454"><code>	}</code></span>
+<span class="codeline" id="line-455"><code>	return a</code></span>
+<span class="codeline" id="line-456"><code>}</code></span>
+<span class="codeline" id="line-457"><code></code></span>
+<span class="codeline" id="line-458"><code>// FieldsFunc interprets s as a sequence of UTF-8-encoded code points.</code></span>
+<span class="codeline" id="line-459"><code>// It splits the slice s at each run of code points c satisfying f(c) and</code></span>
+<span class="codeline" id="line-460"><code>// returns a slice of subslices of s. If all code points in s satisfy f(c), or</code></span>
+<span class="codeline" id="line-461"><code>// len(s) == 0, an empty slice is returned.</code></span>
+<span class="codeline" id="line-462"><code>//</code></span>
+<span class="codeline" id="line-463"><code>// FieldsFunc makes no guarantees about the order in which it calls f(c)</code></span>
+<span class="codeline" id="line-464"><code>// and assumes that f always returns the same value for a given c.</code></span>
+<span class="codeline" id="line-465"><code>func FieldsFunc(s []byte, f func(rune) bool) [][]byte {</code></span>
+<span class="codeline" id="line-466"><code>	// A span is used to record a slice of s of the form s[start:end].</code></span>
+<span class="codeline" id="line-467"><code>	// The start index is inclusive and the end index is exclusive.</code></span>
+<span class="codeline" id="line-468"><code>	type span struct {</code></span>
+<span class="codeline" id="line-469"><code>		start int</code></span>
+<span class="codeline" id="line-470"><code>		end   int</code></span>
+<span class="codeline" id="line-471"><code>	}</code></span>
+<span class="codeline" id="line-472"><code>	spans := make([]span, 0, 32)</code></span>
+<span class="codeline" id="line-473"><code></code></span>
+<span class="codeline" id="line-474"><code>	// Find the field start and end indices.</code></span>
+<span class="codeline" id="line-475"><code>	// Doing this in a separate pass (rather than slicing the string s</code></span>
+<span class="codeline" id="line-476"><code>	// and collecting the result substrings right away) is significantly</code></span>
+<span class="codeline" id="line-477"><code>	// more efficient, possibly due to cache effects.</code></span>
+<span class="codeline" id="line-478"><code>	start := -1 // valid span start if &gt;= 0</code></span>
+<span class="codeline" id="line-479"><code>	for i := 0; i &lt; len(s); {</code></span>
+<span class="codeline" id="line-480"><code>		size := 1</code></span>
+<span class="codeline" id="line-481"><code>		r := rune(s[i])</code></span>
+<span class="codeline" id="line-482"><code>		if r &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-483"><code>			r, size = utf8.DecodeRune(s[i:])</code></span>
+<span class="codeline" id="line-484"><code>		}</code></span>
+<span class="codeline" id="line-485"><code>		if f(r) {</code></span>
+<span class="codeline" id="line-486"><code>			if start &gt;= 0 {</code></span>
+<span class="codeline" id="line-487"><code>				spans = append(spans, span{start, i})</code></span>
+<span class="codeline" id="line-488"><code>				start = -1</code></span>
+<span class="codeline" id="line-489"><code>			}</code></span>
+<span class="codeline" id="line-490"><code>		} else {</code></span>
+<span class="codeline" id="line-491"><code>			if start &lt; 0 {</code></span>
+<span class="codeline" id="line-492"><code>				start = i</code></span>
+<span class="codeline" id="line-493"><code>			}</code></span>
+<span class="codeline" id="line-494"><code>		}</code></span>
+<span class="codeline" id="line-495"><code>		i += size</code></span>
+<span class="codeline" id="line-496"><code>	}</code></span>
+<span class="codeline" id="line-497"><code></code></span>
+<span class="codeline" id="line-498"><code>	// Last field might end at EOF.</code></span>
+<span class="codeline" id="line-499"><code>	if start &gt;= 0 {</code></span>
+<span class="codeline" id="line-500"><code>		spans = append(spans, span{start, len(s)})</code></span>
+<span class="codeline" id="line-501"><code>	}</code></span>
+<span class="codeline" id="line-502"><code></code></span>
+<span class="codeline" id="line-503"><code>	// Create subslices from recorded field indices.</code></span>
+<span class="codeline" id="line-504"><code>	a := make([][]byte, len(spans))</code></span>
+<span class="codeline" id="line-505"><code>	for i, span := range spans {</code></span>
+<span class="codeline" id="line-506"><code>		a[i] = s[span.start:span.end:span.end]</code></span>
+<span class="codeline" id="line-507"><code>	}</code></span>
+<span class="codeline" id="line-508"><code></code></span>
+<span class="codeline" id="line-509"><code>	return a</code></span>
+<span class="codeline" id="line-510"><code>}</code></span>
+<span class="codeline" id="line-511"><code></code></span>
+<span class="codeline" id="line-512"><code>// Join concatenates the elements of s to create a new byte slice. The separator</code></span>
+<span class="codeline" id="line-513"><code>// sep is placed between elements in the resulting slice.</code></span>
+<span class="codeline" id="line-514"><code>func Join(s [][]byte, sep []byte) []byte {</code></span>
+<span class="codeline" id="line-515"><code>	if len(s) == 0 {</code></span>
+<span class="codeline" id="line-516"><code>		return []byte{}</code></span>
+<span class="codeline" id="line-517"><code>	}</code></span>
+<span class="codeline" id="line-518"><code>	if len(s) == 1 {</code></span>
+<span class="codeline" id="line-519"><code>		// Just return a copy.</code></span>
+<span class="codeline" id="line-520"><code>		return append([]byte(nil), s[0]...)</code></span>
+<span class="codeline" id="line-521"><code>	}</code></span>
+<span class="codeline" id="line-522"><code>	n := len(sep) * (len(s) - 1)</code></span>
+<span class="codeline" id="line-523"><code>	for _, v := range s {</code></span>
+<span class="codeline" id="line-524"><code>		n += len(v)</code></span>
+<span class="codeline" id="line-525"><code>	}</code></span>
+<span class="codeline" id="line-526"><code></code></span>
+<span class="codeline" id="line-527"><code>	b := make([]byte, n)</code></span>
+<span class="codeline" id="line-528"><code>	bp := copy(b, s[0])</code></span>
+<span class="codeline" id="line-529"><code>	for _, v := range s[1:] {</code></span>
+<span class="codeline" id="line-530"><code>		bp += copy(b[bp:], sep)</code></span>
+<span class="codeline" id="line-531"><code>		bp += copy(b[bp:], v)</code></span>
+<span class="codeline" id="line-532"><code>	}</code></span>
+<span class="codeline" id="line-533"><code>	return b</code></span>
+<span class="codeline" id="line-534"><code>}</code></span>
+<span class="codeline" id="line-535"><code></code></span>
+<span class="codeline" id="line-536"><code>// HasPrefix tests whether the byte slice s begins with prefix.</code></span>
+<span class="codeline" id="line-537"><code>func HasPrefix(s, prefix []byte) bool {</code></span>
+<span class="codeline" id="line-538"><code>	return len(s) &gt;= len(prefix) &amp;&amp; Equal(s[0:len(prefix)], prefix)</code></span>
+<span class="codeline" id="line-539"><code>}</code></span>
+<span class="codeline" id="line-540"><code></code></span>
+<span class="codeline" id="line-541"><code>// HasSuffix tests whether the byte slice s ends with suffix.</code></span>
+<span class="codeline" id="line-542"><code>func HasSuffix(s, suffix []byte) bool {</code></span>
+<span class="codeline" id="line-543"><code>	return len(s) &gt;= len(suffix) &amp;&amp; Equal(s[len(s)-len(suffix):], suffix)</code></span>
+<span class="codeline" id="line-544"><code>}</code></span>
+<span class="codeline" id="line-545"><code></code></span>
+<span class="codeline" id="line-546"><code>// Map returns a copy of the byte slice s with all its characters modified</code></span>
+<span class="codeline" id="line-547"><code>// according to the mapping function. If mapping returns a negative value, the character is</code></span>
+<span class="codeline" id="line-548"><code>// dropped from the byte slice with no replacement. The characters in s and the</code></span>
+<span class="codeline" id="line-549"><code>// output are interpreted as UTF-8-encoded code points.</code></span>
+<span class="codeline" id="line-550"><code>func Map(mapping func(r rune) rune, s []byte) []byte {</code></span>
+<span class="codeline" id="line-551"><code>	// In the worst case, the slice can grow when mapped, making</code></span>
+<span class="codeline" id="line-552"><code>	// things unpleasant. But it's so rare we barge in assuming it's</code></span>
+<span class="codeline" id="line-553"><code>	// fine. It could also shrink but that falls out naturally.</code></span>
+<span class="codeline" id="line-554"><code>	maxbytes := len(s) // length of b</code></span>
+<span class="codeline" id="line-555"><code>	nbytes := 0        // number of bytes encoded in b</code></span>
+<span class="codeline" id="line-556"><code>	b := make([]byte, maxbytes)</code></span>
+<span class="codeline" id="line-557"><code>	for i := 0; i &lt; len(s); {</code></span>
+<span class="codeline" id="line-558"><code>		wid := 1</code></span>
+<span class="codeline" id="line-559"><code>		r := rune(s[i])</code></span>
+<span class="codeline" id="line-560"><code>		if r &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-561"><code>			r, wid = utf8.DecodeRune(s[i:])</code></span>
+<span class="codeline" id="line-562"><code>		}</code></span>
+<span class="codeline" id="line-563"><code>		r = mapping(r)</code></span>
+<span class="codeline" id="line-564"><code>		if r &gt;= 0 {</code></span>
+<span class="codeline" id="line-565"><code>			rl := utf8.RuneLen(r)</code></span>
+<span class="codeline" id="line-566"><code>			if rl &lt; 0 {</code></span>
+<span class="codeline" id="line-567"><code>				rl = len(string(utf8.RuneError))</code></span>
+<span class="codeline" id="line-568"><code>			}</code></span>
+<span class="codeline" id="line-569"><code>			if nbytes+rl &gt; maxbytes {</code></span>
+<span class="codeline" id="line-570"><code>				// Grow the buffer.</code></span>
+<span class="codeline" id="line-571"><code>				maxbytes = maxbytes*2 + utf8.UTFMax</code></span>
+<span class="codeline" id="line-572"><code>				nb := make([]byte, maxbytes)</code></span>
+<span class="codeline" id="line-573"><code>				copy(nb, b[0:nbytes])</code></span>
+<span class="codeline" id="line-574"><code>				b = nb</code></span>
+<span class="codeline" id="line-575"><code>			}</code></span>
+<span class="codeline" id="line-576"><code>			nbytes += utf8.EncodeRune(b[nbytes:maxbytes], r)</code></span>
+<span class="codeline" id="line-577"><code>		}</code></span>
+<span class="codeline" id="line-578"><code>		i += wid</code></span>
+<span class="codeline" id="line-579"><code>	}</code></span>
+<span class="codeline" id="line-580"><code>	return b[0:nbytes]</code></span>
+<span class="codeline" id="line-581"><code>}</code></span>
+<span class="codeline" id="line-582"><code></code></span>
+<span class="codeline" id="line-583"><code>// Repeat returns a new byte slice consisting of count copies of b.</code></span>
+<span class="codeline" id="line-584"><code>//</code></span>
+<span class="codeline" id="line-585"><code>// It panics if count is negative or if</code></span>
+<span class="codeline" id="line-586"><code>// the result of (len(b) * count) overflows.</code></span>
+<span class="codeline" id="line-587"><code>func Repeat(b []byte, count int) []byte {</code></span>
+<span class="codeline" id="line-588"><code>	if count == 0 {</code></span>
+<span class="codeline" id="line-589"><code>		return []byte{}</code></span>
+<span class="codeline" id="line-590"><code>	}</code></span>
+<span class="codeline" id="line-591"><code>	// Since we cannot return an error on overflow,</code></span>
+<span class="codeline" id="line-592"><code>	// we should panic if the repeat will generate</code></span>
+<span class="codeline" id="line-593"><code>	// an overflow.</code></span>
+<span class="codeline" id="line-594"><code>	// See Issue golang.org/issue/16237.</code></span>
+<span class="codeline" id="line-595"><code>	if count &lt; 0 {</code></span>
+<span class="codeline" id="line-596"><code>		panic("bytes: negative Repeat count")</code></span>
+<span class="codeline" id="line-597"><code>	} else if len(b)*count/count != len(b) {</code></span>
+<span class="codeline" id="line-598"><code>		panic("bytes: Repeat count causes overflow")</code></span>
+<span class="codeline" id="line-599"><code>	}</code></span>
+<span class="codeline" id="line-600"><code></code></span>
+<span class="codeline" id="line-601"><code>	nb := make([]byte, len(b)*count)</code></span>
+<span class="codeline" id="line-602"><code>	bp := copy(nb, b)</code></span>
+<span class="codeline" id="line-603"><code>	for bp &lt; len(nb) {</code></span>
+<span class="codeline" id="line-604"><code>		copy(nb[bp:], nb[:bp])</code></span>
+<span class="codeline" id="line-605"><code>		bp *= 2</code></span>
+<span class="codeline" id="line-606"><code>	}</code></span>
+<span class="codeline" id="line-607"><code>	return nb</code></span>
+<span class="codeline" id="line-608"><code>}</code></span>
+<span class="codeline" id="line-609"><code></code></span>
+<span class="codeline" id="line-610"><code>// ToUpper returns a copy of the byte slice s with all Unicode letters mapped to</code></span>
+<span class="codeline" id="line-611"><code>// their upper case.</code></span>
+<span class="codeline" id="line-612"><code>func ToUpper(s []byte) []byte {</code></span>
+<span class="codeline" id="line-613"><code>	isASCII, hasLower := true, false</code></span>
+<span class="codeline" id="line-614"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-615"><code>		c := s[i]</code></span>
+<span class="codeline" id="line-616"><code>		if c &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-617"><code>			isASCII = false</code></span>
+<span class="codeline" id="line-618"><code>			break</code></span>
+<span class="codeline" id="line-619"><code>		}</code></span>
+<span class="codeline" id="line-620"><code>		hasLower = hasLower || ('a' &lt;= c &amp;&amp; c &lt;= 'z')</code></span>
+<span class="codeline" id="line-621"><code>	}</code></span>
+<span class="codeline" id="line-622"><code></code></span>
+<span class="codeline" id="line-623"><code>	if isASCII { // optimize for ASCII-only byte slices.</code></span>
+<span class="codeline" id="line-624"><code>		if !hasLower {</code></span>
+<span class="codeline" id="line-625"><code>			// Just return a copy.</code></span>
+<span class="codeline" id="line-626"><code>			return append([]byte(""), s...)</code></span>
+<span class="codeline" id="line-627"><code>		}</code></span>
+<span class="codeline" id="line-628"><code>		b := make([]byte, len(s))</code></span>
+<span class="codeline" id="line-629"><code>		for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-630"><code>			c := s[i]</code></span>
+<span class="codeline" id="line-631"><code>			if 'a' &lt;= c &amp;&amp; c &lt;= 'z' {</code></span>
+<span class="codeline" id="line-632"><code>				c -= 'a' - 'A'</code></span>
+<span class="codeline" id="line-633"><code>			}</code></span>
+<span class="codeline" id="line-634"><code>			b[i] = c</code></span>
+<span class="codeline" id="line-635"><code>		}</code></span>
+<span class="codeline" id="line-636"><code>		return b</code></span>
+<span class="codeline" id="line-637"><code>	}</code></span>
+<span class="codeline" id="line-638"><code>	return Map(unicode.ToUpper, s)</code></span>
+<span class="codeline" id="line-639"><code>}</code></span>
+<span class="codeline" id="line-640"><code></code></span>
+<span class="codeline" id="line-641"><code>// ToLower returns a copy of the byte slice s with all Unicode letters mapped to</code></span>
+<span class="codeline" id="line-642"><code>// their lower case.</code></span>
+<span class="codeline" id="line-643"><code>func ToLower(s []byte) []byte {</code></span>
+<span class="codeline" id="line-644"><code>	isASCII, hasUpper := true, false</code></span>
+<span class="codeline" id="line-645"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-646"><code>		c := s[i]</code></span>
+<span class="codeline" id="line-647"><code>		if c &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-648"><code>			isASCII = false</code></span>
+<span class="codeline" id="line-649"><code>			break</code></span>
+<span class="codeline" id="line-650"><code>		}</code></span>
+<span class="codeline" id="line-651"><code>		hasUpper = hasUpper || ('A' &lt;= c &amp;&amp; c &lt;= 'Z')</code></span>
+<span class="codeline" id="line-652"><code>	}</code></span>
+<span class="codeline" id="line-653"><code></code></span>
+<span class="codeline" id="line-654"><code>	if isASCII { // optimize for ASCII-only byte slices.</code></span>
+<span class="codeline" id="line-655"><code>		if !hasUpper {</code></span>
+<span class="codeline" id="line-656"><code>			return append([]byte(""), s...)</code></span>
+<span class="codeline" id="line-657"><code>		}</code></span>
+<span class="codeline" id="line-658"><code>		b := make([]byte, len(s))</code></span>
+<span class="codeline" id="line-659"><code>		for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-660"><code>			c := s[i]</code></span>
+<span class="codeline" id="line-661"><code>			if 'A' &lt;= c &amp;&amp; c &lt;= 'Z' {</code></span>
+<span class="codeline" id="line-662"><code>				c += 'a' - 'A'</code></span>
+<span class="codeline" id="line-663"><code>			}</code></span>
+<span class="codeline" id="line-664"><code>			b[i] = c</code></span>
+<span class="codeline" id="line-665"><code>		}</code></span>
+<span class="codeline" id="line-666"><code>		return b</code></span>
+<span class="codeline" id="line-667"><code>	}</code></span>
+<span class="codeline" id="line-668"><code>	return Map(unicode.ToLower, s)</code></span>
+<span class="codeline" id="line-669"><code>}</code></span>
+<span class="codeline" id="line-670"><code></code></span>
+<span class="codeline" id="line-671"><code>// ToTitle treats s as UTF-8-encoded bytes and returns a copy with all the Unicode letters mapped to their title case.</code></span>
+<span class="codeline" id="line-672"><code>func ToTitle(s []byte) []byte { return Map(unicode.ToTitle, s) }</code></span>
+<span class="codeline" id="line-673"><code></code></span>
+<span class="codeline" id="line-674"><code>// ToUpperSpecial treats s as UTF-8-encoded bytes and returns a copy with all the Unicode letters mapped to their</code></span>
+<span class="codeline" id="line-675"><code>// upper case, giving priority to the special casing rules.</code></span>
+<span class="codeline" id="line-676"><code>func ToUpperSpecial(c unicode.SpecialCase, s []byte) []byte {</code></span>
+<span class="codeline" id="line-677"><code>	return Map(c.ToUpper, s)</code></span>
+<span class="codeline" id="line-678"><code>}</code></span>
+<span class="codeline" id="line-679"><code></code></span>
+<span class="codeline" id="line-680"><code>// ToLowerSpecial treats s as UTF-8-encoded bytes and returns a copy with all the Unicode letters mapped to their</code></span>
+<span class="codeline" id="line-681"><code>// lower case, giving priority to the special casing rules.</code></span>
+<span class="codeline" id="line-682"><code>func ToLowerSpecial(c unicode.SpecialCase, s []byte) []byte {</code></span>
+<span class="codeline" id="line-683"><code>	return Map(c.ToLower, s)</code></span>
+<span class="codeline" id="line-684"><code>}</code></span>
+<span class="codeline" id="line-685"><code></code></span>
+<span class="codeline" id="line-686"><code>// ToTitleSpecial treats s as UTF-8-encoded bytes and returns a copy with all the Unicode letters mapped to their</code></span>
+<span class="codeline" id="line-687"><code>// title case, giving priority to the special casing rules.</code></span>
+<span class="codeline" id="line-688"><code>func ToTitleSpecial(c unicode.SpecialCase, s []byte) []byte {</code></span>
+<span class="codeline" id="line-689"><code>	return Map(c.ToTitle, s)</code></span>
+<span class="codeline" id="line-690"><code>}</code></span>
+<span class="codeline" id="line-691"><code></code></span>
+<span class="codeline" id="line-692"><code>// ToValidUTF8 treats s as UTF-8-encoded bytes and returns a copy with each run of bytes</code></span>
+<span class="codeline" id="line-693"><code>// representing invalid UTF-8 replaced with the bytes in replacement, which may be empty.</code></span>
+<span class="codeline" id="line-694"><code>func ToValidUTF8(s, replacement []byte) []byte {</code></span>
+<span class="codeline" id="line-695"><code>	b := make([]byte, 0, len(s)+len(replacement))</code></span>
+<span class="codeline" id="line-696"><code>	invalid := false // previous byte was from an invalid UTF-8 sequence</code></span>
+<span class="codeline" id="line-697"><code>	for i := 0; i &lt; len(s); {</code></span>
+<span class="codeline" id="line-698"><code>		c := s[i]</code></span>
+<span class="codeline" id="line-699"><code>		if c &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-700"><code>			i++</code></span>
+<span class="codeline" id="line-701"><code>			invalid = false</code></span>
+<span class="codeline" id="line-702"><code>			b = append(b, byte(c))</code></span>
+<span class="codeline" id="line-703"><code>			continue</code></span>
+<span class="codeline" id="line-704"><code>		}</code></span>
+<span class="codeline" id="line-705"><code>		_, wid := utf8.DecodeRune(s[i:])</code></span>
+<span class="codeline" id="line-706"><code>		if wid == 1 {</code></span>
+<span class="codeline" id="line-707"><code>			i++</code></span>
+<span class="codeline" id="line-708"><code>			if !invalid {</code></span>
+<span class="codeline" id="line-709"><code>				invalid = true</code></span>
+<span class="codeline" id="line-710"><code>				b = append(b, replacement...)</code></span>
+<span class="codeline" id="line-711"><code>			}</code></span>
+<span class="codeline" id="line-712"><code>			continue</code></span>
+<span class="codeline" id="line-713"><code>		}</code></span>
+<span class="codeline" id="line-714"><code>		invalid = false</code></span>
+<span class="codeline" id="line-715"><code>		b = append(b, s[i:i+wid]...)</code></span>
+<span class="codeline" id="line-716"><code>		i += wid</code></span>
+<span class="codeline" id="line-717"><code>	}</code></span>
+<span class="codeline" id="line-718"><code>	return b</code></span>
+<span class="codeline" id="line-719"><code>}</code></span>
+<span class="codeline" id="line-720"><code></code></span>
+<span class="codeline" id="line-721"><code>// isSeparator reports whether the rune could mark a word boundary.</code></span>
+<span class="codeline" id="line-722"><code>// TODO: update when package unicode captures more of the properties.</code></span>
+<span class="codeline" id="line-723"><code>func isSeparator(r rune) bool {</code></span>
+<span class="codeline" id="line-724"><code>	// ASCII alphanumerics and underscore are not separators</code></span>
+<span class="codeline" id="line-725"><code>	if r &lt;= 0x7F {</code></span>
+<span class="codeline" id="line-726"><code>		switch {</code></span>
+<span class="codeline" id="line-727"><code>		case '0' &lt;= r &amp;&amp; r &lt;= '9':</code></span>
+<span class="codeline" id="line-728"><code>			return false</code></span>
+<span class="codeline" id="line-729"><code>		case 'a' &lt;= r &amp;&amp; r &lt;= 'z':</code></span>
+<span class="codeline" id="line-730"><code>			return false</code></span>
+<span class="codeline" id="line-731"><code>		case 'A' &lt;= r &amp;&amp; r &lt;= 'Z':</code></span>
+<span class="codeline" id="line-732"><code>			return false</code></span>
+<span class="codeline" id="line-733"><code>		case r == '_':</code></span>
+<span class="codeline" id="line-734"><code>			return false</code></span>
+<span class="codeline" id="line-735"><code>		}</code></span>
+<span class="codeline" id="line-736"><code>		return true</code></span>
+<span class="codeline" id="line-737"><code>	}</code></span>
+<span class="codeline" id="line-738"><code>	// Letters and digits are not separators</code></span>
+<span class="codeline" id="line-739"><code>	if unicode.IsLetter(r) || unicode.IsDigit(r) {</code></span>
+<span class="codeline" id="line-740"><code>		return false</code></span>
+<span class="codeline" id="line-741"><code>	}</code></span>
+<span class="codeline" id="line-742"><code>	// Otherwise, all we can do for now is treat spaces as separators.</code></span>
+<span class="codeline" id="line-743"><code>	return unicode.IsSpace(r)</code></span>
+<span class="codeline" id="line-744"><code>}</code></span>
+<span class="codeline" id="line-745"><code></code></span>
+<span class="codeline" id="line-746"><code>// Title treats s as UTF-8-encoded bytes and returns a copy with all Unicode letters that begin</code></span>
+<span class="codeline" id="line-747"><code>// words mapped to their title case.</code></span>
+<span class="codeline" id="line-748"><code>//</code></span>
+<span class="codeline" id="line-749"><code>// BUG(rsc): The rule Title uses for word boundaries does not handle Unicode punctuation properly.</code></span>
+<span class="codeline" id="line-750"><code>func Title(s []byte) []byte {</code></span>
+<span class="codeline" id="line-751"><code>	// Use a closure here to remember state.</code></span>
+<span class="codeline" id="line-752"><code>	// Hackish but effective. Depends on Map scanning in order and calling</code></span>
+<span class="codeline" id="line-753"><code>	// the closure once per rune.</code></span>
+<span class="codeline" id="line-754"><code>	prev := ' '</code></span>
+<span class="codeline" id="line-755"><code>	return Map(</code></span>
+<span class="codeline" id="line-756"><code>		func(r rune) rune {</code></span>
+<span class="codeline" id="line-757"><code>			if isSeparator(prev) {</code></span>
+<span class="codeline" id="line-758"><code>				prev = r</code></span>
+<span class="codeline" id="line-759"><code>				return unicode.ToTitle(r)</code></span>
+<span class="codeline" id="line-760"><code>			}</code></span>
+<span class="codeline" id="line-761"><code>			prev = r</code></span>
+<span class="codeline" id="line-762"><code>			return r</code></span>
+<span class="codeline" id="line-763"><code>		},</code></span>
+<span class="codeline" id="line-764"><code>		s)</code></span>
+<span class="codeline" id="line-765"><code>}</code></span>
+<span class="codeline" id="line-766"><code></code></span>
+<span class="codeline" id="line-767"><code>// TrimLeftFunc treats s as UTF-8-encoded bytes and returns a subslice of s by slicing off</code></span>
+<span class="codeline" id="line-768"><code>// all leading UTF-8-encoded code points c that satisfy f(c).</code></span>
+<span class="codeline" id="line-769"><code>func TrimLeftFunc(s []byte, f func(r rune) bool) []byte {</code></span>
+<span class="codeline" id="line-770"><code>	i := indexFunc(s, f, false)</code></span>
+<span class="codeline" id="line-771"><code>	if i == -1 {</code></span>
+<span class="codeline" id="line-772"><code>		return nil</code></span>
+<span class="codeline" id="line-773"><code>	}</code></span>
+<span class="codeline" id="line-774"><code>	return s[i:]</code></span>
+<span class="codeline" id="line-775"><code>}</code></span>
+<span class="codeline" id="line-776"><code></code></span>
+<span class="codeline" id="line-777"><code>// TrimRightFunc returns a subslice of s by slicing off all trailing</code></span>
+<span class="codeline" id="line-778"><code>// UTF-8-encoded code points c that satisfy f(c).</code></span>
+<span class="codeline" id="line-779"><code>func TrimRightFunc(s []byte, f func(r rune) bool) []byte {</code></span>
+<span class="codeline" id="line-780"><code>	i := lastIndexFunc(s, f, false)</code></span>
+<span class="codeline" id="line-781"><code>	if i &gt;= 0 &amp;&amp; s[i] &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-782"><code>		_, wid := utf8.DecodeRune(s[i:])</code></span>
+<span class="codeline" id="line-783"><code>		i += wid</code></span>
+<span class="codeline" id="line-784"><code>	} else {</code></span>
+<span class="codeline" id="line-785"><code>		i++</code></span>
+<span class="codeline" id="line-786"><code>	}</code></span>
+<span class="codeline" id="line-787"><code>	return s[0:i]</code></span>
+<span class="codeline" id="line-788"><code>}</code></span>
+<span class="codeline" id="line-789"><code></code></span>
+<span class="codeline" id="line-790"><code>// TrimFunc returns a subslice of s by slicing off all leading and trailing</code></span>
+<span class="codeline" id="line-791"><code>// UTF-8-encoded code points c that satisfy f(c).</code></span>
+<span class="codeline" id="line-792"><code>func TrimFunc(s []byte, f func(r rune) bool) []byte {</code></span>
+<span class="codeline" id="line-793"><code>	return TrimRightFunc(TrimLeftFunc(s, f), f)</code></span>
+<span class="codeline" id="line-794"><code>}</code></span>
+<span class="codeline" id="line-795"><code></code></span>
+<span class="codeline" id="line-796"><code>// TrimPrefix returns s without the provided leading prefix string.</code></span>
+<span class="codeline" id="line-797"><code>// If s doesn't start with prefix, s is returned unchanged.</code></span>
+<span class="codeline" id="line-798"><code>func TrimPrefix(s, prefix []byte) []byte {</code></span>
+<span class="codeline" id="line-799"><code>	if HasPrefix(s, prefix) {</code></span>
+<span class="codeline" id="line-800"><code>		return s[len(prefix):]</code></span>
+<span class="codeline" id="line-801"><code>	}</code></span>
+<span class="codeline" id="line-802"><code>	return s</code></span>
+<span class="codeline" id="line-803"><code>}</code></span>
+<span class="codeline" id="line-804"><code></code></span>
+<span class="codeline" id="line-805"><code>// TrimSuffix returns s without the provided trailing suffix string.</code></span>
+<span class="codeline" id="line-806"><code>// If s doesn't end with suffix, s is returned unchanged.</code></span>
+<span class="codeline" id="line-807"><code>func TrimSuffix(s, suffix []byte) []byte {</code></span>
+<span class="codeline" id="line-808"><code>	if HasSuffix(s, suffix) {</code></span>
+<span class="codeline" id="line-809"><code>		return s[:len(s)-len(suffix)]</code></span>
+<span class="codeline" id="line-810"><code>	}</code></span>
+<span class="codeline" id="line-811"><code>	return s</code></span>
+<span class="codeline" id="line-812"><code>}</code></span>
+<span class="codeline" id="line-813"><code></code></span>
+<span class="codeline" id="line-814"><code>// IndexFunc interprets s as a sequence of UTF-8-encoded code points.</code></span>
+<span class="codeline" id="line-815"><code>// It returns the byte index in s of the first Unicode</code></span>
+<span class="codeline" id="line-816"><code>// code point satisfying f(c), or -1 if none do.</code></span>
+<span class="codeline" id="line-817"><code>func IndexFunc(s []byte, f func(r rune) bool) int {</code></span>
+<span class="codeline" id="line-818"><code>	return indexFunc(s, f, true)</code></span>
+<span class="codeline" id="line-819"><code>}</code></span>
+<span class="codeline" id="line-820"><code></code></span>
+<span class="codeline" id="line-821"><code>// LastIndexFunc interprets s as a sequence of UTF-8-encoded code points.</code></span>
+<span class="codeline" id="line-822"><code>// It returns the byte index in s of the last Unicode</code></span>
+<span class="codeline" id="line-823"><code>// code point satisfying f(c), or -1 if none do.</code></span>
+<span class="codeline" id="line-824"><code>func LastIndexFunc(s []byte, f func(r rune) bool) int {</code></span>
+<span class="codeline" id="line-825"><code>	return lastIndexFunc(s, f, true)</code></span>
+<span class="codeline" id="line-826"><code>}</code></span>
+<span class="codeline" id="line-827"><code></code></span>
+<span class="codeline" id="line-828"><code>// indexFunc is the same as IndexFunc except that if</code></span>
+<span class="codeline" id="line-829"><code>// truth==false, the sense of the predicate function is</code></span>
+<span class="codeline" id="line-830"><code>// inverted.</code></span>
+<span class="codeline" id="line-831"><code>func indexFunc(s []byte, f func(r rune) bool, truth bool) int {</code></span>
+<span class="codeline" id="line-832"><code>	start := 0</code></span>
+<span class="codeline" id="line-833"><code>	for start &lt; len(s) {</code></span>
+<span class="codeline" id="line-834"><code>		wid := 1</code></span>
+<span class="codeline" id="line-835"><code>		r := rune(s[start])</code></span>
+<span class="codeline" id="line-836"><code>		if r &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-837"><code>			r, wid = utf8.DecodeRune(s[start:])</code></span>
+<span class="codeline" id="line-838"><code>		}</code></span>
+<span class="codeline" id="line-839"><code>		if f(r) == truth {</code></span>
+<span class="codeline" id="line-840"><code>			return start</code></span>
+<span class="codeline" id="line-841"><code>		}</code></span>
+<span class="codeline" id="line-842"><code>		start += wid</code></span>
+<span class="codeline" id="line-843"><code>	}</code></span>
+<span class="codeline" id="line-844"><code>	return -1</code></span>
+<span class="codeline" id="line-845"><code>}</code></span>
+<span class="codeline" id="line-846"><code></code></span>
+<span class="codeline" id="line-847"><code>// lastIndexFunc is the same as LastIndexFunc except that if</code></span>
+<span class="codeline" id="line-848"><code>// truth==false, the sense of the predicate function is</code></span>
+<span class="codeline" id="line-849"><code>// inverted.</code></span>
+<span class="codeline" id="line-850"><code>func lastIndexFunc(s []byte, f func(r rune) bool, truth bool) int {</code></span>
+<span class="codeline" id="line-851"><code>	for i := len(s); i &gt; 0; {</code></span>
+<span class="codeline" id="line-852"><code>		r, size := rune(s[i-1]), 1</code></span>
+<span class="codeline" id="line-853"><code>		if r &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-854"><code>			r, size = utf8.DecodeLastRune(s[0:i])</code></span>
+<span class="codeline" id="line-855"><code>		}</code></span>
+<span class="codeline" id="line-856"><code>		i -= size</code></span>
+<span class="codeline" id="line-857"><code>		if f(r) == truth {</code></span>
+<span class="codeline" id="line-858"><code>			return i</code></span>
+<span class="codeline" id="line-859"><code>		}</code></span>
+<span class="codeline" id="line-860"><code>	}</code></span>
+<span class="codeline" id="line-861"><code>	return -1</code></span>
+<span class="codeline" id="line-862"><code>}</code></span>
+<span class="codeline" id="line-863"><code></code></span>
+<span class="codeline" id="line-864"><code>// asciiSet is a 32-byte value, where each bit represents the presence of a</code></span>
+<span class="codeline" id="line-865"><code>// given ASCII character in the set. The 128-bits of the lower 16 bytes,</code></span>
+<span class="codeline" id="line-866"><code>// starting with the least-significant bit of the lowest word to the</code></span>
+<span class="codeline" id="line-867"><code>// most-significant bit of the highest word, map to the full range of all</code></span>
+<span class="codeline" id="line-868"><code>// 128 ASCII characters. The 128-bits of the upper 16 bytes will be zeroed,</code></span>
+<span class="codeline" id="line-869"><code>// ensuring that any non-ASCII character will be reported as not in the set.</code></span>
+<span class="codeline" id="line-870"><code>type asciiSet [8]uint32</code></span>
+<span class="codeline" id="line-871"><code></code></span>
+<span class="codeline" id="line-872"><code>// makeASCIISet creates a set of ASCII characters and reports whether all</code></span>
+<span class="codeline" id="line-873"><code>// characters in chars are ASCII.</code></span>
+<span class="codeline" id="line-874"><code>func makeASCIISet(chars string) (as asciiSet, ok bool) {</code></span>
+<span class="codeline" id="line-875"><code>	for i := 0; i &lt; len(chars); i++ {</code></span>
+<span class="codeline" id="line-876"><code>		c := chars[i]</code></span>
+<span class="codeline" id="line-877"><code>		if c &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-878"><code>			return as, false</code></span>
+<span class="codeline" id="line-879"><code>		}</code></span>
+<span class="codeline" id="line-880"><code>		as[c&gt;&gt;5] |= 1 &lt;&lt; uint(c&amp;31)</code></span>
+<span class="codeline" id="line-881"><code>	}</code></span>
+<span class="codeline" id="line-882"><code>	return as, true</code></span>
+<span class="codeline" id="line-883"><code>}</code></span>
+<span class="codeline" id="line-884"><code></code></span>
+<span class="codeline" id="line-885"><code>// contains reports whether c is inside the set.</code></span>
+<span class="codeline" id="line-886"><code>func (as *asciiSet) contains(c byte) bool {</code></span>
+<span class="codeline" id="line-887"><code>	return (as[c&gt;&gt;5] &amp; (1 &lt;&lt; uint(c&amp;31))) != 0</code></span>
+<span class="codeline" id="line-888"><code>}</code></span>
+<span class="codeline" id="line-889"><code></code></span>
+<span class="codeline" id="line-890"><code>func makeCutsetFunc(cutset string) func(r rune) bool {</code></span>
+<span class="codeline" id="line-891"><code>	if len(cutset) == 1 &amp;&amp; cutset[0] &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-892"><code>		return func(r rune) bool {</code></span>
+<span class="codeline" id="line-893"><code>			return r == rune(cutset[0])</code></span>
+<span class="codeline" id="line-894"><code>		}</code></span>
+<span class="codeline" id="line-895"><code>	}</code></span>
+<span class="codeline" id="line-896"><code>	if as, isASCII := makeASCIISet(cutset); isASCII {</code></span>
+<span class="codeline" id="line-897"><code>		return func(r rune) bool {</code></span>
+<span class="codeline" id="line-898"><code>			return r &lt; utf8.RuneSelf &amp;&amp; as.contains(byte(r))</code></span>
+<span class="codeline" id="line-899"><code>		}</code></span>
+<span class="codeline" id="line-900"><code>	}</code></span>
+<span class="codeline" id="line-901"><code>	return func(r rune) bool {</code></span>
+<span class="codeline" id="line-902"><code>		for _, c := range cutset {</code></span>
+<span class="codeline" id="line-903"><code>			if c == r {</code></span>
+<span class="codeline" id="line-904"><code>				return true</code></span>
+<span class="codeline" id="line-905"><code>			}</code></span>
+<span class="codeline" id="line-906"><code>		}</code></span>
+<span class="codeline" id="line-907"><code>		return false</code></span>
+<span class="codeline" id="line-908"><code>	}</code></span>
+<span class="codeline" id="line-909"><code>}</code></span>
+<span class="codeline" id="line-910"><code></code></span>
+<span class="codeline" id="line-911"><code>// Trim returns a subslice of s by slicing off all leading and</code></span>
+<span class="codeline" id="line-912"><code>// trailing UTF-8-encoded code points contained in cutset.</code></span>
+<span class="codeline" id="line-913"><code>func Trim(s []byte, cutset string) []byte {</code></span>
+<span class="codeline" id="line-914"><code>	return TrimFunc(s, makeCutsetFunc(cutset))</code></span>
+<span class="codeline" id="line-915"><code>}</code></span>
+<span class="codeline" id="line-916"><code></code></span>
+<span class="codeline" id="line-917"><code>// TrimLeft returns a subslice of s by slicing off all leading</code></span>
+<span class="codeline" id="line-918"><code>// UTF-8-encoded code points contained in cutset.</code></span>
+<span class="codeline" id="line-919"><code>func TrimLeft(s []byte, cutset string) []byte {</code></span>
+<span class="codeline" id="line-920"><code>	return TrimLeftFunc(s, makeCutsetFunc(cutset))</code></span>
+<span class="codeline" id="line-921"><code>}</code></span>
+<span class="codeline" id="line-922"><code></code></span>
+<span class="codeline" id="line-923"><code>// TrimRight returns a subslice of s by slicing off all trailing</code></span>
+<span class="codeline" id="line-924"><code>// UTF-8-encoded code points that are contained in cutset.</code></span>
+<span class="codeline" id="line-925"><code>func TrimRight(s []byte, cutset string) []byte {</code></span>
+<span class="codeline" id="line-926"><code>	return TrimRightFunc(s, makeCutsetFunc(cutset))</code></span>
+<span class="codeline" id="line-927"><code>}</code></span>
+<span class="codeline" id="line-928"><code></code></span>
+<span class="codeline" id="line-929"><code>// TrimSpace returns a subslice of s by slicing off all leading and</code></span>
+<span class="codeline" id="line-930"><code>// trailing white space, as defined by Unicode.</code></span>
+<span class="codeline" id="line-931"><code>func TrimSpace(s []byte) []byte {</code></span>
+<span class="codeline" id="line-932"><code>	// Fast path for ASCII: look for the first ASCII non-space byte</code></span>
+<span class="codeline" id="line-933"><code>	start := 0</code></span>
+<span class="codeline" id="line-934"><code>	for ; start &lt; len(s); start++ {</code></span>
+<span class="codeline" id="line-935"><code>		c := s[start]</code></span>
+<span class="codeline" id="line-936"><code>		if c &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-937"><code>			// If we run into a non-ASCII byte, fall back to the</code></span>
+<span class="codeline" id="line-938"><code>			// slower unicode-aware method on the remaining bytes</code></span>
+<span class="codeline" id="line-939"><code>			return TrimFunc(s[start:], unicode.IsSpace)</code></span>
+<span class="codeline" id="line-940"><code>		}</code></span>
+<span class="codeline" id="line-941"><code>		if asciiSpace[c] == 0 {</code></span>
+<span class="codeline" id="line-942"><code>			break</code></span>
+<span class="codeline" id="line-943"><code>		}</code></span>
+<span class="codeline" id="line-944"><code>	}</code></span>
+<span class="codeline" id="line-945"><code></code></span>
+<span class="codeline" id="line-946"><code>	// Now look for the first ASCII non-space byte from the end</code></span>
+<span class="codeline" id="line-947"><code>	stop := len(s)</code></span>
+<span class="codeline" id="line-948"><code>	for ; stop &gt; start; stop-- {</code></span>
+<span class="codeline" id="line-949"><code>		c := s[stop-1]</code></span>
+<span class="codeline" id="line-950"><code>		if c &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-951"><code>			return TrimFunc(s[start:stop], unicode.IsSpace)</code></span>
+<span class="codeline" id="line-952"><code>		}</code></span>
+<span class="codeline" id="line-953"><code>		if asciiSpace[c] == 0 {</code></span>
+<span class="codeline" id="line-954"><code>			break</code></span>
+<span class="codeline" id="line-955"><code>		}</code></span>
+<span class="codeline" id="line-956"><code>	}</code></span>
+<span class="codeline" id="line-957"><code></code></span>
+<span class="codeline" id="line-958"><code>	// At this point s[start:stop] starts and ends with an ASCII</code></span>
+<span class="codeline" id="line-959"><code>	// non-space bytes, so we're done. Non-ASCII cases have already</code></span>
+<span class="codeline" id="line-960"><code>	// been handled above.</code></span>
+<span class="codeline" id="line-961"><code>	if start == stop {</code></span>
+<span class="codeline" id="line-962"><code>		// Special case to preserve previous TrimLeftFunc behavior,</code></span>
+<span class="codeline" id="line-963"><code>		// returning nil instead of empty slice if all spaces.</code></span>
+<span class="codeline" id="line-964"><code>		return nil</code></span>
+<span class="codeline" id="line-965"><code>	}</code></span>
+<span class="codeline" id="line-966"><code>	return s[start:stop]</code></span>
+<span class="codeline" id="line-967"><code>}</code></span>
+<span class="codeline" id="line-968"><code></code></span>
+<span class="codeline" id="line-969"><code>// Runes interprets s as a sequence of UTF-8-encoded code points.</code></span>
+<span class="codeline" id="line-970"><code>// It returns a slice of runes (Unicode code points) equivalent to s.</code></span>
+<span class="codeline" id="line-971"><code>func Runes(s []byte) []rune {</code></span>
+<span class="codeline" id="line-972"><code>	t := make([]rune, utf8.RuneCount(s))</code></span>
+<span class="codeline" id="line-973"><code>	i := 0</code></span>
+<span class="codeline" id="line-974"><code>	for len(s) &gt; 0 {</code></span>
+<span class="codeline" id="line-975"><code>		r, l := utf8.DecodeRune(s)</code></span>
+<span class="codeline" id="line-976"><code>		t[i] = r</code></span>
+<span class="codeline" id="line-977"><code>		i++</code></span>
+<span class="codeline" id="line-978"><code>		s = s[l:]</code></span>
+<span class="codeline" id="line-979"><code>	}</code></span>
+<span class="codeline" id="line-980"><code>	return t</code></span>
+<span class="codeline" id="line-981"><code>}</code></span>
+<span class="codeline" id="line-982"><code></code></span>
+<span class="codeline" id="line-983"><code>// Replace returns a copy of the slice s with the first n</code></span>
+<span class="codeline" id="line-984"><code>// non-overlapping instances of old replaced by new.</code></span>
+<span class="codeline" id="line-985"><code>// If old is empty, it matches at the beginning of the slice</code></span>
+<span class="codeline" id="line-986"><code>// and after each UTF-8 sequence, yielding up to k+1 replacements</code></span>
+<span class="codeline" id="line-987"><code>// for a k-rune slice.</code></span>
+<span class="codeline" id="line-988"><code>// If n &lt; 0, there is no limit on the number of replacements.</code></span>
+<span class="codeline" id="line-989"><code>func Replace(s, old, new []byte, n int) []byte {</code></span>
+<span class="codeline" id="line-990"><code>	m := 0</code></span>
+<span class="codeline" id="line-991"><code>	if n != 0 {</code></span>
+<span class="codeline" id="line-992"><code>		// Compute number of replacements.</code></span>
+<span class="codeline" id="line-993"><code>		m = Count(s, old)</code></span>
+<span class="codeline" id="line-994"><code>	}</code></span>
+<span class="codeline" id="line-995"><code>	if m == 0 {</code></span>
+<span class="codeline" id="line-996"><code>		// Just return a copy.</code></span>
+<span class="codeline" id="line-997"><code>		return append([]byte(nil), s...)</code></span>
+<span class="codeline" id="line-998"><code>	}</code></span>
+<span class="codeline" id="line-999"><code>	if n &lt; 0 || m &lt; n {</code></span>
+<span class="codeline" id="line-1000"><code>		n = m</code></span>
+<span class="codeline" id="line-1001"><code>	}</code></span>
+<span class="codeline" id="line-1002"><code></code></span>
+<span class="codeline" id="line-1003"><code>	// Apply replacements to buffer.</code></span>
+<span class="codeline" id="line-1004"><code>	t := make([]byte, len(s)+n*(len(new)-len(old)))</code></span>
+<span class="codeline" id="line-1005"><code>	w := 0</code></span>
+<span class="codeline" id="line-1006"><code>	start := 0</code></span>
+<span class="codeline" id="line-1007"><code>	for i := 0; i &lt; n; i++ {</code></span>
+<span class="codeline" id="line-1008"><code>		j := start</code></span>
+<span class="codeline" id="line-1009"><code>		if len(old) == 0 {</code></span>
+<span class="codeline" id="line-1010"><code>			if i &gt; 0 {</code></span>
+<span class="codeline" id="line-1011"><code>				_, wid := utf8.DecodeRune(s[start:])</code></span>
+<span class="codeline" id="line-1012"><code>				j += wid</code></span>
+<span class="codeline" id="line-1013"><code>			}</code></span>
+<span class="codeline" id="line-1014"><code>		} else {</code></span>
+<span class="codeline" id="line-1015"><code>			j += Index(s[start:], old)</code></span>
+<span class="codeline" id="line-1016"><code>		}</code></span>
+<span class="codeline" id="line-1017"><code>		w += copy(t[w:], s[start:j])</code></span>
+<span class="codeline" id="line-1018"><code>		w += copy(t[w:], new)</code></span>
+<span class="codeline" id="line-1019"><code>		start = j + len(old)</code></span>
+<span class="codeline" id="line-1020"><code>	}</code></span>
+<span class="codeline" id="line-1021"><code>	w += copy(t[w:], s[start:])</code></span>
+<span class="codeline" id="line-1022"><code>	return t[0:w]</code></span>
+<span class="codeline" id="line-1023"><code>}</code></span>
+<span class="codeline" id="line-1024"><code></code></span>
+<span class="codeline" id="line-1025"><code>// ReplaceAll returns a copy of the slice s with all</code></span>
+<span class="codeline" id="line-1026"><code>// non-overlapping instances of old replaced by new.</code></span>
+<span class="codeline" id="line-1027"><code>// If old is empty, it matches at the beginning of the slice</code></span>
+<span class="codeline" id="line-1028"><code>// and after each UTF-8 sequence, yielding up to k+1 replacements</code></span>
+<span class="codeline" id="line-1029"><code>// for a k-rune slice.</code></span>
+<span class="codeline" id="line-1030"><code>func ReplaceAll(s, old, new []byte) []byte {</code></span>
+<span class="codeline" id="line-1031"><code>	return Replace(s, old, new, -1)</code></span>
+<span class="codeline" id="line-1032"><code>}</code></span>
+<span class="codeline" id="line-1033"><code></code></span>
+<span class="codeline" id="line-1034"><code>// EqualFold reports whether s and t, interpreted as UTF-8 strings,</code></span>
+<span class="codeline" id="line-1035"><code>// are equal under Unicode case-folding, which is a more general</code></span>
+<span class="codeline" id="line-1036"><code>// form of case-insensitivity.</code></span>
+<span class="codeline" id="line-1037"><code>func EqualFold(s, t []byte) bool {</code></span>
+<span class="codeline" id="line-1038"><code>	for len(s) != 0 &amp;&amp; len(t) != 0 {</code></span>
+<span class="codeline" id="line-1039"><code>		// Extract first rune from each.</code></span>
+<span class="codeline" id="line-1040"><code>		var sr, tr rune</code></span>
+<span class="codeline" id="line-1041"><code>		if s[0] &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-1042"><code>			sr, s = rune(s[0]), s[1:]</code></span>
+<span class="codeline" id="line-1043"><code>		} else {</code></span>
+<span class="codeline" id="line-1044"><code>			r, size := utf8.DecodeRune(s)</code></span>
+<span class="codeline" id="line-1045"><code>			sr, s = r, s[size:]</code></span>
+<span class="codeline" id="line-1046"><code>		}</code></span>
+<span class="codeline" id="line-1047"><code>		if t[0] &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-1048"><code>			tr, t = rune(t[0]), t[1:]</code></span>
+<span class="codeline" id="line-1049"><code>		} else {</code></span>
+<span class="codeline" id="line-1050"><code>			r, size := utf8.DecodeRune(t)</code></span>
+<span class="codeline" id="line-1051"><code>			tr, t = r, t[size:]</code></span>
+<span class="codeline" id="line-1052"><code>		}</code></span>
+<span class="codeline" id="line-1053"><code></code></span>
+<span class="codeline" id="line-1054"><code>		// If they match, keep going; if not, return false.</code></span>
+<span class="codeline" id="line-1055"><code></code></span>
+<span class="codeline" id="line-1056"><code>		// Easy case.</code></span>
+<span class="codeline" id="line-1057"><code>		if tr == sr {</code></span>
+<span class="codeline" id="line-1058"><code>			continue</code></span>
+<span class="codeline" id="line-1059"><code>		}</code></span>
+<span class="codeline" id="line-1060"><code></code></span>
+<span class="codeline" id="line-1061"><code>		// Make sr &lt; tr to simplify what follows.</code></span>
+<span class="codeline" id="line-1062"><code>		if tr &lt; sr {</code></span>
+<span class="codeline" id="line-1063"><code>			tr, sr = sr, tr</code></span>
+<span class="codeline" id="line-1064"><code>		}</code></span>
+<span class="codeline" id="line-1065"><code>		// Fast check for ASCII.</code></span>
+<span class="codeline" id="line-1066"><code>		if tr &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-1067"><code>			// ASCII only, sr/tr must be upper/lower case</code></span>
+<span class="codeline" id="line-1068"><code>			if 'A' &lt;= sr &amp;&amp; sr &lt;= 'Z' &amp;&amp; tr == sr+'a'-'A' {</code></span>
+<span class="codeline" id="line-1069"><code>				continue</code></span>
+<span class="codeline" id="line-1070"><code>			}</code></span>
+<span class="codeline" id="line-1071"><code>			return false</code></span>
+<span class="codeline" id="line-1072"><code>		}</code></span>
+<span class="codeline" id="line-1073"><code></code></span>
+<span class="codeline" id="line-1074"><code>		// General case. SimpleFold(x) returns the next equivalent rune &gt; x</code></span>
+<span class="codeline" id="line-1075"><code>		// or wraps around to smaller values.</code></span>
+<span class="codeline" id="line-1076"><code>		r := unicode.SimpleFold(sr)</code></span>
+<span class="codeline" id="line-1077"><code>		for r != sr &amp;&amp; r &lt; tr {</code></span>
+<span class="codeline" id="line-1078"><code>			r = unicode.SimpleFold(r)</code></span>
+<span class="codeline" id="line-1079"><code>		}</code></span>
+<span class="codeline" id="line-1080"><code>		if r == tr {</code></span>
+<span class="codeline" id="line-1081"><code>			continue</code></span>
+<span class="codeline" id="line-1082"><code>		}</code></span>
+<span class="codeline" id="line-1083"><code>		return false</code></span>
+<span class="codeline" id="line-1084"><code>	}</code></span>
+<span class="codeline" id="line-1085"><code></code></span>
+<span class="codeline" id="line-1086"><code>	// One string is empty. Are both?</code></span>
+<span class="codeline" id="line-1087"><code>	return len(s) == len(t)</code></span>
+<span class="codeline" id="line-1088"><code>}</code></span>
+<span class="codeline" id="line-1089"><code></code></span>
+<span class="codeline" id="line-1090"><code>// Index returns the index of the first instance of sep in s, or -1 if sep is not present in s.</code></span>
+<span class="codeline" id="line-1091"><code>func Index(s, sep []byte) int {</code></span>
+<span class="codeline" id="line-1092"><code>	n := len(sep)</code></span>
+<span class="codeline" id="line-1093"><code>	switch {</code></span>
+<span class="codeline" id="line-1094"><code>	case n == 0:</code></span>
+<span class="codeline" id="line-1095"><code>		return 0</code></span>
+<span class="codeline" id="line-1096"><code>	case n == 1:</code></span>
+<span class="codeline" id="line-1097"><code>		return IndexByte(s, sep[0])</code></span>
+<span class="codeline" id="line-1098"><code>	case n == len(s):</code></span>
+<span class="codeline" id="line-1099"><code>		if Equal(sep, s) {</code></span>
+<span class="codeline" id="line-1100"><code>			return 0</code></span>
+<span class="codeline" id="line-1101"><code>		}</code></span>
+<span class="codeline" id="line-1102"><code>		return -1</code></span>
+<span class="codeline" id="line-1103"><code>	case n &gt; len(s):</code></span>
+<span class="codeline" id="line-1104"><code>		return -1</code></span>
+<span class="codeline" id="line-1105"><code>	case n &lt;= bytealg.MaxLen:</code></span>
+<span class="codeline" id="line-1106"><code>		// Use brute force when s and sep both are small</code></span>
+<span class="codeline" id="line-1107"><code>		if len(s) &lt;= bytealg.MaxBruteForce {</code></span>
+<span class="codeline" id="line-1108"><code>			return bytealg.Index(s, sep)</code></span>
+<span class="codeline" id="line-1109"><code>		}</code></span>
+<span class="codeline" id="line-1110"><code>		c0 := sep[0]</code></span>
+<span class="codeline" id="line-1111"><code>		c1 := sep[1]</code></span>
+<span class="codeline" id="line-1112"><code>		i := 0</code></span>
+<span class="codeline" id="line-1113"><code>		t := len(s) - n + 1</code></span>
+<span class="codeline" id="line-1114"><code>		fails := 0</code></span>
+<span class="codeline" id="line-1115"><code>		for i &lt; t {</code></span>
+<span class="codeline" id="line-1116"><code>			if s[i] != c0 {</code></span>
+<span class="codeline" id="line-1117"><code>				// IndexByte is faster than bytealg.Index, so use it as long as</code></span>
+<span class="codeline" id="line-1118"><code>				// we're not getting lots of false positives.</code></span>
+<span class="codeline" id="line-1119"><code>				o := IndexByte(s[i+1:t], c0)</code></span>
+<span class="codeline" id="line-1120"><code>				if o &lt; 0 {</code></span>
+<span class="codeline" id="line-1121"><code>					return -1</code></span>
+<span class="codeline" id="line-1122"><code>				}</code></span>
+<span class="codeline" id="line-1123"><code>				i += o + 1</code></span>
+<span class="codeline" id="line-1124"><code>			}</code></span>
+<span class="codeline" id="line-1125"><code>			if s[i+1] == c1 &amp;&amp; Equal(s[i:i+n], sep) {</code></span>
+<span class="codeline" id="line-1126"><code>				return i</code></span>
+<span class="codeline" id="line-1127"><code>			}</code></span>
+<span class="codeline" id="line-1128"><code>			fails++</code></span>
+<span class="codeline" id="line-1129"><code>			i++</code></span>
+<span class="codeline" id="line-1130"><code>			// Switch to bytealg.Index when IndexByte produces too many false positives.</code></span>
+<span class="codeline" id="line-1131"><code>			if fails &gt; bytealg.Cutover(i) {</code></span>
+<span class="codeline" id="line-1132"><code>				r := bytealg.Index(s[i:], sep)</code></span>
+<span class="codeline" id="line-1133"><code>				if r &gt;= 0 {</code></span>
+<span class="codeline" id="line-1134"><code>					return r + i</code></span>
+<span class="codeline" id="line-1135"><code>				}</code></span>
+<span class="codeline" id="line-1136"><code>				return -1</code></span>
+<span class="codeline" id="line-1137"><code>			}</code></span>
+<span class="codeline" id="line-1138"><code>		}</code></span>
+<span class="codeline" id="line-1139"><code>		return -1</code></span>
+<span class="codeline" id="line-1140"><code>	}</code></span>
+<span class="codeline" id="line-1141"><code>	c0 := sep[0]</code></span>
+<span class="codeline" id="line-1142"><code>	c1 := sep[1]</code></span>
+<span class="codeline" id="line-1143"><code>	i := 0</code></span>
+<span class="codeline" id="line-1144"><code>	fails := 0</code></span>
+<span class="codeline" id="line-1145"><code>	t := len(s) - n + 1</code></span>
+<span class="codeline" id="line-1146"><code>	for i &lt; t {</code></span>
+<span class="codeline" id="line-1147"><code>		if s[i] != c0 {</code></span>
+<span class="codeline" id="line-1148"><code>			o := IndexByte(s[i+1:t], c0)</code></span>
+<span class="codeline" id="line-1149"><code>			if o &lt; 0 {</code></span>
+<span class="codeline" id="line-1150"><code>				break</code></span>
+<span class="codeline" id="line-1151"><code>			}</code></span>
+<span class="codeline" id="line-1152"><code>			i += o + 1</code></span>
+<span class="codeline" id="line-1153"><code>		}</code></span>
+<span class="codeline" id="line-1154"><code>		if s[i+1] == c1 &amp;&amp; Equal(s[i:i+n], sep) {</code></span>
+<span class="codeline" id="line-1155"><code>			return i</code></span>
+<span class="codeline" id="line-1156"><code>		}</code></span>
+<span class="codeline" id="line-1157"><code>		i++</code></span>
+<span class="codeline" id="line-1158"><code>		fails++</code></span>
+<span class="codeline" id="line-1159"><code>		if fails &gt;= 4+i&gt;&gt;4 &amp;&amp; i &lt; t {</code></span>
+<span class="codeline" id="line-1160"><code>			// Give up on IndexByte, it isn't skipping ahead</code></span>
+<span class="codeline" id="line-1161"><code>			// far enough to be better than Rabin-Karp.</code></span>
+<span class="codeline" id="line-1162"><code>			// Experiments (using IndexPeriodic) suggest</code></span>
+<span class="codeline" id="line-1163"><code>			// the cutover is about 16 byte skips.</code></span>
+<span class="codeline" id="line-1164"><code>			// TODO: if large prefixes of sep are matching</code></span>
+<span class="codeline" id="line-1165"><code>			// we should cutover at even larger average skips,</code></span>
+<span class="codeline" id="line-1166"><code>			// because Equal becomes that much more expensive.</code></span>
+<span class="codeline" id="line-1167"><code>			// This code does not take that effect into account.</code></span>
+<span class="codeline" id="line-1168"><code>			j := bytealg.IndexRabinKarpBytes(s[i:], sep)</code></span>
+<span class="codeline" id="line-1169"><code>			if j &lt; 0 {</code></span>
+<span class="codeline" id="line-1170"><code>				return -1</code></span>
+<span class="codeline" id="line-1171"><code>			}</code></span>
+<span class="codeline" id="line-1172"><code>			return i + j</code></span>
+<span class="codeline" id="line-1173"><code>		}</code></span>
+<span class="codeline" id="line-1174"><code>	}</code></span>
+<span class="codeline" id="line-1175"><code>	return -1</code></span>
+<span class="codeline" id="line-1176"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

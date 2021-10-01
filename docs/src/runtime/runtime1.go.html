@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: runtime1.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	runtime1.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/bytealg"</code></span>
+<span class="codeline" id="line-9"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-10"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-11"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>// Keep a cached value to make gotraceback fast,</code></span>
+<span class="codeline" id="line-15"><code>// since we call it on every call to gentraceback.</code></span>
+<span class="codeline" id="line-16"><code>// The cached value is a uint32 in which the low bits</code></span>
+<span class="codeline" id="line-17"><code>// are the "crash" and "all" settings and the remaining</code></span>
+<span class="codeline" id="line-18"><code>// bits are the traceback value (0 off, 1 on, 2 include system).</code></span>
+<span class="codeline" id="line-19"><code>const (</code></span>
+<span class="codeline" id="line-20"><code>	tracebackCrash = 1 &lt;&lt; iota</code></span>
+<span class="codeline" id="line-21"><code>	tracebackAll</code></span>
+<span class="codeline" id="line-22"><code>	tracebackShift = iota</code></span>
+<span class="codeline" id="line-23"><code>)</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>var traceback_cache uint32 = 2 &lt;&lt; tracebackShift</code></span>
+<span class="codeline" id="line-26"><code>var traceback_env uint32</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>// gotraceback returns the current traceback settings.</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>// If level is 0, suppress all tracebacks.</code></span>
+<span class="codeline" id="line-31"><code>// If level is 1, show tracebacks, but exclude runtime frames.</code></span>
+<span class="codeline" id="line-32"><code>// If level is 2, show tracebacks including runtime frames.</code></span>
+<span class="codeline" id="line-33"><code>// If all is set, print all goroutine stacks. Otherwise, print just the current goroutine.</code></span>
+<span class="codeline" id="line-34"><code>// If crash is set, crash (core dump, etc) after tracebacking.</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-37"><code>func gotraceback() (level int32, all, crash bool) {</code></span>
+<span class="codeline" id="line-38"><code>	_g_ := getg()</code></span>
+<span class="codeline" id="line-39"><code>	t := atomic.Load(&amp;traceback_cache)</code></span>
+<span class="codeline" id="line-40"><code>	crash = t&amp;tracebackCrash != 0</code></span>
+<span class="codeline" id="line-41"><code>	all = _g_.m.throwing &gt; 0 || t&amp;tracebackAll != 0</code></span>
+<span class="codeline" id="line-42"><code>	if _g_.m.traceback != 0 {</code></span>
+<span class="codeline" id="line-43"><code>		level = int32(_g_.m.traceback)</code></span>
+<span class="codeline" id="line-44"><code>	} else {</code></span>
+<span class="codeline" id="line-45"><code>		level = int32(t &gt;&gt; tracebackShift)</code></span>
+<span class="codeline" id="line-46"><code>	}</code></span>
+<span class="codeline" id="line-47"><code>	return</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>var (</code></span>
+<span class="codeline" id="line-51"><code>	argc int32</code></span>
+<span class="codeline" id="line-52"><code>	argv **byte</code></span>
+<span class="codeline" id="line-53"><code>)</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>// nosplit for use in linux startup sysargs</code></span>
+<span class="codeline" id="line-56"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-57"><code>func argv_index(argv **byte, i int32) *byte {</code></span>
+<span class="codeline" id="line-58"><code>	return *(**byte)(add(unsafe.Pointer(argv), uintptr(i)*sys.PtrSize))</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>func args(c int32, v **byte) {</code></span>
+<span class="codeline" id="line-62"><code>	argc = c</code></span>
+<span class="codeline" id="line-63"><code>	argv = v</code></span>
+<span class="codeline" id="line-64"><code>	sysargs(c, v)</code></span>
+<span class="codeline" id="line-65"><code>}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>func goargs() {</code></span>
+<span class="codeline" id="line-68"><code>	if GOOS == "windows" {</code></span>
+<span class="codeline" id="line-69"><code>		return</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code>	argslice = make([]string, argc)</code></span>
+<span class="codeline" id="line-72"><code>	for i := int32(0); i &lt; argc; i++ {</code></span>
+<span class="codeline" id="line-73"><code>		argslice[i] = gostringnocopy(argv_index(argv, i))</code></span>
+<span class="codeline" id="line-74"><code>	}</code></span>
+<span class="codeline" id="line-75"><code>}</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>func goenvs_unix() {</code></span>
+<span class="codeline" id="line-78"><code>	// TODO(austin): ppc64 in dynamic linking mode doesn't</code></span>
+<span class="codeline" id="line-79"><code>	// guarantee env[] will immediately follow argv. Might cause</code></span>
+<span class="codeline" id="line-80"><code>	// problems.</code></span>
+<span class="codeline" id="line-81"><code>	n := int32(0)</code></span>
+<span class="codeline" id="line-82"><code>	for argv_index(argv, argc+1+n) != nil {</code></span>
+<span class="codeline" id="line-83"><code>		n++</code></span>
+<span class="codeline" id="line-84"><code>	}</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>	envs = make([]string, n)</code></span>
+<span class="codeline" id="line-87"><code>	for i := int32(0); i &lt; n; i++ {</code></span>
+<span class="codeline" id="line-88"><code>		envs[i] = gostring(argv_index(argv, argc+1+i))</code></span>
+<span class="codeline" id="line-89"><code>	}</code></span>
+<span class="codeline" id="line-90"><code>}</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>func environ() []string {</code></span>
+<span class="codeline" id="line-93"><code>	return envs</code></span>
+<span class="codeline" id="line-94"><code>}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>// TODO: These should be locals in testAtomic64, but we don't 8-byte</code></span>
+<span class="codeline" id="line-97"><code>// align stack variables on 386.</code></span>
+<span class="codeline" id="line-98"><code>var test_z64, test_x64 uint64</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>func testAtomic64() {</code></span>
+<span class="codeline" id="line-101"><code>	test_z64 = 42</code></span>
+<span class="codeline" id="line-102"><code>	test_x64 = 0</code></span>
+<span class="codeline" id="line-103"><code>	if atomic.Cas64(&amp;test_z64, test_x64, 1) {</code></span>
+<span class="codeline" id="line-104"><code>		throw("cas64 failed")</code></span>
+<span class="codeline" id="line-105"><code>	}</code></span>
+<span class="codeline" id="line-106"><code>	if test_x64 != 0 {</code></span>
+<span class="codeline" id="line-107"><code>		throw("cas64 failed")</code></span>
+<span class="codeline" id="line-108"><code>	}</code></span>
+<span class="codeline" id="line-109"><code>	test_x64 = 42</code></span>
+<span class="codeline" id="line-110"><code>	if !atomic.Cas64(&amp;test_z64, test_x64, 1) {</code></span>
+<span class="codeline" id="line-111"><code>		throw("cas64 failed")</code></span>
+<span class="codeline" id="line-112"><code>	}</code></span>
+<span class="codeline" id="line-113"><code>	if test_x64 != 42 || test_z64 != 1 {</code></span>
+<span class="codeline" id="line-114"><code>		throw("cas64 failed")</code></span>
+<span class="codeline" id="line-115"><code>	}</code></span>
+<span class="codeline" id="line-116"><code>	if atomic.Load64(&amp;test_z64) != 1 {</code></span>
+<span class="codeline" id="line-117"><code>		throw("load64 failed")</code></span>
+<span class="codeline" id="line-118"><code>	}</code></span>
+<span class="codeline" id="line-119"><code>	atomic.Store64(&amp;test_z64, (1&lt;&lt;40)+1)</code></span>
+<span class="codeline" id="line-120"><code>	if atomic.Load64(&amp;test_z64) != (1&lt;&lt;40)+1 {</code></span>
+<span class="codeline" id="line-121"><code>		throw("store64 failed")</code></span>
+<span class="codeline" id="line-122"><code>	}</code></span>
+<span class="codeline" id="line-123"><code>	if atomic.Xadd64(&amp;test_z64, (1&lt;&lt;40)+1) != (2&lt;&lt;40)+2 {</code></span>
+<span class="codeline" id="line-124"><code>		throw("xadd64 failed")</code></span>
+<span class="codeline" id="line-125"><code>	}</code></span>
+<span class="codeline" id="line-126"><code>	if atomic.Load64(&amp;test_z64) != (2&lt;&lt;40)+2 {</code></span>
+<span class="codeline" id="line-127"><code>		throw("xadd64 failed")</code></span>
+<span class="codeline" id="line-128"><code>	}</code></span>
+<span class="codeline" id="line-129"><code>	if atomic.Xchg64(&amp;test_z64, (3&lt;&lt;40)+3) != (2&lt;&lt;40)+2 {</code></span>
+<span class="codeline" id="line-130"><code>		throw("xchg64 failed")</code></span>
+<span class="codeline" id="line-131"><code>	}</code></span>
+<span class="codeline" id="line-132"><code>	if atomic.Load64(&amp;test_z64) != (3&lt;&lt;40)+3 {</code></span>
+<span class="codeline" id="line-133"><code>		throw("xchg64 failed")</code></span>
+<span class="codeline" id="line-134"><code>	}</code></span>
+<span class="codeline" id="line-135"><code>}</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>func check() {</code></span>
+<span class="codeline" id="line-138"><code>	var (</code></span>
+<span class="codeline" id="line-139"><code>		a     int8</code></span>
+<span class="codeline" id="line-140"><code>		b     uint8</code></span>
+<span class="codeline" id="line-141"><code>		c     int16</code></span>
+<span class="codeline" id="line-142"><code>		d     uint16</code></span>
+<span class="codeline" id="line-143"><code>		e     int32</code></span>
+<span class="codeline" id="line-144"><code>		f     uint32</code></span>
+<span class="codeline" id="line-145"><code>		g     int64</code></span>
+<span class="codeline" id="line-146"><code>		h     uint64</code></span>
+<span class="codeline" id="line-147"><code>		i, i1 float32</code></span>
+<span class="codeline" id="line-148"><code>		j, j1 float64</code></span>
+<span class="codeline" id="line-149"><code>		k     unsafe.Pointer</code></span>
+<span class="codeline" id="line-150"><code>		l     *uint16</code></span>
+<span class="codeline" id="line-151"><code>		m     [4]byte</code></span>
+<span class="codeline" id="line-152"><code>	)</code></span>
+<span class="codeline" id="line-153"><code>	type x1t struct {</code></span>
+<span class="codeline" id="line-154"><code>		x uint8</code></span>
+<span class="codeline" id="line-155"><code>	}</code></span>
+<span class="codeline" id="line-156"><code>	type y1t struct {</code></span>
+<span class="codeline" id="line-157"><code>		x1 x1t</code></span>
+<span class="codeline" id="line-158"><code>		y  uint8</code></span>
+<span class="codeline" id="line-159"><code>	}</code></span>
+<span class="codeline" id="line-160"><code>	var x1 x1t</code></span>
+<span class="codeline" id="line-161"><code>	var y1 y1t</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>	if unsafe.Sizeof(a) != 1 {</code></span>
+<span class="codeline" id="line-164"><code>		throw("bad a")</code></span>
+<span class="codeline" id="line-165"><code>	}</code></span>
+<span class="codeline" id="line-166"><code>	if unsafe.Sizeof(b) != 1 {</code></span>
+<span class="codeline" id="line-167"><code>		throw("bad b")</code></span>
+<span class="codeline" id="line-168"><code>	}</code></span>
+<span class="codeline" id="line-169"><code>	if unsafe.Sizeof(c) != 2 {</code></span>
+<span class="codeline" id="line-170"><code>		throw("bad c")</code></span>
+<span class="codeline" id="line-171"><code>	}</code></span>
+<span class="codeline" id="line-172"><code>	if unsafe.Sizeof(d) != 2 {</code></span>
+<span class="codeline" id="line-173"><code>		throw("bad d")</code></span>
+<span class="codeline" id="line-174"><code>	}</code></span>
+<span class="codeline" id="line-175"><code>	if unsafe.Sizeof(e) != 4 {</code></span>
+<span class="codeline" id="line-176"><code>		throw("bad e")</code></span>
+<span class="codeline" id="line-177"><code>	}</code></span>
+<span class="codeline" id="line-178"><code>	if unsafe.Sizeof(f) != 4 {</code></span>
+<span class="codeline" id="line-179"><code>		throw("bad f")</code></span>
+<span class="codeline" id="line-180"><code>	}</code></span>
+<span class="codeline" id="line-181"><code>	if unsafe.Sizeof(g) != 8 {</code></span>
+<span class="codeline" id="line-182"><code>		throw("bad g")</code></span>
+<span class="codeline" id="line-183"><code>	}</code></span>
+<span class="codeline" id="line-184"><code>	if unsafe.Sizeof(h) != 8 {</code></span>
+<span class="codeline" id="line-185"><code>		throw("bad h")</code></span>
+<span class="codeline" id="line-186"><code>	}</code></span>
+<span class="codeline" id="line-187"><code>	if unsafe.Sizeof(i) != 4 {</code></span>
+<span class="codeline" id="line-188"><code>		throw("bad i")</code></span>
+<span class="codeline" id="line-189"><code>	}</code></span>
+<span class="codeline" id="line-190"><code>	if unsafe.Sizeof(j) != 8 {</code></span>
+<span class="codeline" id="line-191"><code>		throw("bad j")</code></span>
+<span class="codeline" id="line-192"><code>	}</code></span>
+<span class="codeline" id="line-193"><code>	if unsafe.Sizeof(k) != sys.PtrSize {</code></span>
+<span class="codeline" id="line-194"><code>		throw("bad k")</code></span>
+<span class="codeline" id="line-195"><code>	}</code></span>
+<span class="codeline" id="line-196"><code>	if unsafe.Sizeof(l) != sys.PtrSize {</code></span>
+<span class="codeline" id="line-197"><code>		throw("bad l")</code></span>
+<span class="codeline" id="line-198"><code>	}</code></span>
+<span class="codeline" id="line-199"><code>	if unsafe.Sizeof(x1) != 1 {</code></span>
+<span class="codeline" id="line-200"><code>		throw("bad unsafe.Sizeof x1")</code></span>
+<span class="codeline" id="line-201"><code>	}</code></span>
+<span class="codeline" id="line-202"><code>	if unsafe.Offsetof(y1.y) != 1 {</code></span>
+<span class="codeline" id="line-203"><code>		throw("bad offsetof y1.y")</code></span>
+<span class="codeline" id="line-204"><code>	}</code></span>
+<span class="codeline" id="line-205"><code>	if unsafe.Sizeof(y1) != 2 {</code></span>
+<span class="codeline" id="line-206"><code>		throw("bad unsafe.Sizeof y1")</code></span>
+<span class="codeline" id="line-207"><code>	}</code></span>
+<span class="codeline" id="line-208"><code></code></span>
+<span class="codeline" id="line-209"><code>	if timediv(12345*1000000000+54321, 1000000000, &amp;e) != 12345 || e != 54321 {</code></span>
+<span class="codeline" id="line-210"><code>		throw("bad timediv")</code></span>
+<span class="codeline" id="line-211"><code>	}</code></span>
+<span class="codeline" id="line-212"><code></code></span>
+<span class="codeline" id="line-213"><code>	var z uint32</code></span>
+<span class="codeline" id="line-214"><code>	z = 1</code></span>
+<span class="codeline" id="line-215"><code>	if !atomic.Cas(&amp;z, 1, 2) {</code></span>
+<span class="codeline" id="line-216"><code>		throw("cas1")</code></span>
+<span class="codeline" id="line-217"><code>	}</code></span>
+<span class="codeline" id="line-218"><code>	if z != 2 {</code></span>
+<span class="codeline" id="line-219"><code>		throw("cas2")</code></span>
+<span class="codeline" id="line-220"><code>	}</code></span>
+<span class="codeline" id="line-221"><code></code></span>
+<span class="codeline" id="line-222"><code>	z = 4</code></span>
+<span class="codeline" id="line-223"><code>	if atomic.Cas(&amp;z, 5, 6) {</code></span>
+<span class="codeline" id="line-224"><code>		throw("cas3")</code></span>
+<span class="codeline" id="line-225"><code>	}</code></span>
+<span class="codeline" id="line-226"><code>	if z != 4 {</code></span>
+<span class="codeline" id="line-227"><code>		throw("cas4")</code></span>
+<span class="codeline" id="line-228"><code>	}</code></span>
+<span class="codeline" id="line-229"><code></code></span>
+<span class="codeline" id="line-230"><code>	z = 0xffffffff</code></span>
+<span class="codeline" id="line-231"><code>	if !atomic.Cas(&amp;z, 0xffffffff, 0xfffffffe) {</code></span>
+<span class="codeline" id="line-232"><code>		throw("cas5")</code></span>
+<span class="codeline" id="line-233"><code>	}</code></span>
+<span class="codeline" id="line-234"><code>	if z != 0xfffffffe {</code></span>
+<span class="codeline" id="line-235"><code>		throw("cas6")</code></span>
+<span class="codeline" id="line-236"><code>	}</code></span>
+<span class="codeline" id="line-237"><code></code></span>
+<span class="codeline" id="line-238"><code>	m = [4]byte{1, 1, 1, 1}</code></span>
+<span class="codeline" id="line-239"><code>	atomic.Or8(&amp;m[1], 0xf0)</code></span>
+<span class="codeline" id="line-240"><code>	if m[0] != 1 || m[1] != 0xf1 || m[2] != 1 || m[3] != 1 {</code></span>
+<span class="codeline" id="line-241"><code>		throw("atomicor8")</code></span>
+<span class="codeline" id="line-242"><code>	}</code></span>
+<span class="codeline" id="line-243"><code></code></span>
+<span class="codeline" id="line-244"><code>	m = [4]byte{0xff, 0xff, 0xff, 0xff}</code></span>
+<span class="codeline" id="line-245"><code>	atomic.And8(&amp;m[1], 0x1)</code></span>
+<span class="codeline" id="line-246"><code>	if m[0] != 0xff || m[1] != 0x1 || m[2] != 0xff || m[3] != 0xff {</code></span>
+<span class="codeline" id="line-247"><code>		throw("atomicand8")</code></span>
+<span class="codeline" id="line-248"><code>	}</code></span>
+<span class="codeline" id="line-249"><code></code></span>
+<span class="codeline" id="line-250"><code>	*(*uint64)(unsafe.Pointer(&amp;j)) = ^uint64(0)</code></span>
+<span class="codeline" id="line-251"><code>	if j == j {</code></span>
+<span class="codeline" id="line-252"><code>		throw("float64nan")</code></span>
+<span class="codeline" id="line-253"><code>	}</code></span>
+<span class="codeline" id="line-254"><code>	if !(j != j) {</code></span>
+<span class="codeline" id="line-255"><code>		throw("float64nan1")</code></span>
+<span class="codeline" id="line-256"><code>	}</code></span>
+<span class="codeline" id="line-257"><code></code></span>
+<span class="codeline" id="line-258"><code>	*(*uint64)(unsafe.Pointer(&amp;j1)) = ^uint64(1)</code></span>
+<span class="codeline" id="line-259"><code>	if j == j1 {</code></span>
+<span class="codeline" id="line-260"><code>		throw("float64nan2")</code></span>
+<span class="codeline" id="line-261"><code>	}</code></span>
+<span class="codeline" id="line-262"><code>	if !(j != j1) {</code></span>
+<span class="codeline" id="line-263"><code>		throw("float64nan3")</code></span>
+<span class="codeline" id="line-264"><code>	}</code></span>
+<span class="codeline" id="line-265"><code></code></span>
+<span class="codeline" id="line-266"><code>	*(*uint32)(unsafe.Pointer(&amp;i)) = ^uint32(0)</code></span>
+<span class="codeline" id="line-267"><code>	if i == i {</code></span>
+<span class="codeline" id="line-268"><code>		throw("float32nan")</code></span>
+<span class="codeline" id="line-269"><code>	}</code></span>
+<span class="codeline" id="line-270"><code>	if i == i {</code></span>
+<span class="codeline" id="line-271"><code>		throw("float32nan1")</code></span>
+<span class="codeline" id="line-272"><code>	}</code></span>
+<span class="codeline" id="line-273"><code></code></span>
+<span class="codeline" id="line-274"><code>	*(*uint32)(unsafe.Pointer(&amp;i1)) = ^uint32(1)</code></span>
+<span class="codeline" id="line-275"><code>	if i == i1 {</code></span>
+<span class="codeline" id="line-276"><code>		throw("float32nan2")</code></span>
+<span class="codeline" id="line-277"><code>	}</code></span>
+<span class="codeline" id="line-278"><code>	if i == i1 {</code></span>
+<span class="codeline" id="line-279"><code>		throw("float32nan3")</code></span>
+<span class="codeline" id="line-280"><code>	}</code></span>
+<span class="codeline" id="line-281"><code></code></span>
+<span class="codeline" id="line-282"><code>	testAtomic64()</code></span>
+<span class="codeline" id="line-283"><code></code></span>
+<span class="codeline" id="line-284"><code>	if _FixedStack != round2(_FixedStack) {</code></span>
+<span class="codeline" id="line-285"><code>		throw("FixedStack is not power-of-2")</code></span>
+<span class="codeline" id="line-286"><code>	}</code></span>
+<span class="codeline" id="line-287"><code></code></span>
+<span class="codeline" id="line-288"><code>	if !checkASM() {</code></span>
+<span class="codeline" id="line-289"><code>		throw("assembly checks failed")</code></span>
+<span class="codeline" id="line-290"><code>	}</code></span>
+<span class="codeline" id="line-291"><code>}</code></span>
+<span class="codeline" id="line-292"><code></code></span>
+<span class="codeline" id="line-293"><code>type dbgVar struct {</code></span>
+<span class="codeline" id="line-294"><code>	name  string</code></span>
+<span class="codeline" id="line-295"><code>	value *int32</code></span>
+<span class="codeline" id="line-296"><code>}</code></span>
+<span class="codeline" id="line-297"><code></code></span>
+<span class="codeline" id="line-298"><code>// Holds variables parsed from GODEBUG env var,</code></span>
+<span class="codeline" id="line-299"><code>// except for "memprofilerate" since there is an</code></span>
+<span class="codeline" id="line-300"><code>// existing int var for that value, which may</code></span>
+<span class="codeline" id="line-301"><code>// already have an initial value.</code></span>
+<span class="codeline" id="line-302"><code>var debug struct {</code></span>
+<span class="codeline" id="line-303"><code>	cgocheck           int32</code></span>
+<span class="codeline" id="line-304"><code>	clobberfree        int32</code></span>
+<span class="codeline" id="line-305"><code>	efence             int32</code></span>
+<span class="codeline" id="line-306"><code>	gccheckmark        int32</code></span>
+<span class="codeline" id="line-307"><code>	gcpacertrace       int32</code></span>
+<span class="codeline" id="line-308"><code>	gcshrinkstackoff   int32</code></span>
+<span class="codeline" id="line-309"><code>	gcstoptheworld     int32</code></span>
+<span class="codeline" id="line-310"><code>	gctrace            int32</code></span>
+<span class="codeline" id="line-311"><code>	invalidptr         int32</code></span>
+<span class="codeline" id="line-312"><code>	madvdontneed       int32 // for Linux; issue 28466</code></span>
+<span class="codeline" id="line-313"><code>	scavenge           int32</code></span>
+<span class="codeline" id="line-314"><code>	scavtrace          int32</code></span>
+<span class="codeline" id="line-315"><code>	scheddetail        int32</code></span>
+<span class="codeline" id="line-316"><code>	schedtrace         int32</code></span>
+<span class="codeline" id="line-317"><code>	tracebackancestors int32</code></span>
+<span class="codeline" id="line-318"><code>	asyncpreemptoff    int32</code></span>
+<span class="codeline" id="line-319"><code></code></span>
+<span class="codeline" id="line-320"><code>	// debug.malloc is used as a combined debug check</code></span>
+<span class="codeline" id="line-321"><code>	// in the malloc function and should be set</code></span>
+<span class="codeline" id="line-322"><code>	// if any of the below debug options is != 0.</code></span>
+<span class="codeline" id="line-323"><code>	malloc         bool</code></span>
+<span class="codeline" id="line-324"><code>	allocfreetrace int32</code></span>
+<span class="codeline" id="line-325"><code>	inittrace      int32</code></span>
+<span class="codeline" id="line-326"><code>	sbrk           int32</code></span>
+<span class="codeline" id="line-327"><code>}</code></span>
+<span class="codeline" id="line-328"><code></code></span>
+<span class="codeline" id="line-329"><code>var dbgvars = []dbgVar{</code></span>
+<span class="codeline" id="line-330"><code>	{"allocfreetrace", &amp;debug.allocfreetrace},</code></span>
+<span class="codeline" id="line-331"><code>	{"clobberfree", &amp;debug.clobberfree},</code></span>
+<span class="codeline" id="line-332"><code>	{"cgocheck", &amp;debug.cgocheck},</code></span>
+<span class="codeline" id="line-333"><code>	{"efence", &amp;debug.efence},</code></span>
+<span class="codeline" id="line-334"><code>	{"gccheckmark", &amp;debug.gccheckmark},</code></span>
+<span class="codeline" id="line-335"><code>	{"gcpacertrace", &amp;debug.gcpacertrace},</code></span>
+<span class="codeline" id="line-336"><code>	{"gcshrinkstackoff", &amp;debug.gcshrinkstackoff},</code></span>
+<span class="codeline" id="line-337"><code>	{"gcstoptheworld", &amp;debug.gcstoptheworld},</code></span>
+<span class="codeline" id="line-338"><code>	{"gctrace", &amp;debug.gctrace},</code></span>
+<span class="codeline" id="line-339"><code>	{"invalidptr", &amp;debug.invalidptr},</code></span>
+<span class="codeline" id="line-340"><code>	{"madvdontneed", &amp;debug.madvdontneed},</code></span>
+<span class="codeline" id="line-341"><code>	{"sbrk", &amp;debug.sbrk},</code></span>
+<span class="codeline" id="line-342"><code>	{"scavenge", &amp;debug.scavenge},</code></span>
+<span class="codeline" id="line-343"><code>	{"scavtrace", &amp;debug.scavtrace},</code></span>
+<span class="codeline" id="line-344"><code>	{"scheddetail", &amp;debug.scheddetail},</code></span>
+<span class="codeline" id="line-345"><code>	{"schedtrace", &amp;debug.schedtrace},</code></span>
+<span class="codeline" id="line-346"><code>	{"tracebackancestors", &amp;debug.tracebackancestors},</code></span>
+<span class="codeline" id="line-347"><code>	{"asyncpreemptoff", &amp;debug.asyncpreemptoff},</code></span>
+<span class="codeline" id="line-348"><code>	{"inittrace", &amp;debug.inittrace},</code></span>
+<span class="codeline" id="line-349"><code>}</code></span>
+<span class="codeline" id="line-350"><code></code></span>
+<span class="codeline" id="line-351"><code>func parsedebugvars() {</code></span>
+<span class="codeline" id="line-352"><code>	// defaults</code></span>
+<span class="codeline" id="line-353"><code>	debug.cgocheck = 1</code></span>
+<span class="codeline" id="line-354"><code>	debug.invalidptr = 1</code></span>
+<span class="codeline" id="line-355"><code>	if GOOS == "linux" {</code></span>
+<span class="codeline" id="line-356"><code>		// On Linux, MADV_FREE is faster than MADV_DONTNEED,</code></span>
+<span class="codeline" id="line-357"><code>		// but doesn't affect many of the statistics that</code></span>
+<span class="codeline" id="line-358"><code>		// MADV_DONTNEED does until the memory is actually</code></span>
+<span class="codeline" id="line-359"><code>		// reclaimed. This generally leads to poor user</code></span>
+<span class="codeline" id="line-360"><code>		// experience, like confusing stats in top and other</code></span>
+<span class="codeline" id="line-361"><code>		// monitoring tools; and bad integration with</code></span>
+<span class="codeline" id="line-362"><code>		// management systems that respond to memory usage.</code></span>
+<span class="codeline" id="line-363"><code>		// Hence, default to MADV_DONTNEED.</code></span>
+<span class="codeline" id="line-364"><code>		debug.madvdontneed = 1</code></span>
+<span class="codeline" id="line-365"><code>	}</code></span>
+<span class="codeline" id="line-366"><code></code></span>
+<span class="codeline" id="line-367"><code>	for p := gogetenv("GODEBUG"); p != ""; {</code></span>
+<span class="codeline" id="line-368"><code>		field := ""</code></span>
+<span class="codeline" id="line-369"><code>		i := bytealg.IndexByteString(p, ',')</code></span>
+<span class="codeline" id="line-370"><code>		if i &lt; 0 {</code></span>
+<span class="codeline" id="line-371"><code>			field, p = p, ""</code></span>
+<span class="codeline" id="line-372"><code>		} else {</code></span>
+<span class="codeline" id="line-373"><code>			field, p = p[:i], p[i+1:]</code></span>
+<span class="codeline" id="line-374"><code>		}</code></span>
+<span class="codeline" id="line-375"><code>		i = bytealg.IndexByteString(field, '=')</code></span>
+<span class="codeline" id="line-376"><code>		if i &lt; 0 {</code></span>
+<span class="codeline" id="line-377"><code>			continue</code></span>
+<span class="codeline" id="line-378"><code>		}</code></span>
+<span class="codeline" id="line-379"><code>		key, value := field[:i], field[i+1:]</code></span>
+<span class="codeline" id="line-380"><code></code></span>
+<span class="codeline" id="line-381"><code>		// Update MemProfileRate directly here since it</code></span>
+<span class="codeline" id="line-382"><code>		// is int, not int32, and should only be updated</code></span>
+<span class="codeline" id="line-383"><code>		// if specified in GODEBUG.</code></span>
+<span class="codeline" id="line-384"><code>		if key == "memprofilerate" {</code></span>
+<span class="codeline" id="line-385"><code>			if n, ok := atoi(value); ok {</code></span>
+<span class="codeline" id="line-386"><code>				MemProfileRate = n</code></span>
+<span class="codeline" id="line-387"><code>			}</code></span>
+<span class="codeline" id="line-388"><code>		} else {</code></span>
+<span class="codeline" id="line-389"><code>			for _, v := range dbgvars {</code></span>
+<span class="codeline" id="line-390"><code>				if v.name == key {</code></span>
+<span class="codeline" id="line-391"><code>					if n, ok := atoi32(value); ok {</code></span>
+<span class="codeline" id="line-392"><code>						*v.value = n</code></span>
+<span class="codeline" id="line-393"><code>					}</code></span>
+<span class="codeline" id="line-394"><code>				}</code></span>
+<span class="codeline" id="line-395"><code>			}</code></span>
+<span class="codeline" id="line-396"><code>		}</code></span>
+<span class="codeline" id="line-397"><code>	}</code></span>
+<span class="codeline" id="line-398"><code></code></span>
+<span class="codeline" id="line-399"><code>	debug.malloc = (debug.allocfreetrace | debug.inittrace | debug.sbrk) != 0</code></span>
+<span class="codeline" id="line-400"><code></code></span>
+<span class="codeline" id="line-401"><code>	setTraceback(gogetenv("GOTRACEBACK"))</code></span>
+<span class="codeline" id="line-402"><code>	traceback_env = traceback_cache</code></span>
+<span class="codeline" id="line-403"><code>}</code></span>
+<span class="codeline" id="line-404"><code></code></span>
+<span class="codeline" id="line-405"><code>//go:linkname setTraceback runtime/debug.SetTraceback</code></span>
+<span class="codeline" id="line-406"><code>func setTraceback(level string) {</code></span>
+<span class="codeline" id="line-407"><code>	var t uint32</code></span>
+<span class="codeline" id="line-408"><code>	switch level {</code></span>
+<span class="codeline" id="line-409"><code>	case "none":</code></span>
+<span class="codeline" id="line-410"><code>		t = 0</code></span>
+<span class="codeline" id="line-411"><code>	case "single", "":</code></span>
+<span class="codeline" id="line-412"><code>		t = 1 &lt;&lt; tracebackShift</code></span>
+<span class="codeline" id="line-413"><code>	case "all":</code></span>
+<span class="codeline" id="line-414"><code>		t = 1&lt;&lt;tracebackShift | tracebackAll</code></span>
+<span class="codeline" id="line-415"><code>	case "system":</code></span>
+<span class="codeline" id="line-416"><code>		t = 2&lt;&lt;tracebackShift | tracebackAll</code></span>
+<span class="codeline" id="line-417"><code>	case "crash":</code></span>
+<span class="codeline" id="line-418"><code>		t = 2&lt;&lt;tracebackShift | tracebackAll | tracebackCrash</code></span>
+<span class="codeline" id="line-419"><code>	default:</code></span>
+<span class="codeline" id="line-420"><code>		t = tracebackAll</code></span>
+<span class="codeline" id="line-421"><code>		if n, ok := atoi(level); ok &amp;&amp; n == int(uint32(n)) {</code></span>
+<span class="codeline" id="line-422"><code>			t |= uint32(n) &lt;&lt; tracebackShift</code></span>
+<span class="codeline" id="line-423"><code>		}</code></span>
+<span class="codeline" id="line-424"><code>	}</code></span>
+<span class="codeline" id="line-425"><code>	// when C owns the process, simply exit'ing the process on fatal errors</code></span>
+<span class="codeline" id="line-426"><code>	// and panics is surprising. Be louder and abort instead.</code></span>
+<span class="codeline" id="line-427"><code>	if islibrary || isarchive {</code></span>
+<span class="codeline" id="line-428"><code>		t |= tracebackCrash</code></span>
+<span class="codeline" id="line-429"><code>	}</code></span>
+<span class="codeline" id="line-430"><code></code></span>
+<span class="codeline" id="line-431"><code>	t |= traceback_env</code></span>
+<span class="codeline" id="line-432"><code></code></span>
+<span class="codeline" id="line-433"><code>	atomic.Store(&amp;traceback_cache, t)</code></span>
+<span class="codeline" id="line-434"><code>}</code></span>
+<span class="codeline" id="line-435"><code></code></span>
+<span class="codeline" id="line-436"><code>// Poor mans 64-bit division.</code></span>
+<span class="codeline" id="line-437"><code>// This is a very special function, do not use it if you are not sure what you are doing.</code></span>
+<span class="codeline" id="line-438"><code>// int64 division is lowered into _divv() call on 386, which does not fit into nosplit functions.</code></span>
+<span class="codeline" id="line-439"><code>// Handles overflow in a time-specific manner.</code></span>
+<span class="codeline" id="line-440"><code>// This keeps us within no-split stack limits on 32-bit processors.</code></span>
+<span class="codeline" id="line-441"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-442"><code>func timediv(v int64, div int32, rem *int32) int32 {</code></span>
+<span class="codeline" id="line-443"><code>	res := int32(0)</code></span>
+<span class="codeline" id="line-444"><code>	for bit := 30; bit &gt;= 0; bit-- {</code></span>
+<span class="codeline" id="line-445"><code>		if v &gt;= int64(div)&lt;&lt;uint(bit) {</code></span>
+<span class="codeline" id="line-446"><code>			v = v - (int64(div) &lt;&lt; uint(bit))</code></span>
+<span class="codeline" id="line-447"><code>			// Before this for loop, res was 0, thus all these</code></span>
+<span class="codeline" id="line-448"><code>			// power of 2 increments are now just bitsets.</code></span>
+<span class="codeline" id="line-449"><code>			res |= 1 &lt;&lt; uint(bit)</code></span>
+<span class="codeline" id="line-450"><code>		}</code></span>
+<span class="codeline" id="line-451"><code>	}</code></span>
+<span class="codeline" id="line-452"><code>	if v &gt;= int64(div) {</code></span>
+<span class="codeline" id="line-453"><code>		if rem != nil {</code></span>
+<span class="codeline" id="line-454"><code>			*rem = 0</code></span>
+<span class="codeline" id="line-455"><code>		}</code></span>
+<span class="codeline" id="line-456"><code>		return 0x7fffffff</code></span>
+<span class="codeline" id="line-457"><code>	}</code></span>
+<span class="codeline" id="line-458"><code>	if rem != nil {</code></span>
+<span class="codeline" id="line-459"><code>		*rem = int32(v)</code></span>
+<span class="codeline" id="line-460"><code>	}</code></span>
+<span class="codeline" id="line-461"><code>	return res</code></span>
+<span class="codeline" id="line-462"><code>}</code></span>
+<span class="codeline" id="line-463"><code></code></span>
+<span class="codeline" id="line-464"><code>// Helpers for Go. Must be NOSPLIT, must only call NOSPLIT functions, and must not block.</code></span>
+<span class="codeline" id="line-465"><code></code></span>
+<span class="codeline" id="line-466"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-467"><code>func acquirem() *m {</code></span>
+<span class="codeline" id="line-468"><code>	_g_ := getg()</code></span>
+<span class="codeline" id="line-469"><code>	_g_.m.locks++</code></span>
+<span class="codeline" id="line-470"><code>	return _g_.m</code></span>
+<span class="codeline" id="line-471"><code>}</code></span>
+<span class="codeline" id="line-472"><code></code></span>
+<span class="codeline" id="line-473"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-474"><code>func releasem(mp *m) {</code></span>
+<span class="codeline" id="line-475"><code>	_g_ := getg()</code></span>
+<span class="codeline" id="line-476"><code>	mp.locks--</code></span>
+<span class="codeline" id="line-477"><code>	if mp.locks == 0 &amp;&amp; _g_.preempt {</code></span>
+<span class="codeline" id="line-478"><code>		// restore the preemption request in case we've cleared it in newstack</code></span>
+<span class="codeline" id="line-479"><code>		_g_.stackguard0 = stackPreempt</code></span>
+<span class="codeline" id="line-480"><code>	}</code></span>
+<span class="codeline" id="line-481"><code>}</code></span>
+<span class="codeline" id="line-482"><code></code></span>
+<span class="codeline" id="line-483"><code>//go:linkname reflect_typelinks reflect.typelinks</code></span>
+<span class="codeline" id="line-484"><code>func reflect_typelinks() ([]unsafe.Pointer, [][]int32) {</code></span>
+<span class="codeline" id="line-485"><code>	modules := activeModules()</code></span>
+<span class="codeline" id="line-486"><code>	sections := []unsafe.Pointer{unsafe.Pointer(modules[0].types)}</code></span>
+<span class="codeline" id="line-487"><code>	ret := [][]int32{modules[0].typelinks}</code></span>
+<span class="codeline" id="line-488"><code>	for _, md := range modules[1:] {</code></span>
+<span class="codeline" id="line-489"><code>		sections = append(sections, unsafe.Pointer(md.types))</code></span>
+<span class="codeline" id="line-490"><code>		ret = append(ret, md.typelinks)</code></span>
+<span class="codeline" id="line-491"><code>	}</code></span>
+<span class="codeline" id="line-492"><code>	return sections, ret</code></span>
+<span class="codeline" id="line-493"><code>}</code></span>
+<span class="codeline" id="line-494"><code></code></span>
+<span class="codeline" id="line-495"><code>// reflect_resolveNameOff resolves a name offset from a base pointer.</code></span>
+<span class="codeline" id="line-496"><code>//go:linkname reflect_resolveNameOff reflect.resolveNameOff</code></span>
+<span class="codeline" id="line-497"><code>func reflect_resolveNameOff(ptrInModule unsafe.Pointer, off int32) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-498"><code>	return unsafe.Pointer(resolveNameOff(ptrInModule, nameOff(off)).bytes)</code></span>
+<span class="codeline" id="line-499"><code>}</code></span>
+<span class="codeline" id="line-500"><code></code></span>
+<span class="codeline" id="line-501"><code>// reflect_resolveTypeOff resolves an *rtype offset from a base type.</code></span>
+<span class="codeline" id="line-502"><code>//go:linkname reflect_resolveTypeOff reflect.resolveTypeOff</code></span>
+<span class="codeline" id="line-503"><code>func reflect_resolveTypeOff(rtype unsafe.Pointer, off int32) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-504"><code>	return unsafe.Pointer((*_type)(rtype).typeOff(typeOff(off)))</code></span>
+<span class="codeline" id="line-505"><code>}</code></span>
+<span class="codeline" id="line-506"><code></code></span>
+<span class="codeline" id="line-507"><code>// reflect_resolveTextOff resolves a function pointer offset from a base type.</code></span>
+<span class="codeline" id="line-508"><code>//go:linkname reflect_resolveTextOff reflect.resolveTextOff</code></span>
+<span class="codeline" id="line-509"><code>func reflect_resolveTextOff(rtype unsafe.Pointer, off int32) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-510"><code>	return (*_type)(rtype).textOff(textOff(off))</code></span>
+<span class="codeline" id="line-511"><code></code></span>
+<span class="codeline" id="line-512"><code>}</code></span>
+<span class="codeline" id="line-513"><code></code></span>
+<span class="codeline" id="line-514"><code>// reflectlite_resolveNameOff resolves a name offset from a base pointer.</code></span>
+<span class="codeline" id="line-515"><code>//go:linkname reflectlite_resolveNameOff internal/reflectlite.resolveNameOff</code></span>
+<span class="codeline" id="line-516"><code>func reflectlite_resolveNameOff(ptrInModule unsafe.Pointer, off int32) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-517"><code>	return unsafe.Pointer(resolveNameOff(ptrInModule, nameOff(off)).bytes)</code></span>
+<span class="codeline" id="line-518"><code>}</code></span>
+<span class="codeline" id="line-519"><code></code></span>
+<span class="codeline" id="line-520"><code>// reflectlite_resolveTypeOff resolves an *rtype offset from a base type.</code></span>
+<span class="codeline" id="line-521"><code>//go:linkname reflectlite_resolveTypeOff internal/reflectlite.resolveTypeOff</code></span>
+<span class="codeline" id="line-522"><code>func reflectlite_resolveTypeOff(rtype unsafe.Pointer, off int32) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-523"><code>	return unsafe.Pointer((*_type)(rtype).typeOff(typeOff(off)))</code></span>
+<span class="codeline" id="line-524"><code>}</code></span>
+<span class="codeline" id="line-525"><code></code></span>
+<span class="codeline" id="line-526"><code>// reflect_addReflectOff adds a pointer to the reflection offset lookup map.</code></span>
+<span class="codeline" id="line-527"><code>//go:linkname reflect_addReflectOff reflect.addReflectOff</code></span>
+<span class="codeline" id="line-528"><code>func reflect_addReflectOff(ptr unsafe.Pointer) int32 {</code></span>
+<span class="codeline" id="line-529"><code>	reflectOffsLock()</code></span>
+<span class="codeline" id="line-530"><code>	if reflectOffs.m == nil {</code></span>
+<span class="codeline" id="line-531"><code>		reflectOffs.m = make(map[int32]unsafe.Pointer)</code></span>
+<span class="codeline" id="line-532"><code>		reflectOffs.minv = make(map[unsafe.Pointer]int32)</code></span>
+<span class="codeline" id="line-533"><code>		reflectOffs.next = -1</code></span>
+<span class="codeline" id="line-534"><code>	}</code></span>
+<span class="codeline" id="line-535"><code>	id, found := reflectOffs.minv[ptr]</code></span>
+<span class="codeline" id="line-536"><code>	if !found {</code></span>
+<span class="codeline" id="line-537"><code>		id = reflectOffs.next</code></span>
+<span class="codeline" id="line-538"><code>		reflectOffs.next-- // use negative offsets as IDs to aid debugging</code></span>
+<span class="codeline" id="line-539"><code>		reflectOffs.m[id] = ptr</code></span>
+<span class="codeline" id="line-540"><code>		reflectOffs.minv[ptr] = id</code></span>
+<span class="codeline" id="line-541"><code>	}</code></span>
+<span class="codeline" id="line-542"><code>	reflectOffsUnlock()</code></span>
+<span class="codeline" id="line-543"><code>	return id</code></span>
+<span class="codeline" id="line-544"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

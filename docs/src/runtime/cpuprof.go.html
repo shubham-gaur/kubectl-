@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: cpuprof.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	cpuprof.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// CPU profiling.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// The signal handler for the profiling clock tick adds a new stack trace</code></span>
+<span class="codeline" id="line-8"><code>// to a log of recent traces. The log is read by a user goroutine that</code></span>
+<span class="codeline" id="line-9"><code>// turns it into formatted profile data. If the reader does not keep up</code></span>
+<span class="codeline" id="line-10"><code>// with the log, those writes will be recorded as a count of lost records.</code></span>
+<span class="codeline" id="line-11"><code>// The actual profile buffer is in profbuf.go.</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>package runtime</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>import (</code></span>
+<span class="codeline" id="line-16"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-17"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-18"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-19"><code>)</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>const maxCPUProfStack = 64</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>type cpuProfile struct {</code></span>
+<span class="codeline" id="line-24"><code>	lock mutex</code></span>
+<span class="codeline" id="line-25"><code>	on   bool     // profiling is on</code></span>
+<span class="codeline" id="line-26"><code>	log  *profBuf // profile events written here</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>	// extra holds extra stacks accumulated in addNonGo</code></span>
+<span class="codeline" id="line-29"><code>	// corresponding to profiling signals arriving on</code></span>
+<span class="codeline" id="line-30"><code>	// non-Go-created threads. Those stacks are written</code></span>
+<span class="codeline" id="line-31"><code>	// to log the next time a normal Go thread gets the</code></span>
+<span class="codeline" id="line-32"><code>	// signal handler.</code></span>
+<span class="codeline" id="line-33"><code>	// Assuming the stacks are 2 words each (we don't get</code></span>
+<span class="codeline" id="line-34"><code>	// a full traceback from those threads), plus one word</code></span>
+<span class="codeline" id="line-35"><code>	// size for framing, 100 Hz profiling would generate</code></span>
+<span class="codeline" id="line-36"><code>	// 300 words per second.</code></span>
+<span class="codeline" id="line-37"><code>	// Hopefully a normal Go thread will get the profiling</code></span>
+<span class="codeline" id="line-38"><code>	// signal at least once every few seconds.</code></span>
+<span class="codeline" id="line-39"><code>	extra      [1000]uintptr</code></span>
+<span class="codeline" id="line-40"><code>	numExtra   int</code></span>
+<span class="codeline" id="line-41"><code>	lostExtra  uint64 // count of frames lost because extra is full</code></span>
+<span class="codeline" id="line-42"><code>	lostAtomic uint64 // count of frames lost because of being in atomic64 on mips/arm; updated racily</code></span>
+<span class="codeline" id="line-43"><code>}</code></span>
+<span class="codeline" id="line-44"><code></code></span>
+<span class="codeline" id="line-45"><code>var cpuprof cpuProfile</code></span>
+<span class="codeline" id="line-46"><code></code></span>
+<span class="codeline" id="line-47"><code>// SetCPUProfileRate sets the CPU profiling rate to hz samples per second.</code></span>
+<span class="codeline" id="line-48"><code>// If hz &lt;= 0, SetCPUProfileRate turns off profiling.</code></span>
+<span class="codeline" id="line-49"><code>// If the profiler is on, the rate cannot be changed without first turning it off.</code></span>
+<span class="codeline" id="line-50"><code>//</code></span>
+<span class="codeline" id="line-51"><code>// Most clients should use the runtime/pprof package or</code></span>
+<span class="codeline" id="line-52"><code>// the testing package's -test.cpuprofile flag instead of calling</code></span>
+<span class="codeline" id="line-53"><code>// SetCPUProfileRate directly.</code></span>
+<span class="codeline" id="line-54"><code>func SetCPUProfileRate(hz int) {</code></span>
+<span class="codeline" id="line-55"><code>	// Clamp hz to something reasonable.</code></span>
+<span class="codeline" id="line-56"><code>	if hz &lt; 0 {</code></span>
+<span class="codeline" id="line-57"><code>		hz = 0</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code>	if hz &gt; 1000000 {</code></span>
+<span class="codeline" id="line-60"><code>		hz = 1000000</code></span>
+<span class="codeline" id="line-61"><code>	}</code></span>
+<span class="codeline" id="line-62"><code></code></span>
+<span class="codeline" id="line-63"><code>	lock(&amp;cpuprof.lock)</code></span>
+<span class="codeline" id="line-64"><code>	if hz &gt; 0 {</code></span>
+<span class="codeline" id="line-65"><code>		if cpuprof.on || cpuprof.log != nil {</code></span>
+<span class="codeline" id="line-66"><code>			print("runtime: cannot set cpu profile rate until previous profile has finished.\n")</code></span>
+<span class="codeline" id="line-67"><code>			unlock(&amp;cpuprof.lock)</code></span>
+<span class="codeline" id="line-68"><code>			return</code></span>
+<span class="codeline" id="line-69"><code>		}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>		cpuprof.on = true</code></span>
+<span class="codeline" id="line-72"><code>		cpuprof.log = newProfBuf(1, 1&lt;&lt;17, 1&lt;&lt;14)</code></span>
+<span class="codeline" id="line-73"><code>		hdr := [1]uint64{uint64(hz)}</code></span>
+<span class="codeline" id="line-74"><code>		cpuprof.log.write(nil, nanotime(), hdr[:], nil)</code></span>
+<span class="codeline" id="line-75"><code>		setcpuprofilerate(int32(hz))</code></span>
+<span class="codeline" id="line-76"><code>	} else if cpuprof.on {</code></span>
+<span class="codeline" id="line-77"><code>		setcpuprofilerate(0)</code></span>
+<span class="codeline" id="line-78"><code>		cpuprof.on = false</code></span>
+<span class="codeline" id="line-79"><code>		cpuprof.addExtra()</code></span>
+<span class="codeline" id="line-80"><code>		cpuprof.log.close()</code></span>
+<span class="codeline" id="line-81"><code>	}</code></span>
+<span class="codeline" id="line-82"><code>	unlock(&amp;cpuprof.lock)</code></span>
+<span class="codeline" id="line-83"><code>}</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>// add adds the stack trace to the profile.</code></span>
+<span class="codeline" id="line-86"><code>// It is called from signal handlers and other limited environments</code></span>
+<span class="codeline" id="line-87"><code>// and cannot allocate memory or acquire locks that might be</code></span>
+<span class="codeline" id="line-88"><code>// held at the time of the signal, nor can it use substantial amounts</code></span>
+<span class="codeline" id="line-89"><code>// of stack.</code></span>
+<span class="codeline" id="line-90"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-91"><code>func (p *cpuProfile) add(gp *g, stk []uintptr) {</code></span>
+<span class="codeline" id="line-92"><code>	// Simple cas-lock to coordinate with setcpuprofilerate.</code></span>
+<span class="codeline" id="line-93"><code>	for !atomic.Cas(&amp;prof.signalLock, 0, 1) {</code></span>
+<span class="codeline" id="line-94"><code>		osyield()</code></span>
+<span class="codeline" id="line-95"><code>	}</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>	if prof.hz != 0 { // implies cpuprof.log != nil</code></span>
+<span class="codeline" id="line-98"><code>		if p.numExtra &gt; 0 || p.lostExtra &gt; 0 || p.lostAtomic &gt; 0 {</code></span>
+<span class="codeline" id="line-99"><code>			p.addExtra()</code></span>
+<span class="codeline" id="line-100"><code>		}</code></span>
+<span class="codeline" id="line-101"><code>		hdr := [1]uint64{1}</code></span>
+<span class="codeline" id="line-102"><code>		// Note: write "knows" that the argument is &amp;gp.labels,</code></span>
+<span class="codeline" id="line-103"><code>		// because otherwise its write barrier behavior may not</code></span>
+<span class="codeline" id="line-104"><code>		// be correct. See the long comment there before</code></span>
+<span class="codeline" id="line-105"><code>		// changing the argument here.</code></span>
+<span class="codeline" id="line-106"><code>		cpuprof.log.write(&amp;gp.labels, nanotime(), hdr[:], stk)</code></span>
+<span class="codeline" id="line-107"><code>	}</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>	atomic.Store(&amp;prof.signalLock, 0)</code></span>
+<span class="codeline" id="line-110"><code>}</code></span>
+<span class="codeline" id="line-111"><code></code></span>
+<span class="codeline" id="line-112"><code>// addNonGo adds the non-Go stack trace to the profile.</code></span>
+<span class="codeline" id="line-113"><code>// It is called from a non-Go thread, so we cannot use much stack at all,</code></span>
+<span class="codeline" id="line-114"><code>// nor do anything that needs a g or an m.</code></span>
+<span class="codeline" id="line-115"><code>// In particular, we can't call cpuprof.log.write.</code></span>
+<span class="codeline" id="line-116"><code>// Instead, we copy the stack into cpuprof.extra,</code></span>
+<span class="codeline" id="line-117"><code>// which will be drained the next time a Go thread</code></span>
+<span class="codeline" id="line-118"><code>// gets the signal handling event.</code></span>
+<span class="codeline" id="line-119"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-120"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-121"><code>func (p *cpuProfile) addNonGo(stk []uintptr) {</code></span>
+<span class="codeline" id="line-122"><code>	// Simple cas-lock to coordinate with SetCPUProfileRate.</code></span>
+<span class="codeline" id="line-123"><code>	// (Other calls to add or addNonGo should be blocked out</code></span>
+<span class="codeline" id="line-124"><code>	// by the fact that only one SIGPROF can be handled by the</code></span>
+<span class="codeline" id="line-125"><code>	// process at a time. If not, this lock will serialize those too.)</code></span>
+<span class="codeline" id="line-126"><code>	for !atomic.Cas(&amp;prof.signalLock, 0, 1) {</code></span>
+<span class="codeline" id="line-127"><code>		osyield()</code></span>
+<span class="codeline" id="line-128"><code>	}</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	if cpuprof.numExtra+1+len(stk) &lt; len(cpuprof.extra) {</code></span>
+<span class="codeline" id="line-131"><code>		i := cpuprof.numExtra</code></span>
+<span class="codeline" id="line-132"><code>		cpuprof.extra[i] = uintptr(1 + len(stk))</code></span>
+<span class="codeline" id="line-133"><code>		copy(cpuprof.extra[i+1:], stk)</code></span>
+<span class="codeline" id="line-134"><code>		cpuprof.numExtra += 1 + len(stk)</code></span>
+<span class="codeline" id="line-135"><code>	} else {</code></span>
+<span class="codeline" id="line-136"><code>		cpuprof.lostExtra++</code></span>
+<span class="codeline" id="line-137"><code>	}</code></span>
+<span class="codeline" id="line-138"><code></code></span>
+<span class="codeline" id="line-139"><code>	atomic.Store(&amp;prof.signalLock, 0)</code></span>
+<span class="codeline" id="line-140"><code>}</code></span>
+<span class="codeline" id="line-141"><code></code></span>
+<span class="codeline" id="line-142"><code>// addExtra adds the "extra" profiling events,</code></span>
+<span class="codeline" id="line-143"><code>// queued by addNonGo, to the profile log.</code></span>
+<span class="codeline" id="line-144"><code>// addExtra is called either from a signal handler on a Go thread</code></span>
+<span class="codeline" id="line-145"><code>// or from an ordinary goroutine; either way it can use stack</code></span>
+<span class="codeline" id="line-146"><code>// and has a g. The world may be stopped, though.</code></span>
+<span class="codeline" id="line-147"><code>func (p *cpuProfile) addExtra() {</code></span>
+<span class="codeline" id="line-148"><code>	// Copy accumulated non-Go profile events.</code></span>
+<span class="codeline" id="line-149"><code>	hdr := [1]uint64{1}</code></span>
+<span class="codeline" id="line-150"><code>	for i := 0; i &lt; p.numExtra; {</code></span>
+<span class="codeline" id="line-151"><code>		p.log.write(nil, 0, hdr[:], p.extra[i+1:i+int(p.extra[i])])</code></span>
+<span class="codeline" id="line-152"><code>		i += int(p.extra[i])</code></span>
+<span class="codeline" id="line-153"><code>	}</code></span>
+<span class="codeline" id="line-154"><code>	p.numExtra = 0</code></span>
+<span class="codeline" id="line-155"><code></code></span>
+<span class="codeline" id="line-156"><code>	// Report any lost events.</code></span>
+<span class="codeline" id="line-157"><code>	if p.lostExtra &gt; 0 {</code></span>
+<span class="codeline" id="line-158"><code>		hdr := [1]uint64{p.lostExtra}</code></span>
+<span class="codeline" id="line-159"><code>		lostStk := [2]uintptr{</code></span>
+<span class="codeline" id="line-160"><code>			funcPC(_LostExternalCode) + sys.PCQuantum,</code></span>
+<span class="codeline" id="line-161"><code>			funcPC(_ExternalCode) + sys.PCQuantum,</code></span>
+<span class="codeline" id="line-162"><code>		}</code></span>
+<span class="codeline" id="line-163"><code>		p.log.write(nil, 0, hdr[:], lostStk[:])</code></span>
+<span class="codeline" id="line-164"><code>		p.lostExtra = 0</code></span>
+<span class="codeline" id="line-165"><code>	}</code></span>
+<span class="codeline" id="line-166"><code></code></span>
+<span class="codeline" id="line-167"><code>	if p.lostAtomic &gt; 0 {</code></span>
+<span class="codeline" id="line-168"><code>		hdr := [1]uint64{p.lostAtomic}</code></span>
+<span class="codeline" id="line-169"><code>		lostStk := [2]uintptr{</code></span>
+<span class="codeline" id="line-170"><code>			funcPC(_LostSIGPROFDuringAtomic64) + sys.PCQuantum,</code></span>
+<span class="codeline" id="line-171"><code>			funcPC(_System) + sys.PCQuantum,</code></span>
+<span class="codeline" id="line-172"><code>		}</code></span>
+<span class="codeline" id="line-173"><code>		p.log.write(nil, 0, hdr[:], lostStk[:])</code></span>
+<span class="codeline" id="line-174"><code>		p.lostAtomic = 0</code></span>
+<span class="codeline" id="line-175"><code>	}</code></span>
+<span class="codeline" id="line-176"><code></code></span>
+<span class="codeline" id="line-177"><code>}</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>// CPUProfile panics.</code></span>
+<span class="codeline" id="line-180"><code>// It formerly provided raw access to chunks of</code></span>
+<span class="codeline" id="line-181"><code>// a pprof-format profile generated by the runtime.</code></span>
+<span class="codeline" id="line-182"><code>// The details of generating that format have changed,</code></span>
+<span class="codeline" id="line-183"><code>// so this functionality has been removed.</code></span>
+<span class="codeline" id="line-184"><code>//</code></span>
+<span class="codeline" id="line-185"><code>// Deprecated: Use the runtime/pprof package,</code></span>
+<span class="codeline" id="line-186"><code>// or the handlers in the net/http/pprof package,</code></span>
+<span class="codeline" id="line-187"><code>// or the testing package's -test.cpuprofile flag instead.</code></span>
+<span class="codeline" id="line-188"><code>func CPUProfile() []byte {</code></span>
+<span class="codeline" id="line-189"><code>	panic("CPUProfile no longer available")</code></span>
+<span class="codeline" id="line-190"><code>}</code></span>
+<span class="codeline" id="line-191"><code></code></span>
+<span class="codeline" id="line-192"><code>//go:linkname runtime_pprof_runtime_cyclesPerSecond runtime/pprof.runtime_cyclesPerSecond</code></span>
+<span class="codeline" id="line-193"><code>func runtime_pprof_runtime_cyclesPerSecond() int64 {</code></span>
+<span class="codeline" id="line-194"><code>	return tickspersecond()</code></span>
+<span class="codeline" id="line-195"><code>}</code></span>
+<span class="codeline" id="line-196"><code></code></span>
+<span class="codeline" id="line-197"><code>// readProfile, provided to runtime/pprof, returns the next chunk of</code></span>
+<span class="codeline" id="line-198"><code>// binary CPU profiling stack trace data, blocking until data is available.</code></span>
+<span class="codeline" id="line-199"><code>// If profiling is turned off and all the profile data accumulated while it was</code></span>
+<span class="codeline" id="line-200"><code>// on has been returned, readProfile returns eof=true.</code></span>
+<span class="codeline" id="line-201"><code>// The caller must save the returned data and tags before calling readProfile again.</code></span>
+<span class="codeline" id="line-202"><code>//</code></span>
+<span class="codeline" id="line-203"><code>//go:linkname runtime_pprof_readProfile runtime/pprof.readProfile</code></span>
+<span class="codeline" id="line-204"><code>func runtime_pprof_readProfile() ([]uint64, []unsafe.Pointer, bool) {</code></span>
+<span class="codeline" id="line-205"><code>	lock(&amp;cpuprof.lock)</code></span>
+<span class="codeline" id="line-206"><code>	log := cpuprof.log</code></span>
+<span class="codeline" id="line-207"><code>	unlock(&amp;cpuprof.lock)</code></span>
+<span class="codeline" id="line-208"><code>	data, tags, eof := log.read(profBufBlocking)</code></span>
+<span class="codeline" id="line-209"><code>	if len(data) == 0 &amp;&amp; eof {</code></span>
+<span class="codeline" id="line-210"><code>		lock(&amp;cpuprof.lock)</code></span>
+<span class="codeline" id="line-211"><code>		cpuprof.log = nil</code></span>
+<span class="codeline" id="line-212"><code>		unlock(&amp;cpuprof.lock)</code></span>
+<span class="codeline" id="line-213"><code>	}</code></span>
+<span class="codeline" id="line-214"><code>	return data, tags, eof</code></span>
+<span class="codeline" id="line-215"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

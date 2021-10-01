@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mbarrier.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mbarrier.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2015 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Garbage collector: write barriers.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// For the concurrent garbage collector, the Go compiler implements</code></span>
+<span class="codeline" id="line-8"><code>// updates to pointer-valued fields that may be in heap objects by</code></span>
+<span class="codeline" id="line-9"><code>// emitting calls to write barriers. The main write barrier for</code></span>
+<span class="codeline" id="line-10"><code>// individual pointer writes is gcWriteBarrier and is implemented in</code></span>
+<span class="codeline" id="line-11"><code>// assembly. This file contains write barrier entry points for bulk</code></span>
+<span class="codeline" id="line-12"><code>// operations. See also mwbbuf.go.</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>package runtime</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>import (</code></span>
+<span class="codeline" id="line-17"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-18"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-19"><code>)</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>// Go uses a hybrid barrier that combines a Yuasa-style deletion</code></span>
+<span class="codeline" id="line-22"><code>// barrier—which shades the object whose reference is being</code></span>
+<span class="codeline" id="line-23"><code>// overwritten—with Dijkstra insertion barrier—which shades the object</code></span>
+<span class="codeline" id="line-24"><code>// whose reference is being written. The insertion part of the barrier</code></span>
+<span class="codeline" id="line-25"><code>// is necessary while the calling goroutine's stack is grey. In</code></span>
+<span class="codeline" id="line-26"><code>// pseudocode, the barrier is:</code></span>
+<span class="codeline" id="line-27"><code>//</code></span>
+<span class="codeline" id="line-28"><code>//     writePointer(slot, ptr):</code></span>
+<span class="codeline" id="line-29"><code>//         shade(*slot)</code></span>
+<span class="codeline" id="line-30"><code>//         if current stack is grey:</code></span>
+<span class="codeline" id="line-31"><code>//             shade(ptr)</code></span>
+<span class="codeline" id="line-32"><code>//         *slot = ptr</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>// slot is the destination in Go code.</code></span>
+<span class="codeline" id="line-35"><code>// ptr is the value that goes into the slot in Go code.</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// Shade indicates that it has seen a white pointer by adding the referent</code></span>
+<span class="codeline" id="line-38"><code>// to wbuf as well as marking it.</code></span>
+<span class="codeline" id="line-39"><code>//</code></span>
+<span class="codeline" id="line-40"><code>// The two shades and the condition work together to prevent a mutator</code></span>
+<span class="codeline" id="line-41"><code>// from hiding an object from the garbage collector:</code></span>
+<span class="codeline" id="line-42"><code>//</code></span>
+<span class="codeline" id="line-43"><code>// 1. shade(*slot) prevents a mutator from hiding an object by moving</code></span>
+<span class="codeline" id="line-44"><code>// the sole pointer to it from the heap to its stack. If it attempts</code></span>
+<span class="codeline" id="line-45"><code>// to unlink an object from the heap, this will shade it.</code></span>
+<span class="codeline" id="line-46"><code>//</code></span>
+<span class="codeline" id="line-47"><code>// 2. shade(ptr) prevents a mutator from hiding an object by moving</code></span>
+<span class="codeline" id="line-48"><code>// the sole pointer to it from its stack into a black object in the</code></span>
+<span class="codeline" id="line-49"><code>// heap. If it attempts to install the pointer into a black object,</code></span>
+<span class="codeline" id="line-50"><code>// this will shade it.</code></span>
+<span class="codeline" id="line-51"><code>//</code></span>
+<span class="codeline" id="line-52"><code>// 3. Once a goroutine's stack is black, the shade(ptr) becomes</code></span>
+<span class="codeline" id="line-53"><code>// unnecessary. shade(ptr) prevents hiding an object by moving it from</code></span>
+<span class="codeline" id="line-54"><code>// the stack to the heap, but this requires first having a pointer</code></span>
+<span class="codeline" id="line-55"><code>// hidden on the stack. Immediately after a stack is scanned, it only</code></span>
+<span class="codeline" id="line-56"><code>// points to shaded objects, so it's not hiding anything, and the</code></span>
+<span class="codeline" id="line-57"><code>// shade(*slot) prevents it from hiding any other pointers on its</code></span>
+<span class="codeline" id="line-58"><code>// stack.</code></span>
+<span class="codeline" id="line-59"><code>//</code></span>
+<span class="codeline" id="line-60"><code>// For a detailed description of this barrier and proof of</code></span>
+<span class="codeline" id="line-61"><code>// correctness, see https://github.com/golang/proposal/blob/master/design/17503-eliminate-rescan.md</code></span>
+<span class="codeline" id="line-62"><code>//</code></span>
+<span class="codeline" id="line-63"><code>//</code></span>
+<span class="codeline" id="line-64"><code>//</code></span>
+<span class="codeline" id="line-65"><code>// Dealing with memory ordering:</code></span>
+<span class="codeline" id="line-66"><code>//</code></span>
+<span class="codeline" id="line-67"><code>// Both the Yuasa and Dijkstra barriers can be made conditional on the</code></span>
+<span class="codeline" id="line-68"><code>// color of the object containing the slot. We chose not to make these</code></span>
+<span class="codeline" id="line-69"><code>// conditional because the cost of ensuring that the object holding</code></span>
+<span class="codeline" id="line-70"><code>// the slot doesn't concurrently change color without the mutator</code></span>
+<span class="codeline" id="line-71"><code>// noticing seems prohibitive.</code></span>
+<span class="codeline" id="line-72"><code>//</code></span>
+<span class="codeline" id="line-73"><code>// Consider the following example where the mutator writes into</code></span>
+<span class="codeline" id="line-74"><code>// a slot and then loads the slot's mark bit while the GC thread</code></span>
+<span class="codeline" id="line-75"><code>// writes to the slot's mark bit and then as part of scanning reads</code></span>
+<span class="codeline" id="line-76"><code>// the slot.</code></span>
+<span class="codeline" id="line-77"><code>//</code></span>
+<span class="codeline" id="line-78"><code>// Initially both [slot] and [slotmark] are 0 (nil)</code></span>
+<span class="codeline" id="line-79"><code>// Mutator thread          GC thread</code></span>
+<span class="codeline" id="line-80"><code>// st [slot], ptr          st [slotmark], 1</code></span>
+<span class="codeline" id="line-81"><code>//</code></span>
+<span class="codeline" id="line-82"><code>// ld r1, [slotmark]       ld r2, [slot]</code></span>
+<span class="codeline" id="line-83"><code>//</code></span>
+<span class="codeline" id="line-84"><code>// Without an expensive memory barrier between the st and the ld, the final</code></span>
+<span class="codeline" id="line-85"><code>// result on most HW (including 386/amd64) can be r1==r2==0. This is a classic</code></span>
+<span class="codeline" id="line-86"><code>// example of what can happen when loads are allowed to be reordered with older</code></span>
+<span class="codeline" id="line-87"><code>// stores (avoiding such reorderings lies at the heart of the classic</code></span>
+<span class="codeline" id="line-88"><code>// Peterson/Dekker algorithms for mutual exclusion). Rather than require memory</code></span>
+<span class="codeline" id="line-89"><code>// barriers, which will slow down both the mutator and the GC, we always grey</code></span>
+<span class="codeline" id="line-90"><code>// the ptr object regardless of the slot's color.</code></span>
+<span class="codeline" id="line-91"><code>//</code></span>
+<span class="codeline" id="line-92"><code>// Another place where we intentionally omit memory barriers is when</code></span>
+<span class="codeline" id="line-93"><code>// accessing mheap_.arena_used to check if a pointer points into the</code></span>
+<span class="codeline" id="line-94"><code>// heap. On relaxed memory machines, it's possible for a mutator to</code></span>
+<span class="codeline" id="line-95"><code>// extend the size of the heap by updating arena_used, allocate an</code></span>
+<span class="codeline" id="line-96"><code>// object from this new region, and publish a pointer to that object,</code></span>
+<span class="codeline" id="line-97"><code>// but for tracing running on another processor to observe the pointer</code></span>
+<span class="codeline" id="line-98"><code>// but use the old value of arena_used. In this case, tracing will not</code></span>
+<span class="codeline" id="line-99"><code>// mark the object, even though it's reachable. However, the mutator</code></span>
+<span class="codeline" id="line-100"><code>// is guaranteed to execute a write barrier when it publishes the</code></span>
+<span class="codeline" id="line-101"><code>// pointer, so it will take care of marking the object. A general</code></span>
+<span class="codeline" id="line-102"><code>// consequence of this is that the garbage collector may cache the</code></span>
+<span class="codeline" id="line-103"><code>// value of mheap_.arena_used. (See issue #9984.)</code></span>
+<span class="codeline" id="line-104"><code>//</code></span>
+<span class="codeline" id="line-105"><code>//</code></span>
+<span class="codeline" id="line-106"><code>// Stack writes:</code></span>
+<span class="codeline" id="line-107"><code>//</code></span>
+<span class="codeline" id="line-108"><code>// The compiler omits write barriers for writes to the current frame,</code></span>
+<span class="codeline" id="line-109"><code>// but if a stack pointer has been passed down the call stack, the</code></span>
+<span class="codeline" id="line-110"><code>// compiler will generate a write barrier for writes through that</code></span>
+<span class="codeline" id="line-111"><code>// pointer (because it doesn't know it's not a heap pointer).</code></span>
+<span class="codeline" id="line-112"><code>//</code></span>
+<span class="codeline" id="line-113"><code>// One might be tempted to ignore the write barrier if slot points</code></span>
+<span class="codeline" id="line-114"><code>// into to the stack. Don't do it! Mark termination only re-scans</code></span>
+<span class="codeline" id="line-115"><code>// frames that have potentially been active since the concurrent scan,</code></span>
+<span class="codeline" id="line-116"><code>// so it depends on write barriers to track changes to pointers in</code></span>
+<span class="codeline" id="line-117"><code>// stack frames that have not been active.</code></span>
+<span class="codeline" id="line-118"><code>//</code></span>
+<span class="codeline" id="line-119"><code>//</code></span>
+<span class="codeline" id="line-120"><code>// Global writes:</code></span>
+<span class="codeline" id="line-121"><code>//</code></span>
+<span class="codeline" id="line-122"><code>// The Go garbage collector requires write barriers when heap pointers</code></span>
+<span class="codeline" id="line-123"><code>// are stored in globals. Many garbage collectors ignore writes to</code></span>
+<span class="codeline" id="line-124"><code>// globals and instead pick up global -&gt; heap pointers during</code></span>
+<span class="codeline" id="line-125"><code>// termination. This increases pause time, so we instead rely on write</code></span>
+<span class="codeline" id="line-126"><code>// barriers for writes to globals so that we don't have to rescan</code></span>
+<span class="codeline" id="line-127"><code>// global during mark termination.</code></span>
+<span class="codeline" id="line-128"><code>//</code></span>
+<span class="codeline" id="line-129"><code>//</code></span>
+<span class="codeline" id="line-130"><code>// Publication ordering:</code></span>
+<span class="codeline" id="line-131"><code>//</code></span>
+<span class="codeline" id="line-132"><code>// The write barrier is *pre-publication*, meaning that the write</code></span>
+<span class="codeline" id="line-133"><code>// barrier happens prior to the *slot = ptr write that may make ptr</code></span>
+<span class="codeline" id="line-134"><code>// reachable by some goroutine that currently cannot reach it.</code></span>
+<span class="codeline" id="line-135"><code>//</code></span>
+<span class="codeline" id="line-136"><code>//</code></span>
+<span class="codeline" id="line-137"><code>// Signal handler pointer writes:</code></span>
+<span class="codeline" id="line-138"><code>//</code></span>
+<span class="codeline" id="line-139"><code>// In general, the signal handler cannot safely invoke the write</code></span>
+<span class="codeline" id="line-140"><code>// barrier because it may run without a P or even during the write</code></span>
+<span class="codeline" id="line-141"><code>// barrier.</code></span>
+<span class="codeline" id="line-142"><code>//</code></span>
+<span class="codeline" id="line-143"><code>// There is exactly one exception: profbuf.go omits a barrier during</code></span>
+<span class="codeline" id="line-144"><code>// signal handler profile logging. That's safe only because of the</code></span>
+<span class="codeline" id="line-145"><code>// deletion barrier. See profbuf.go for a detailed argument. If we</code></span>
+<span class="codeline" id="line-146"><code>// remove the deletion barrier, we'll have to work out a new way to</code></span>
+<span class="codeline" id="line-147"><code>// handle the profile logging.</code></span>
+<span class="codeline" id="line-148"><code></code></span>
+<span class="codeline" id="line-149"><code>// typedmemmove copies a value of type t to dst from src.</code></span>
+<span class="codeline" id="line-150"><code>// Must be nosplit, see #16026.</code></span>
+<span class="codeline" id="line-151"><code>//</code></span>
+<span class="codeline" id="line-152"><code>// TODO: Perfect for go:nosplitrec since we can't have a safe point</code></span>
+<span class="codeline" id="line-153"><code>// anywhere in the bulk barrier or memmove.</code></span>
+<span class="codeline" id="line-154"><code>//</code></span>
+<span class="codeline" id="line-155"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-156"><code>func typedmemmove(typ *_type, dst, src unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-157"><code>	if dst == src {</code></span>
+<span class="codeline" id="line-158"><code>		return</code></span>
+<span class="codeline" id="line-159"><code>	}</code></span>
+<span class="codeline" id="line-160"><code>	if writeBarrier.needed &amp;&amp; typ.ptrdata != 0 {</code></span>
+<span class="codeline" id="line-161"><code>		bulkBarrierPreWrite(uintptr(dst), uintptr(src), typ.ptrdata)</code></span>
+<span class="codeline" id="line-162"><code>	}</code></span>
+<span class="codeline" id="line-163"><code>	// There's a race here: if some other goroutine can write to</code></span>
+<span class="codeline" id="line-164"><code>	// src, it may change some pointer in src after we've</code></span>
+<span class="codeline" id="line-165"><code>	// performed the write barrier but before we perform the</code></span>
+<span class="codeline" id="line-166"><code>	// memory copy. This safe because the write performed by that</code></span>
+<span class="codeline" id="line-167"><code>	// other goroutine must also be accompanied by a write</code></span>
+<span class="codeline" id="line-168"><code>	// barrier, so at worst we've unnecessarily greyed the old</code></span>
+<span class="codeline" id="line-169"><code>	// pointer that was in src.</code></span>
+<span class="codeline" id="line-170"><code>	memmove(dst, src, typ.size)</code></span>
+<span class="codeline" id="line-171"><code>	if writeBarrier.cgo {</code></span>
+<span class="codeline" id="line-172"><code>		cgoCheckMemmove(typ, dst, src, 0, typ.size)</code></span>
+<span class="codeline" id="line-173"><code>	}</code></span>
+<span class="codeline" id="line-174"><code>}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>//go:linkname reflect_typedmemmove reflect.typedmemmove</code></span>
+<span class="codeline" id="line-177"><code>func reflect_typedmemmove(typ *_type, dst, src unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-178"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-179"><code>		raceWriteObjectPC(typ, dst, getcallerpc(), funcPC(reflect_typedmemmove))</code></span>
+<span class="codeline" id="line-180"><code>		raceReadObjectPC(typ, src, getcallerpc(), funcPC(reflect_typedmemmove))</code></span>
+<span class="codeline" id="line-181"><code>	}</code></span>
+<span class="codeline" id="line-182"><code>	if msanenabled {</code></span>
+<span class="codeline" id="line-183"><code>		msanwrite(dst, typ.size)</code></span>
+<span class="codeline" id="line-184"><code>		msanread(src, typ.size)</code></span>
+<span class="codeline" id="line-185"><code>	}</code></span>
+<span class="codeline" id="line-186"><code>	typedmemmove(typ, dst, src)</code></span>
+<span class="codeline" id="line-187"><code>}</code></span>
+<span class="codeline" id="line-188"><code></code></span>
+<span class="codeline" id="line-189"><code>//go:linkname reflectlite_typedmemmove internal/reflectlite.typedmemmove</code></span>
+<span class="codeline" id="line-190"><code>func reflectlite_typedmemmove(typ *_type, dst, src unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-191"><code>	reflect_typedmemmove(typ, dst, src)</code></span>
+<span class="codeline" id="line-192"><code>}</code></span>
+<span class="codeline" id="line-193"><code></code></span>
+<span class="codeline" id="line-194"><code>// typedmemmovepartial is like typedmemmove but assumes that</code></span>
+<span class="codeline" id="line-195"><code>// dst and src point off bytes into the value and only copies size bytes.</code></span>
+<span class="codeline" id="line-196"><code>// off must be a multiple of sys.PtrSize.</code></span>
+<span class="codeline" id="line-197"><code>//go:linkname reflect_typedmemmovepartial reflect.typedmemmovepartial</code></span>
+<span class="codeline" id="line-198"><code>func reflect_typedmemmovepartial(typ *_type, dst, src unsafe.Pointer, off, size uintptr) {</code></span>
+<span class="codeline" id="line-199"><code>	if writeBarrier.needed &amp;&amp; typ.ptrdata &gt; off &amp;&amp; size &gt;= sys.PtrSize {</code></span>
+<span class="codeline" id="line-200"><code>		if off&amp;(sys.PtrSize-1) != 0 {</code></span>
+<span class="codeline" id="line-201"><code>			panic("reflect: internal error: misaligned offset")</code></span>
+<span class="codeline" id="line-202"><code>		}</code></span>
+<span class="codeline" id="line-203"><code>		pwsize := alignDown(size, sys.PtrSize)</code></span>
+<span class="codeline" id="line-204"><code>		if poff := typ.ptrdata - off; pwsize &gt; poff {</code></span>
+<span class="codeline" id="line-205"><code>			pwsize = poff</code></span>
+<span class="codeline" id="line-206"><code>		}</code></span>
+<span class="codeline" id="line-207"><code>		bulkBarrierPreWrite(uintptr(dst), uintptr(src), pwsize)</code></span>
+<span class="codeline" id="line-208"><code>	}</code></span>
+<span class="codeline" id="line-209"><code></code></span>
+<span class="codeline" id="line-210"><code>	memmove(dst, src, size)</code></span>
+<span class="codeline" id="line-211"><code>	if writeBarrier.cgo {</code></span>
+<span class="codeline" id="line-212"><code>		cgoCheckMemmove(typ, dst, src, off, size)</code></span>
+<span class="codeline" id="line-213"><code>	}</code></span>
+<span class="codeline" id="line-214"><code>}</code></span>
+<span class="codeline" id="line-215"><code></code></span>
+<span class="codeline" id="line-216"><code>// reflectcallmove is invoked by reflectcall to copy the return values</code></span>
+<span class="codeline" id="line-217"><code>// out of the stack and into the heap, invoking the necessary write</code></span>
+<span class="codeline" id="line-218"><code>// barriers. dst, src, and size describe the return value area to</code></span>
+<span class="codeline" id="line-219"><code>// copy. typ describes the entire frame (not just the return values).</code></span>
+<span class="codeline" id="line-220"><code>// typ may be nil, which indicates write barriers are not needed.</code></span>
+<span class="codeline" id="line-221"><code>//</code></span>
+<span class="codeline" id="line-222"><code>// It must be nosplit and must only call nosplit functions because the</code></span>
+<span class="codeline" id="line-223"><code>// stack map of reflectcall is wrong.</code></span>
+<span class="codeline" id="line-224"><code>//</code></span>
+<span class="codeline" id="line-225"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-226"><code>func reflectcallmove(typ *_type, dst, src unsafe.Pointer, size uintptr) {</code></span>
+<span class="codeline" id="line-227"><code>	if writeBarrier.needed &amp;&amp; typ != nil &amp;&amp; typ.ptrdata != 0 &amp;&amp; size &gt;= sys.PtrSize {</code></span>
+<span class="codeline" id="line-228"><code>		bulkBarrierPreWrite(uintptr(dst), uintptr(src), size)</code></span>
+<span class="codeline" id="line-229"><code>	}</code></span>
+<span class="codeline" id="line-230"><code>	memmove(dst, src, size)</code></span>
+<span class="codeline" id="line-231"><code>}</code></span>
+<span class="codeline" id="line-232"><code></code></span>
+<span class="codeline" id="line-233"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-234"><code>func typedslicecopy(typ *_type, dstPtr unsafe.Pointer, dstLen int, srcPtr unsafe.Pointer, srcLen int) int {</code></span>
+<span class="codeline" id="line-235"><code>	n := dstLen</code></span>
+<span class="codeline" id="line-236"><code>	if n &gt; srcLen {</code></span>
+<span class="codeline" id="line-237"><code>		n = srcLen</code></span>
+<span class="codeline" id="line-238"><code>	}</code></span>
+<span class="codeline" id="line-239"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-240"><code>		return 0</code></span>
+<span class="codeline" id="line-241"><code>	}</code></span>
+<span class="codeline" id="line-242"><code></code></span>
+<span class="codeline" id="line-243"><code>	// The compiler emits calls to typedslicecopy before</code></span>
+<span class="codeline" id="line-244"><code>	// instrumentation runs, so unlike the other copying and</code></span>
+<span class="codeline" id="line-245"><code>	// assignment operations, it's not instrumented in the calling</code></span>
+<span class="codeline" id="line-246"><code>	// code and needs its own instrumentation.</code></span>
+<span class="codeline" id="line-247"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-248"><code>		callerpc := getcallerpc()</code></span>
+<span class="codeline" id="line-249"><code>		pc := funcPC(slicecopy)</code></span>
+<span class="codeline" id="line-250"><code>		racewriterangepc(dstPtr, uintptr(n)*typ.size, callerpc, pc)</code></span>
+<span class="codeline" id="line-251"><code>		racereadrangepc(srcPtr, uintptr(n)*typ.size, callerpc, pc)</code></span>
+<span class="codeline" id="line-252"><code>	}</code></span>
+<span class="codeline" id="line-253"><code>	if msanenabled {</code></span>
+<span class="codeline" id="line-254"><code>		msanwrite(dstPtr, uintptr(n)*typ.size)</code></span>
+<span class="codeline" id="line-255"><code>		msanread(srcPtr, uintptr(n)*typ.size)</code></span>
+<span class="codeline" id="line-256"><code>	}</code></span>
+<span class="codeline" id="line-257"><code></code></span>
+<span class="codeline" id="line-258"><code>	if writeBarrier.cgo {</code></span>
+<span class="codeline" id="line-259"><code>		cgoCheckSliceCopy(typ, dstPtr, srcPtr, n)</code></span>
+<span class="codeline" id="line-260"><code>	}</code></span>
+<span class="codeline" id="line-261"><code></code></span>
+<span class="codeline" id="line-262"><code>	if dstPtr == srcPtr {</code></span>
+<span class="codeline" id="line-263"><code>		return n</code></span>
+<span class="codeline" id="line-264"><code>	}</code></span>
+<span class="codeline" id="line-265"><code></code></span>
+<span class="codeline" id="line-266"><code>	// Note: No point in checking typ.ptrdata here:</code></span>
+<span class="codeline" id="line-267"><code>	// compiler only emits calls to typedslicecopy for types with pointers,</code></span>
+<span class="codeline" id="line-268"><code>	// and growslice and reflect_typedslicecopy check for pointers</code></span>
+<span class="codeline" id="line-269"><code>	// before calling typedslicecopy.</code></span>
+<span class="codeline" id="line-270"><code>	size := uintptr(n) * typ.size</code></span>
+<span class="codeline" id="line-271"><code>	if writeBarrier.needed {</code></span>
+<span class="codeline" id="line-272"><code>		pwsize := size - typ.size + typ.ptrdata</code></span>
+<span class="codeline" id="line-273"><code>		bulkBarrierPreWrite(uintptr(dstPtr), uintptr(srcPtr), pwsize)</code></span>
+<span class="codeline" id="line-274"><code>	}</code></span>
+<span class="codeline" id="line-275"><code>	// See typedmemmove for a discussion of the race between the</code></span>
+<span class="codeline" id="line-276"><code>	// barrier and memmove.</code></span>
+<span class="codeline" id="line-277"><code>	memmove(dstPtr, srcPtr, size)</code></span>
+<span class="codeline" id="line-278"><code>	return n</code></span>
+<span class="codeline" id="line-279"><code>}</code></span>
+<span class="codeline" id="line-280"><code></code></span>
+<span class="codeline" id="line-281"><code>//go:linkname reflect_typedslicecopy reflect.typedslicecopy</code></span>
+<span class="codeline" id="line-282"><code>func reflect_typedslicecopy(elemType *_type, dst, src slice) int {</code></span>
+<span class="codeline" id="line-283"><code>	if elemType.ptrdata == 0 {</code></span>
+<span class="codeline" id="line-284"><code>		return slicecopy(dst.array, dst.len, src.array, src.len, elemType.size)</code></span>
+<span class="codeline" id="line-285"><code>	}</code></span>
+<span class="codeline" id="line-286"><code>	return typedslicecopy(elemType, dst.array, dst.len, src.array, src.len)</code></span>
+<span class="codeline" id="line-287"><code>}</code></span>
+<span class="codeline" id="line-288"><code></code></span>
+<span class="codeline" id="line-289"><code>// typedmemclr clears the typed memory at ptr with type typ. The</code></span>
+<span class="codeline" id="line-290"><code>// memory at ptr must already be initialized (and hence in type-safe</code></span>
+<span class="codeline" id="line-291"><code>// state). If the memory is being initialized for the first time, see</code></span>
+<span class="codeline" id="line-292"><code>// memclrNoHeapPointers.</code></span>
+<span class="codeline" id="line-293"><code>//</code></span>
+<span class="codeline" id="line-294"><code>// If the caller knows that typ has pointers, it can alternatively</code></span>
+<span class="codeline" id="line-295"><code>// call memclrHasPointers.</code></span>
+<span class="codeline" id="line-296"><code>//</code></span>
+<span class="codeline" id="line-297"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-298"><code>func typedmemclr(typ *_type, ptr unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-299"><code>	if writeBarrier.needed &amp;&amp; typ.ptrdata != 0 {</code></span>
+<span class="codeline" id="line-300"><code>		bulkBarrierPreWrite(uintptr(ptr), 0, typ.ptrdata)</code></span>
+<span class="codeline" id="line-301"><code>	}</code></span>
+<span class="codeline" id="line-302"><code>	memclrNoHeapPointers(ptr, typ.size)</code></span>
+<span class="codeline" id="line-303"><code>}</code></span>
+<span class="codeline" id="line-304"><code></code></span>
+<span class="codeline" id="line-305"><code>//go:linkname reflect_typedmemclr reflect.typedmemclr</code></span>
+<span class="codeline" id="line-306"><code>func reflect_typedmemclr(typ *_type, ptr unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-307"><code>	typedmemclr(typ, ptr)</code></span>
+<span class="codeline" id="line-308"><code>}</code></span>
+<span class="codeline" id="line-309"><code></code></span>
+<span class="codeline" id="line-310"><code>//go:linkname reflect_typedmemclrpartial reflect.typedmemclrpartial</code></span>
+<span class="codeline" id="line-311"><code>func reflect_typedmemclrpartial(typ *_type, ptr unsafe.Pointer, off, size uintptr) {</code></span>
+<span class="codeline" id="line-312"><code>	if writeBarrier.needed &amp;&amp; typ.ptrdata != 0 {</code></span>
+<span class="codeline" id="line-313"><code>		bulkBarrierPreWrite(uintptr(ptr), 0, size)</code></span>
+<span class="codeline" id="line-314"><code>	}</code></span>
+<span class="codeline" id="line-315"><code>	memclrNoHeapPointers(ptr, size)</code></span>
+<span class="codeline" id="line-316"><code>}</code></span>
+<span class="codeline" id="line-317"><code></code></span>
+<span class="codeline" id="line-318"><code>// memclrHasPointers clears n bytes of typed memory starting at ptr.</code></span>
+<span class="codeline" id="line-319"><code>// The caller must ensure that the type of the object at ptr has</code></span>
+<span class="codeline" id="line-320"><code>// pointers, usually by checking typ.ptrdata. However, ptr</code></span>
+<span class="codeline" id="line-321"><code>// does not have to point to the start of the allocation.</code></span>
+<span class="codeline" id="line-322"><code>//</code></span>
+<span class="codeline" id="line-323"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-324"><code>func memclrHasPointers(ptr unsafe.Pointer, n uintptr) {</code></span>
+<span class="codeline" id="line-325"><code>	bulkBarrierPreWrite(uintptr(ptr), 0, n)</code></span>
+<span class="codeline" id="line-326"><code>	memclrNoHeapPointers(ptr, n)</code></span>
+<span class="codeline" id="line-327"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

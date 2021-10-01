@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mcentral.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mcentral.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Central free lists.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// See malloc.go for an overview.</code></span>
+<span class="codeline" id="line-8"><code>//</code></span>
+<span class="codeline" id="line-9"><code>// The mcentral doesn't actually contain the list of free objects; the mspan does.</code></span>
+<span class="codeline" id="line-10"><code>// Each mcentral is two lists of mspans: those with free objects (c-&gt;nonempty)</code></span>
+<span class="codeline" id="line-11"><code>// and those that are completely allocated (c-&gt;empty).</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>package runtime</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>import "runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// Central list of free objects of a given size.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-20"><code>type mcentral struct {</code></span>
+<span class="codeline" id="line-21"><code>	spanclass spanClass</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>	// partial and full contain two mspan sets: one of swept in-use</code></span>
+<span class="codeline" id="line-24"><code>	// spans, and one of unswept in-use spans. These two trade</code></span>
+<span class="codeline" id="line-25"><code>	// roles on each GC cycle. The unswept set is drained either by</code></span>
+<span class="codeline" id="line-26"><code>	// allocation or by the background sweeper in every GC cycle,</code></span>
+<span class="codeline" id="line-27"><code>	// so only two roles are necessary.</code></span>
+<span class="codeline" id="line-28"><code>	//</code></span>
+<span class="codeline" id="line-29"><code>	// sweepgen is increased by 2 on each GC cycle, so the swept</code></span>
+<span class="codeline" id="line-30"><code>	// spans are in partial[sweepgen/2%2] and the unswept spans are in</code></span>
+<span class="codeline" id="line-31"><code>	// partial[1-sweepgen/2%2]. Sweeping pops spans from the</code></span>
+<span class="codeline" id="line-32"><code>	// unswept set and pushes spans that are still in-use on the</code></span>
+<span class="codeline" id="line-33"><code>	// swept set. Likewise, allocating an in-use span pushes it</code></span>
+<span class="codeline" id="line-34"><code>	// on the swept set.</code></span>
+<span class="codeline" id="line-35"><code>	//</code></span>
+<span class="codeline" id="line-36"><code>	// Some parts of the sweeper can sweep arbitrary spans, and hence</code></span>
+<span class="codeline" id="line-37"><code>	// can't remove them from the unswept set, but will add the span</code></span>
+<span class="codeline" id="line-38"><code>	// to the appropriate swept list. As a result, the parts of the</code></span>
+<span class="codeline" id="line-39"><code>	// sweeper and mcentral that do consume from the unswept list may</code></span>
+<span class="codeline" id="line-40"><code>	// encounter swept spans, and these should be ignored.</code></span>
+<span class="codeline" id="line-41"><code>	partial [2]spanSet // list of spans with a free object</code></span>
+<span class="codeline" id="line-42"><code>	full    [2]spanSet // list of spans with no free objects</code></span>
+<span class="codeline" id="line-43"><code>}</code></span>
+<span class="codeline" id="line-44"><code></code></span>
+<span class="codeline" id="line-45"><code>// Initialize a single central free list.</code></span>
+<span class="codeline" id="line-46"><code>func (c *mcentral) init(spc spanClass) {</code></span>
+<span class="codeline" id="line-47"><code>	c.spanclass = spc</code></span>
+<span class="codeline" id="line-48"><code>	lockInit(&amp;c.partial[0].spineLock, lockRankSpanSetSpine)</code></span>
+<span class="codeline" id="line-49"><code>	lockInit(&amp;c.partial[1].spineLock, lockRankSpanSetSpine)</code></span>
+<span class="codeline" id="line-50"><code>	lockInit(&amp;c.full[0].spineLock, lockRankSpanSetSpine)</code></span>
+<span class="codeline" id="line-51"><code>	lockInit(&amp;c.full[1].spineLock, lockRankSpanSetSpine)</code></span>
+<span class="codeline" id="line-52"><code>}</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>// partialUnswept returns the spanSet which holds partially-filled</code></span>
+<span class="codeline" id="line-55"><code>// unswept spans for this sweepgen.</code></span>
+<span class="codeline" id="line-56"><code>func (c *mcentral) partialUnswept(sweepgen uint32) *spanSet {</code></span>
+<span class="codeline" id="line-57"><code>	return &amp;c.partial[1-sweepgen/2%2]</code></span>
+<span class="codeline" id="line-58"><code>}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>// partialSwept returns the spanSet which holds partially-filled</code></span>
+<span class="codeline" id="line-61"><code>// swept spans for this sweepgen.</code></span>
+<span class="codeline" id="line-62"><code>func (c *mcentral) partialSwept(sweepgen uint32) *spanSet {</code></span>
+<span class="codeline" id="line-63"><code>	return &amp;c.partial[sweepgen/2%2]</code></span>
+<span class="codeline" id="line-64"><code>}</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>// fullUnswept returns the spanSet which holds unswept spans without any</code></span>
+<span class="codeline" id="line-67"><code>// free slots for this sweepgen.</code></span>
+<span class="codeline" id="line-68"><code>func (c *mcentral) fullUnswept(sweepgen uint32) *spanSet {</code></span>
+<span class="codeline" id="line-69"><code>	return &amp;c.full[1-sweepgen/2%2]</code></span>
+<span class="codeline" id="line-70"><code>}</code></span>
+<span class="codeline" id="line-71"><code></code></span>
+<span class="codeline" id="line-72"><code>// fullSwept returns the spanSet which holds swept spans without any</code></span>
+<span class="codeline" id="line-73"><code>// free slots for this sweepgen.</code></span>
+<span class="codeline" id="line-74"><code>func (c *mcentral) fullSwept(sweepgen uint32) *spanSet {</code></span>
+<span class="codeline" id="line-75"><code>	return &amp;c.full[sweepgen/2%2]</code></span>
+<span class="codeline" id="line-76"><code>}</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>// Allocate a span to use in an mcache.</code></span>
+<span class="codeline" id="line-79"><code>func (c *mcentral) cacheSpan() *mspan {</code></span>
+<span class="codeline" id="line-80"><code>	// Deduct credit for this span allocation and sweep if necessary.</code></span>
+<span class="codeline" id="line-81"><code>	spanBytes := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) * _PageSize</code></span>
+<span class="codeline" id="line-82"><code>	deductSweepCredit(spanBytes, 0)</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>	sg := mheap_.sweepgen</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>	traceDone := false</code></span>
+<span class="codeline" id="line-87"><code>	if trace.enabled {</code></span>
+<span class="codeline" id="line-88"><code>		traceGCSweepStart()</code></span>
+<span class="codeline" id="line-89"><code>	}</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>	// If we sweep spanBudget spans without finding any free</code></span>
+<span class="codeline" id="line-92"><code>	// space, just allocate a fresh span. This limits the amount</code></span>
+<span class="codeline" id="line-93"><code>	// of time we can spend trying to find free space and</code></span>
+<span class="codeline" id="line-94"><code>	// amortizes the cost of small object sweeping over the</code></span>
+<span class="codeline" id="line-95"><code>	// benefit of having a full free span to allocate from. By</code></span>
+<span class="codeline" id="line-96"><code>	// setting this to 100, we limit the space overhead to 1%.</code></span>
+<span class="codeline" id="line-97"><code>	//</code></span>
+<span class="codeline" id="line-98"><code>	// TODO(austin,mknyszek): This still has bad worst-case</code></span>
+<span class="codeline" id="line-99"><code>	// throughput. For example, this could find just one free slot</code></span>
+<span class="codeline" id="line-100"><code>	// on the 100th swept span. That limits allocation latency, but</code></span>
+<span class="codeline" id="line-101"><code>	// still has very poor throughput. We could instead keep a</code></span>
+<span class="codeline" id="line-102"><code>	// running free-to-used budget and switch to fresh span</code></span>
+<span class="codeline" id="line-103"><code>	// allocation if the budget runs low.</code></span>
+<span class="codeline" id="line-104"><code>	spanBudget := 100</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>	var s *mspan</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>	// Try partial swept spans first.</code></span>
+<span class="codeline" id="line-109"><code>	if s = c.partialSwept(sg).pop(); s != nil {</code></span>
+<span class="codeline" id="line-110"><code>		goto havespan</code></span>
+<span class="codeline" id="line-111"><code>	}</code></span>
+<span class="codeline" id="line-112"><code></code></span>
+<span class="codeline" id="line-113"><code>	// Now try partial unswept spans.</code></span>
+<span class="codeline" id="line-114"><code>	for ; spanBudget &gt;= 0; spanBudget-- {</code></span>
+<span class="codeline" id="line-115"><code>		s = c.partialUnswept(sg).pop()</code></span>
+<span class="codeline" id="line-116"><code>		if s == nil {</code></span>
+<span class="codeline" id="line-117"><code>			break</code></span>
+<span class="codeline" id="line-118"><code>		}</code></span>
+<span class="codeline" id="line-119"><code>		if atomic.Load(&amp;s.sweepgen) == sg-2 &amp;&amp; atomic.Cas(&amp;s.sweepgen, sg-2, sg-1) {</code></span>
+<span class="codeline" id="line-120"><code>			// We got ownership of the span, so let's sweep it and use it.</code></span>
+<span class="codeline" id="line-121"><code>			s.sweep(true)</code></span>
+<span class="codeline" id="line-122"><code>			goto havespan</code></span>
+<span class="codeline" id="line-123"><code>		}</code></span>
+<span class="codeline" id="line-124"><code>		// We failed to get ownership of the span, which means it's being or</code></span>
+<span class="codeline" id="line-125"><code>		// has been swept by an asynchronous sweeper that just couldn't remove it</code></span>
+<span class="codeline" id="line-126"><code>		// from the unswept list. That sweeper took ownership of the span and</code></span>
+<span class="codeline" id="line-127"><code>		// responsibility for either freeing it to the heap or putting it on the</code></span>
+<span class="codeline" id="line-128"><code>		// right swept list. Either way, we should just ignore it (and it's unsafe</code></span>
+<span class="codeline" id="line-129"><code>		// for us to do anything else).</code></span>
+<span class="codeline" id="line-130"><code>	}</code></span>
+<span class="codeline" id="line-131"><code>	// Now try full unswept spans, sweeping them and putting them into the</code></span>
+<span class="codeline" id="line-132"><code>	// right list if we fail to get a span.</code></span>
+<span class="codeline" id="line-133"><code>	for ; spanBudget &gt;= 0; spanBudget-- {</code></span>
+<span class="codeline" id="line-134"><code>		s = c.fullUnswept(sg).pop()</code></span>
+<span class="codeline" id="line-135"><code>		if s == nil {</code></span>
+<span class="codeline" id="line-136"><code>			break</code></span>
+<span class="codeline" id="line-137"><code>		}</code></span>
+<span class="codeline" id="line-138"><code>		if atomic.Load(&amp;s.sweepgen) == sg-2 &amp;&amp; atomic.Cas(&amp;s.sweepgen, sg-2, sg-1) {</code></span>
+<span class="codeline" id="line-139"><code>			// We got ownership of the span, so let's sweep it.</code></span>
+<span class="codeline" id="line-140"><code>			s.sweep(true)</code></span>
+<span class="codeline" id="line-141"><code>			// Check if there's any free space.</code></span>
+<span class="codeline" id="line-142"><code>			freeIndex := s.nextFreeIndex()</code></span>
+<span class="codeline" id="line-143"><code>			if freeIndex != s.nelems {</code></span>
+<span class="codeline" id="line-144"><code>				s.freeindex = freeIndex</code></span>
+<span class="codeline" id="line-145"><code>				goto havespan</code></span>
+<span class="codeline" id="line-146"><code>			}</code></span>
+<span class="codeline" id="line-147"><code>			// Add it to the swept list, because sweeping didn't give us any free space.</code></span>
+<span class="codeline" id="line-148"><code>			c.fullSwept(sg).push(s)</code></span>
+<span class="codeline" id="line-149"><code>		}</code></span>
+<span class="codeline" id="line-150"><code>		// See comment for partial unswept spans.</code></span>
+<span class="codeline" id="line-151"><code>	}</code></span>
+<span class="codeline" id="line-152"><code>	if trace.enabled {</code></span>
+<span class="codeline" id="line-153"><code>		traceGCSweepDone()</code></span>
+<span class="codeline" id="line-154"><code>		traceDone = true</code></span>
+<span class="codeline" id="line-155"><code>	}</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>	// We failed to get a span from the mcentral so get one from mheap.</code></span>
+<span class="codeline" id="line-158"><code>	s = c.grow()</code></span>
+<span class="codeline" id="line-159"><code>	if s == nil {</code></span>
+<span class="codeline" id="line-160"><code>		return nil</code></span>
+<span class="codeline" id="line-161"><code>	}</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>	// At this point s is a span that should have free slots.</code></span>
+<span class="codeline" id="line-164"><code>havespan:</code></span>
+<span class="codeline" id="line-165"><code>	if trace.enabled &amp;&amp; !traceDone {</code></span>
+<span class="codeline" id="line-166"><code>		traceGCSweepDone()</code></span>
+<span class="codeline" id="line-167"><code>	}</code></span>
+<span class="codeline" id="line-168"><code>	n := int(s.nelems) - int(s.allocCount)</code></span>
+<span class="codeline" id="line-169"><code>	if n == 0 || s.freeindex == s.nelems || uintptr(s.allocCount) == s.nelems {</code></span>
+<span class="codeline" id="line-170"><code>		throw("span has no free objects")</code></span>
+<span class="codeline" id="line-171"><code>	}</code></span>
+<span class="codeline" id="line-172"><code>	freeByteBase := s.freeindex &amp;^ (64 - 1)</code></span>
+<span class="codeline" id="line-173"><code>	whichByte := freeByteBase / 8</code></span>
+<span class="codeline" id="line-174"><code>	// Init alloc bits cache.</code></span>
+<span class="codeline" id="line-175"><code>	s.refillAllocCache(whichByte)</code></span>
+<span class="codeline" id="line-176"><code></code></span>
+<span class="codeline" id="line-177"><code>	// Adjust the allocCache so that s.freeindex corresponds to the low bit in</code></span>
+<span class="codeline" id="line-178"><code>	// s.allocCache.</code></span>
+<span class="codeline" id="line-179"><code>	s.allocCache &gt;&gt;= s.freeindex % 64</code></span>
+<span class="codeline" id="line-180"><code></code></span>
+<span class="codeline" id="line-181"><code>	return s</code></span>
+<span class="codeline" id="line-182"><code>}</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>// Return span from an mcache.</code></span>
+<span class="codeline" id="line-185"><code>//</code></span>
+<span class="codeline" id="line-186"><code>// s must have a span class corresponding to this</code></span>
+<span class="codeline" id="line-187"><code>// mcentral and it must not be empty.</code></span>
+<span class="codeline" id="line-188"><code>func (c *mcentral) uncacheSpan(s *mspan) {</code></span>
+<span class="codeline" id="line-189"><code>	if s.allocCount == 0 {</code></span>
+<span class="codeline" id="line-190"><code>		throw("uncaching span but s.allocCount == 0")</code></span>
+<span class="codeline" id="line-191"><code>	}</code></span>
+<span class="codeline" id="line-192"><code></code></span>
+<span class="codeline" id="line-193"><code>	sg := mheap_.sweepgen</code></span>
+<span class="codeline" id="line-194"><code>	stale := s.sweepgen == sg+1</code></span>
+<span class="codeline" id="line-195"><code></code></span>
+<span class="codeline" id="line-196"><code>	// Fix up sweepgen.</code></span>
+<span class="codeline" id="line-197"><code>	if stale {</code></span>
+<span class="codeline" id="line-198"><code>		// Span was cached before sweep began. It's our</code></span>
+<span class="codeline" id="line-199"><code>		// responsibility to sweep it.</code></span>
+<span class="codeline" id="line-200"><code>		//</code></span>
+<span class="codeline" id="line-201"><code>		// Set sweepgen to indicate it's not cached but needs</code></span>
+<span class="codeline" id="line-202"><code>		// sweeping and can't be allocated from. sweep will</code></span>
+<span class="codeline" id="line-203"><code>		// set s.sweepgen to indicate s is swept.</code></span>
+<span class="codeline" id="line-204"><code>		atomic.Store(&amp;s.sweepgen, sg-1)</code></span>
+<span class="codeline" id="line-205"><code>	} else {</code></span>
+<span class="codeline" id="line-206"><code>		// Indicate that s is no longer cached.</code></span>
+<span class="codeline" id="line-207"><code>		atomic.Store(&amp;s.sweepgen, sg)</code></span>
+<span class="codeline" id="line-208"><code>	}</code></span>
+<span class="codeline" id="line-209"><code></code></span>
+<span class="codeline" id="line-210"><code>	// Put the span in the appropriate place.</code></span>
+<span class="codeline" id="line-211"><code>	if stale {</code></span>
+<span class="codeline" id="line-212"><code>		// It's stale, so just sweep it. Sweeping will put it on</code></span>
+<span class="codeline" id="line-213"><code>		// the right list.</code></span>
+<span class="codeline" id="line-214"><code>		s.sweep(false)</code></span>
+<span class="codeline" id="line-215"><code>	} else {</code></span>
+<span class="codeline" id="line-216"><code>		if int(s.nelems)-int(s.allocCount) &gt; 0 {</code></span>
+<span class="codeline" id="line-217"><code>			// Put it back on the partial swept list.</code></span>
+<span class="codeline" id="line-218"><code>			c.partialSwept(sg).push(s)</code></span>
+<span class="codeline" id="line-219"><code>		} else {</code></span>
+<span class="codeline" id="line-220"><code>			// There's no free space and it's not stale, so put it on the</code></span>
+<span class="codeline" id="line-221"><code>			// full swept list.</code></span>
+<span class="codeline" id="line-222"><code>			c.fullSwept(sg).push(s)</code></span>
+<span class="codeline" id="line-223"><code>		}</code></span>
+<span class="codeline" id="line-224"><code>	}</code></span>
+<span class="codeline" id="line-225"><code>}</code></span>
+<span class="codeline" id="line-226"><code></code></span>
+<span class="codeline" id="line-227"><code>// grow allocates a new empty span from the heap and initializes it for c's size class.</code></span>
+<span class="codeline" id="line-228"><code>func (c *mcentral) grow() *mspan {</code></span>
+<span class="codeline" id="line-229"><code>	npages := uintptr(class_to_allocnpages[c.spanclass.sizeclass()])</code></span>
+<span class="codeline" id="line-230"><code>	size := uintptr(class_to_size[c.spanclass.sizeclass()])</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>	s := mheap_.alloc(npages, c.spanclass, true)</code></span>
+<span class="codeline" id="line-233"><code>	if s == nil {</code></span>
+<span class="codeline" id="line-234"><code>		return nil</code></span>
+<span class="codeline" id="line-235"><code>	}</code></span>
+<span class="codeline" id="line-236"><code></code></span>
+<span class="codeline" id="line-237"><code>	// Use division by multiplication and shifts to quickly compute:</code></span>
+<span class="codeline" id="line-238"><code>	// n := (npages &lt;&lt; _PageShift) / size</code></span>
+<span class="codeline" id="line-239"><code>	n := (npages &lt;&lt; _PageShift) &gt;&gt; s.divShift * uintptr(s.divMul) &gt;&gt; s.divShift2</code></span>
+<span class="codeline" id="line-240"><code>	s.limit = s.base() + size*n</code></span>
+<span class="codeline" id="line-241"><code>	heapBitsForAddr(s.base()).initSpan(s)</code></span>
+<span class="codeline" id="line-242"><code>	return s</code></span>
+<span class="codeline" id="line-243"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

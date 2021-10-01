@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mem_linux.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mem_linux.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-9"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>const (</code></span>
+<span class="codeline" id="line-13"><code>	_EACCES = 13</code></span>
+<span class="codeline" id="line-14"><code>	_EINVAL = 22</code></span>
+<span class="codeline" id="line-15"><code>)</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// Don't split the stack as this method may be invoked without a valid G, which</code></span>
+<span class="codeline" id="line-18"><code>// prevents us from allocating more stack.</code></span>
+<span class="codeline" id="line-19"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-20"><code>func sysAlloc(n uintptr, sysStat *sysMemStat) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-21"><code>	p, err := mmap(nil, n, _PROT_READ|_PROT_WRITE, _MAP_ANON|_MAP_PRIVATE, -1, 0)</code></span>
+<span class="codeline" id="line-22"><code>	if err != 0 {</code></span>
+<span class="codeline" id="line-23"><code>		if err == _EACCES {</code></span>
+<span class="codeline" id="line-24"><code>			print("runtime: mmap: access denied\n")</code></span>
+<span class="codeline" id="line-25"><code>			exit(2)</code></span>
+<span class="codeline" id="line-26"><code>		}</code></span>
+<span class="codeline" id="line-27"><code>		if err == _EAGAIN {</code></span>
+<span class="codeline" id="line-28"><code>			print("runtime: mmap: too much locked memory (check 'ulimit -l').\n")</code></span>
+<span class="codeline" id="line-29"><code>			exit(2)</code></span>
+<span class="codeline" id="line-30"><code>		}</code></span>
+<span class="codeline" id="line-31"><code>		return nil</code></span>
+<span class="codeline" id="line-32"><code>	}</code></span>
+<span class="codeline" id="line-33"><code>	sysStat.add(int64(n))</code></span>
+<span class="codeline" id="line-34"><code>	return p</code></span>
+<span class="codeline" id="line-35"><code>}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>var adviseUnused = uint32(_MADV_FREE)</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>func sysUnused(v unsafe.Pointer, n uintptr) {</code></span>
+<span class="codeline" id="line-40"><code>	// By default, Linux's "transparent huge page" support will</code></span>
+<span class="codeline" id="line-41"><code>	// merge pages into a huge page if there's even a single</code></span>
+<span class="codeline" id="line-42"><code>	// present regular page, undoing the effects of madvise(adviseUnused)</code></span>
+<span class="codeline" id="line-43"><code>	// below. On amd64, that means khugepaged can turn a single</code></span>
+<span class="codeline" id="line-44"><code>	// 4KB page to 2MB, bloating the process's RSS by as much as</code></span>
+<span class="codeline" id="line-45"><code>	// 512X. (See issue #8832 and Linux kernel bug</code></span>
+<span class="codeline" id="line-46"><code>	// https://bugzilla.kernel.org/show_bug.cgi?id=93111)</code></span>
+<span class="codeline" id="line-47"><code>	//</code></span>
+<span class="codeline" id="line-48"><code>	// To work around this, we explicitly disable transparent huge</code></span>
+<span class="codeline" id="line-49"><code>	// pages when we release pages of the heap. However, we have</code></span>
+<span class="codeline" id="line-50"><code>	// to do this carefully because changing this flag tends to</code></span>
+<span class="codeline" id="line-51"><code>	// split the VMA (memory mapping) containing v in to three</code></span>
+<span class="codeline" id="line-52"><code>	// VMAs in order to track the different values of the</code></span>
+<span class="codeline" id="line-53"><code>	// MADV_NOHUGEPAGE flag in the different regions. There's a</code></span>
+<span class="codeline" id="line-54"><code>	// default limit of 65530 VMAs per address space (sysctl</code></span>
+<span class="codeline" id="line-55"><code>	// vm.max_map_count), so we must be careful not to create too</code></span>
+<span class="codeline" id="line-56"><code>	// many VMAs (see issue #12233).</code></span>
+<span class="codeline" id="line-57"><code>	//</code></span>
+<span class="codeline" id="line-58"><code>	// Since huge pages are huge, there's little use in adjusting</code></span>
+<span class="codeline" id="line-59"><code>	// the MADV_NOHUGEPAGE flag on a fine granularity, so we avoid</code></span>
+<span class="codeline" id="line-60"><code>	// exploding the number of VMAs by only adjusting the</code></span>
+<span class="codeline" id="line-61"><code>	// MADV_NOHUGEPAGE flag on a large granularity. This still</code></span>
+<span class="codeline" id="line-62"><code>	// gets most of the benefit of huge pages while keeping the</code></span>
+<span class="codeline" id="line-63"><code>	// number of VMAs under control. With hugePageSize = 2MB, even</code></span>
+<span class="codeline" id="line-64"><code>	// a pessimal heap can reach 128GB before running out of VMAs.</code></span>
+<span class="codeline" id="line-65"><code>	if physHugePageSize != 0 {</code></span>
+<span class="codeline" id="line-66"><code>		// If it's a large allocation, we want to leave huge</code></span>
+<span class="codeline" id="line-67"><code>		// pages enabled. Hence, we only adjust the huge page</code></span>
+<span class="codeline" id="line-68"><code>		// flag on the huge pages containing v and v+n-1, and</code></span>
+<span class="codeline" id="line-69"><code>		// only if those aren't aligned.</code></span>
+<span class="codeline" id="line-70"><code>		var head, tail uintptr</code></span>
+<span class="codeline" id="line-71"><code>		if uintptr(v)&amp;(physHugePageSize-1) != 0 {</code></span>
+<span class="codeline" id="line-72"><code>			// Compute huge page containing v.</code></span>
+<span class="codeline" id="line-73"><code>			head = alignDown(uintptr(v), physHugePageSize)</code></span>
+<span class="codeline" id="line-74"><code>		}</code></span>
+<span class="codeline" id="line-75"><code>		if (uintptr(v)+n)&amp;(physHugePageSize-1) != 0 {</code></span>
+<span class="codeline" id="line-76"><code>			// Compute huge page containing v+n-1.</code></span>
+<span class="codeline" id="line-77"><code>			tail = alignDown(uintptr(v)+n-1, physHugePageSize)</code></span>
+<span class="codeline" id="line-78"><code>		}</code></span>
+<span class="codeline" id="line-79"><code></code></span>
+<span class="codeline" id="line-80"><code>		// Note that madvise will return EINVAL if the flag is</code></span>
+<span class="codeline" id="line-81"><code>		// already set, which is quite likely. We ignore</code></span>
+<span class="codeline" id="line-82"><code>		// errors.</code></span>
+<span class="codeline" id="line-83"><code>		if head != 0 &amp;&amp; head+physHugePageSize == tail {</code></span>
+<span class="codeline" id="line-84"><code>			// head and tail are different but adjacent,</code></span>
+<span class="codeline" id="line-85"><code>			// so do this in one call.</code></span>
+<span class="codeline" id="line-86"><code>			madvise(unsafe.Pointer(head), 2*physHugePageSize, _MADV_NOHUGEPAGE)</code></span>
+<span class="codeline" id="line-87"><code>		} else {</code></span>
+<span class="codeline" id="line-88"><code>			// Advise the huge pages containing v and v+n-1.</code></span>
+<span class="codeline" id="line-89"><code>			if head != 0 {</code></span>
+<span class="codeline" id="line-90"><code>				madvise(unsafe.Pointer(head), physHugePageSize, _MADV_NOHUGEPAGE)</code></span>
+<span class="codeline" id="line-91"><code>			}</code></span>
+<span class="codeline" id="line-92"><code>			if tail != 0 &amp;&amp; tail != head {</code></span>
+<span class="codeline" id="line-93"><code>				madvise(unsafe.Pointer(tail), physHugePageSize, _MADV_NOHUGEPAGE)</code></span>
+<span class="codeline" id="line-94"><code>			}</code></span>
+<span class="codeline" id="line-95"><code>		}</code></span>
+<span class="codeline" id="line-96"><code>	}</code></span>
+<span class="codeline" id="line-97"><code></code></span>
+<span class="codeline" id="line-98"><code>	if uintptr(v)&amp;(physPageSize-1) != 0 || n&amp;(physPageSize-1) != 0 {</code></span>
+<span class="codeline" id="line-99"><code>		// madvise will round this to any physical page</code></span>
+<span class="codeline" id="line-100"><code>		// *covered* by this range, so an unaligned madvise</code></span>
+<span class="codeline" id="line-101"><code>		// will release more memory than intended.</code></span>
+<span class="codeline" id="line-102"><code>		throw("unaligned sysUnused")</code></span>
+<span class="codeline" id="line-103"><code>	}</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>	var advise uint32</code></span>
+<span class="codeline" id="line-106"><code>	if debug.madvdontneed != 0 {</code></span>
+<span class="codeline" id="line-107"><code>		advise = _MADV_DONTNEED</code></span>
+<span class="codeline" id="line-108"><code>	} else {</code></span>
+<span class="codeline" id="line-109"><code>		advise = atomic.Load(&amp;adviseUnused)</code></span>
+<span class="codeline" id="line-110"><code>	}</code></span>
+<span class="codeline" id="line-111"><code>	if errno := madvise(v, n, int32(advise)); advise == _MADV_FREE &amp;&amp; errno != 0 {</code></span>
+<span class="codeline" id="line-112"><code>		// MADV_FREE was added in Linux 4.5. Fall back to MADV_DONTNEED if it is</code></span>
+<span class="codeline" id="line-113"><code>		// not supported.</code></span>
+<span class="codeline" id="line-114"><code>		atomic.Store(&amp;adviseUnused, _MADV_DONTNEED)</code></span>
+<span class="codeline" id="line-115"><code>		madvise(v, n, _MADV_DONTNEED)</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code>}</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>func sysUsed(v unsafe.Pointer, n uintptr) {</code></span>
+<span class="codeline" id="line-120"><code>	// Partially undo the NOHUGEPAGE marks from sysUnused</code></span>
+<span class="codeline" id="line-121"><code>	// for whole huge pages between v and v+n. This may</code></span>
+<span class="codeline" id="line-122"><code>	// leave huge pages off at the end points v and v+n</code></span>
+<span class="codeline" id="line-123"><code>	// even though allocations may cover these entire huge</code></span>
+<span class="codeline" id="line-124"><code>	// pages. We could detect this and undo NOHUGEPAGE on</code></span>
+<span class="codeline" id="line-125"><code>	// the end points as well, but it's probably not worth</code></span>
+<span class="codeline" id="line-126"><code>	// the cost because when neighboring allocations are</code></span>
+<span class="codeline" id="line-127"><code>	// freed sysUnused will just set NOHUGEPAGE again.</code></span>
+<span class="codeline" id="line-128"><code>	sysHugePage(v, n)</code></span>
+<span class="codeline" id="line-129"><code>}</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>func sysHugePage(v unsafe.Pointer, n uintptr) {</code></span>
+<span class="codeline" id="line-132"><code>	if physHugePageSize != 0 {</code></span>
+<span class="codeline" id="line-133"><code>		// Round v up to a huge page boundary.</code></span>
+<span class="codeline" id="line-134"><code>		beg := alignUp(uintptr(v), physHugePageSize)</code></span>
+<span class="codeline" id="line-135"><code>		// Round v+n down to a huge page boundary.</code></span>
+<span class="codeline" id="line-136"><code>		end := alignDown(uintptr(v)+n, physHugePageSize)</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>		if beg &lt; end {</code></span>
+<span class="codeline" id="line-139"><code>			madvise(unsafe.Pointer(beg), end-beg, _MADV_HUGEPAGE)</code></span>
+<span class="codeline" id="line-140"><code>		}</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>}</code></span>
+<span class="codeline" id="line-143"><code></code></span>
+<span class="codeline" id="line-144"><code>// Don't split the stack as this function may be invoked without a valid G,</code></span>
+<span class="codeline" id="line-145"><code>// which prevents us from allocating more stack.</code></span>
+<span class="codeline" id="line-146"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-147"><code>func sysFree(v unsafe.Pointer, n uintptr, sysStat *sysMemStat) {</code></span>
+<span class="codeline" id="line-148"><code>	sysStat.add(-int64(n))</code></span>
+<span class="codeline" id="line-149"><code>	munmap(v, n)</code></span>
+<span class="codeline" id="line-150"><code>}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>func sysFault(v unsafe.Pointer, n uintptr) {</code></span>
+<span class="codeline" id="line-153"><code>	mmap(v, n, _PROT_NONE, _MAP_ANON|_MAP_PRIVATE|_MAP_FIXED, -1, 0)</code></span>
+<span class="codeline" id="line-154"><code>}</code></span>
+<span class="codeline" id="line-155"><code></code></span>
+<span class="codeline" id="line-156"><code>func sysReserve(v unsafe.Pointer, n uintptr) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-157"><code>	p, err := mmap(v, n, _PROT_NONE, _MAP_ANON|_MAP_PRIVATE, -1, 0)</code></span>
+<span class="codeline" id="line-158"><code>	if err != 0 {</code></span>
+<span class="codeline" id="line-159"><code>		return nil</code></span>
+<span class="codeline" id="line-160"><code>	}</code></span>
+<span class="codeline" id="line-161"><code>	return p</code></span>
+<span class="codeline" id="line-162"><code>}</code></span>
+<span class="codeline" id="line-163"><code></code></span>
+<span class="codeline" id="line-164"><code>func sysMap(v unsafe.Pointer, n uintptr, sysStat *sysMemStat) {</code></span>
+<span class="codeline" id="line-165"><code>	sysStat.add(int64(n))</code></span>
+<span class="codeline" id="line-166"><code></code></span>
+<span class="codeline" id="line-167"><code>	p, err := mmap(v, n, _PROT_READ|_PROT_WRITE, _MAP_ANON|_MAP_FIXED|_MAP_PRIVATE, -1, 0)</code></span>
+<span class="codeline" id="line-168"><code>	if err == _ENOMEM {</code></span>
+<span class="codeline" id="line-169"><code>		throw("runtime: out of memory")</code></span>
+<span class="codeline" id="line-170"><code>	}</code></span>
+<span class="codeline" id="line-171"><code>	if p != v || err != 0 {</code></span>
+<span class="codeline" id="line-172"><code>		throw("runtime: cannot map pages in arena address space")</code></span>
+<span class="codeline" id="line-173"><code>	}</code></span>
+<span class="codeline" id="line-174"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sockoptip.go in package internal/poll</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sockoptip.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/poll.html">internal/poll</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris windows</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package poll</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import "syscall"</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// SetsockoptIPMreq wraps the setsockopt network call with an IPMreq argument.</code></span>
+<span class="codeline" id="line-12"><code>func (fd *FD) SetsockoptIPMreq(level, name int, mreq *syscall.IPMreq) error {</code></span>
+<span class="codeline" id="line-13"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-14"><code>		return err</code></span>
+<span class="codeline" id="line-15"><code>	}</code></span>
+<span class="codeline" id="line-16"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-17"><code>	return syscall.SetsockoptIPMreq(fd.Sysfd, level, name, mreq)</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// SetsockoptIPv6Mreq wraps the setsockopt network call with an IPv6Mreq argument.</code></span>
+<span class="codeline" id="line-21"><code>func (fd *FD) SetsockoptIPv6Mreq(level, name int, mreq *syscall.IPv6Mreq) error {</code></span>
+<span class="codeline" id="line-22"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-23"><code>		return err</code></span>
+<span class="codeline" id="line-24"><code>	}</code></span>
+<span class="codeline" id="line-25"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-26"><code>	return syscall.SetsockoptIPv6Mreq(fd.Sysfd, level, name, mreq)</code></span>
+<span class="codeline" id="line-27"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

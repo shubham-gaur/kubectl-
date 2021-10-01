@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: type.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	type.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Runtime type representation.</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package runtime</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// tflag is documented in reflect/type.go.</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>// tflag values must be kept in sync with copies in:</code></span>
+<span class="codeline" id="line-14"><code>//	cmd/compile/internal/gc/reflect.go</code></span>
+<span class="codeline" id="line-15"><code>//	cmd/link/internal/ld/decodesym.go</code></span>
+<span class="codeline" id="line-16"><code>//	reflect/type.go</code></span>
+<span class="codeline" id="line-17"><code>//      internal/reflectlite/type.go</code></span>
+<span class="codeline" id="line-18"><code>type tflag uint8</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>const (</code></span>
+<span class="codeline" id="line-21"><code>	tflagUncommon      tflag = 1 &lt;&lt; 0</code></span>
+<span class="codeline" id="line-22"><code>	tflagExtraStar     tflag = 1 &lt;&lt; 1</code></span>
+<span class="codeline" id="line-23"><code>	tflagNamed         tflag = 1 &lt;&lt; 2</code></span>
+<span class="codeline" id="line-24"><code>	tflagRegularMemory tflag = 1 &lt;&lt; 3 // equal and hash can treat values of this type as a single region of t.size bytes</code></span>
+<span class="codeline" id="line-25"><code>)</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>// Needs to be in sync with ../cmd/link/internal/ld/decodesym.go:/^func.commonsize,</code></span>
+<span class="codeline" id="line-28"><code>// ../cmd/compile/internal/gc/reflect.go:/^func.dcommontype and</code></span>
+<span class="codeline" id="line-29"><code>// ../reflect/type.go:/^type.rtype.</code></span>
+<span class="codeline" id="line-30"><code>// ../internal/reflectlite/type.go:/^type.rtype.</code></span>
+<span class="codeline" id="line-31"><code>type _type struct {</code></span>
+<span class="codeline" id="line-32"><code>	size       uintptr</code></span>
+<span class="codeline" id="line-33"><code>	ptrdata    uintptr // size of memory prefix holding all pointers</code></span>
+<span class="codeline" id="line-34"><code>	hash       uint32</code></span>
+<span class="codeline" id="line-35"><code>	tflag      tflag</code></span>
+<span class="codeline" id="line-36"><code>	align      uint8</code></span>
+<span class="codeline" id="line-37"><code>	fieldAlign uint8</code></span>
+<span class="codeline" id="line-38"><code>	kind       uint8</code></span>
+<span class="codeline" id="line-39"><code>	// function for comparing objects of this type</code></span>
+<span class="codeline" id="line-40"><code>	// (ptr to object A, ptr to object B) -&gt; ==?</code></span>
+<span class="codeline" id="line-41"><code>	equal func(unsafe.Pointer, unsafe.Pointer) bool</code></span>
+<span class="codeline" id="line-42"><code>	// gcdata stores the GC type data for the garbage collector.</code></span>
+<span class="codeline" id="line-43"><code>	// If the KindGCProg bit is set in kind, gcdata is a GC program.</code></span>
+<span class="codeline" id="line-44"><code>	// Otherwise it is a ptrmask bitmap. See mbitmap.go for details.</code></span>
+<span class="codeline" id="line-45"><code>	gcdata    *byte</code></span>
+<span class="codeline" id="line-46"><code>	str       nameOff</code></span>
+<span class="codeline" id="line-47"><code>	ptrToThis typeOff</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>func (t *_type) string() string {</code></span>
+<span class="codeline" id="line-51"><code>	s := t.nameOff(t.str).name()</code></span>
+<span class="codeline" id="line-52"><code>	if t.tflag&amp;tflagExtraStar != 0 {</code></span>
+<span class="codeline" id="line-53"><code>		return s[1:]</code></span>
+<span class="codeline" id="line-54"><code>	}</code></span>
+<span class="codeline" id="line-55"><code>	return s</code></span>
+<span class="codeline" id="line-56"><code>}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>func (t *_type) uncommon() *uncommontype {</code></span>
+<span class="codeline" id="line-59"><code>	if t.tflag&amp;tflagUncommon == 0 {</code></span>
+<span class="codeline" id="line-60"><code>		return nil</code></span>
+<span class="codeline" id="line-61"><code>	}</code></span>
+<span class="codeline" id="line-62"><code>	switch t.kind &amp; kindMask {</code></span>
+<span class="codeline" id="line-63"><code>	case kindStruct:</code></span>
+<span class="codeline" id="line-64"><code>		type u struct {</code></span>
+<span class="codeline" id="line-65"><code>			structtype</code></span>
+<span class="codeline" id="line-66"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-67"><code>		}</code></span>
+<span class="codeline" id="line-68"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-69"><code>	case kindPtr:</code></span>
+<span class="codeline" id="line-70"><code>		type u struct {</code></span>
+<span class="codeline" id="line-71"><code>			ptrtype</code></span>
+<span class="codeline" id="line-72"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-73"><code>		}</code></span>
+<span class="codeline" id="line-74"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-75"><code>	case kindFunc:</code></span>
+<span class="codeline" id="line-76"><code>		type u struct {</code></span>
+<span class="codeline" id="line-77"><code>			functype</code></span>
+<span class="codeline" id="line-78"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-79"><code>		}</code></span>
+<span class="codeline" id="line-80"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-81"><code>	case kindSlice:</code></span>
+<span class="codeline" id="line-82"><code>		type u struct {</code></span>
+<span class="codeline" id="line-83"><code>			slicetype</code></span>
+<span class="codeline" id="line-84"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-85"><code>		}</code></span>
+<span class="codeline" id="line-86"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-87"><code>	case kindArray:</code></span>
+<span class="codeline" id="line-88"><code>		type u struct {</code></span>
+<span class="codeline" id="line-89"><code>			arraytype</code></span>
+<span class="codeline" id="line-90"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-91"><code>		}</code></span>
+<span class="codeline" id="line-92"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-93"><code>	case kindChan:</code></span>
+<span class="codeline" id="line-94"><code>		type u struct {</code></span>
+<span class="codeline" id="line-95"><code>			chantype</code></span>
+<span class="codeline" id="line-96"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-97"><code>		}</code></span>
+<span class="codeline" id="line-98"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-99"><code>	case kindMap:</code></span>
+<span class="codeline" id="line-100"><code>		type u struct {</code></span>
+<span class="codeline" id="line-101"><code>			maptype</code></span>
+<span class="codeline" id="line-102"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-103"><code>		}</code></span>
+<span class="codeline" id="line-104"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-105"><code>	case kindInterface:</code></span>
+<span class="codeline" id="line-106"><code>		type u struct {</code></span>
+<span class="codeline" id="line-107"><code>			interfacetype</code></span>
+<span class="codeline" id="line-108"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-109"><code>		}</code></span>
+<span class="codeline" id="line-110"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-111"><code>	default:</code></span>
+<span class="codeline" id="line-112"><code>		type u struct {</code></span>
+<span class="codeline" id="line-113"><code>			_type</code></span>
+<span class="codeline" id="line-114"><code>			u uncommontype</code></span>
+<span class="codeline" id="line-115"><code>		}</code></span>
+<span class="codeline" id="line-116"><code>		return &amp;(*u)(unsafe.Pointer(t)).u</code></span>
+<span class="codeline" id="line-117"><code>	}</code></span>
+<span class="codeline" id="line-118"><code>}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>func (t *_type) name() string {</code></span>
+<span class="codeline" id="line-121"><code>	if t.tflag&amp;tflagNamed == 0 {</code></span>
+<span class="codeline" id="line-122"><code>		return ""</code></span>
+<span class="codeline" id="line-123"><code>	}</code></span>
+<span class="codeline" id="line-124"><code>	s := t.string()</code></span>
+<span class="codeline" id="line-125"><code>	i := len(s) - 1</code></span>
+<span class="codeline" id="line-126"><code>	for i &gt;= 0 &amp;&amp; s[i] != '.' {</code></span>
+<span class="codeline" id="line-127"><code>		i--</code></span>
+<span class="codeline" id="line-128"><code>	}</code></span>
+<span class="codeline" id="line-129"><code>	return s[i+1:]</code></span>
+<span class="codeline" id="line-130"><code>}</code></span>
+<span class="codeline" id="line-131"><code></code></span>
+<span class="codeline" id="line-132"><code>// pkgpath returns the path of the package where t was defined, if</code></span>
+<span class="codeline" id="line-133"><code>// available. This is not the same as the reflect package's PkgPath</code></span>
+<span class="codeline" id="line-134"><code>// method, in that it returns the package path for struct and interface</code></span>
+<span class="codeline" id="line-135"><code>// types, not just named types.</code></span>
+<span class="codeline" id="line-136"><code>func (t *_type) pkgpath() string {</code></span>
+<span class="codeline" id="line-137"><code>	if u := t.uncommon(); u != nil {</code></span>
+<span class="codeline" id="line-138"><code>		return t.nameOff(u.pkgpath).name()</code></span>
+<span class="codeline" id="line-139"><code>	}</code></span>
+<span class="codeline" id="line-140"><code>	switch t.kind &amp; kindMask {</code></span>
+<span class="codeline" id="line-141"><code>	case kindStruct:</code></span>
+<span class="codeline" id="line-142"><code>		st := (*structtype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-143"><code>		return st.pkgPath.name()</code></span>
+<span class="codeline" id="line-144"><code>	case kindInterface:</code></span>
+<span class="codeline" id="line-145"><code>		it := (*interfacetype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-146"><code>		return it.pkgpath.name()</code></span>
+<span class="codeline" id="line-147"><code>	}</code></span>
+<span class="codeline" id="line-148"><code>	return ""</code></span>
+<span class="codeline" id="line-149"><code>}</code></span>
+<span class="codeline" id="line-150"><code></code></span>
+<span class="codeline" id="line-151"><code>// reflectOffs holds type offsets defined at run time by the reflect package.</code></span>
+<span class="codeline" id="line-152"><code>//</code></span>
+<span class="codeline" id="line-153"><code>// When a type is defined at run time, its *rtype data lives on the heap.</code></span>
+<span class="codeline" id="line-154"><code>// There are a wide range of possible addresses the heap may use, that</code></span>
+<span class="codeline" id="line-155"><code>// may not be representable as a 32-bit offset. Moreover the GC may</code></span>
+<span class="codeline" id="line-156"><code>// one day start moving heap memory, in which case there is no stable</code></span>
+<span class="codeline" id="line-157"><code>// offset that can be defined.</code></span>
+<span class="codeline" id="line-158"><code>//</code></span>
+<span class="codeline" id="line-159"><code>// To provide stable offsets, we add pin *rtype objects in a global map</code></span>
+<span class="codeline" id="line-160"><code>// and treat the offset as an identifier. We use negative offsets that</code></span>
+<span class="codeline" id="line-161"><code>// do not overlap with any compile-time module offsets.</code></span>
+<span class="codeline" id="line-162"><code>//</code></span>
+<span class="codeline" id="line-163"><code>// Entries are created by reflect.addReflectOff.</code></span>
+<span class="codeline" id="line-164"><code>var reflectOffs struct {</code></span>
+<span class="codeline" id="line-165"><code>	lock mutex</code></span>
+<span class="codeline" id="line-166"><code>	next int32</code></span>
+<span class="codeline" id="line-167"><code>	m    map[int32]unsafe.Pointer</code></span>
+<span class="codeline" id="line-168"><code>	minv map[unsafe.Pointer]int32</code></span>
+<span class="codeline" id="line-169"><code>}</code></span>
+<span class="codeline" id="line-170"><code></code></span>
+<span class="codeline" id="line-171"><code>func reflectOffsLock() {</code></span>
+<span class="codeline" id="line-172"><code>	lock(&amp;reflectOffs.lock)</code></span>
+<span class="codeline" id="line-173"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-174"><code>		raceacquire(unsafe.Pointer(&amp;reflectOffs.lock))</code></span>
+<span class="codeline" id="line-175"><code>	}</code></span>
+<span class="codeline" id="line-176"><code>}</code></span>
+<span class="codeline" id="line-177"><code></code></span>
+<span class="codeline" id="line-178"><code>func reflectOffsUnlock() {</code></span>
+<span class="codeline" id="line-179"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-180"><code>		racerelease(unsafe.Pointer(&amp;reflectOffs.lock))</code></span>
+<span class="codeline" id="line-181"><code>	}</code></span>
+<span class="codeline" id="line-182"><code>	unlock(&amp;reflectOffs.lock)</code></span>
+<span class="codeline" id="line-183"><code>}</code></span>
+<span class="codeline" id="line-184"><code></code></span>
+<span class="codeline" id="line-185"><code>func resolveNameOff(ptrInModule unsafe.Pointer, off nameOff) name {</code></span>
+<span class="codeline" id="line-186"><code>	if off == 0 {</code></span>
+<span class="codeline" id="line-187"><code>		return name{}</code></span>
+<span class="codeline" id="line-188"><code>	}</code></span>
+<span class="codeline" id="line-189"><code>	base := uintptr(ptrInModule)</code></span>
+<span class="codeline" id="line-190"><code>	for md := &amp;firstmoduledata; md != nil; md = md.next {</code></span>
+<span class="codeline" id="line-191"><code>		if base &gt;= md.types &amp;&amp; base &lt; md.etypes {</code></span>
+<span class="codeline" id="line-192"><code>			res := md.types + uintptr(off)</code></span>
+<span class="codeline" id="line-193"><code>			if res &gt; md.etypes {</code></span>
+<span class="codeline" id="line-194"><code>				println("runtime: nameOff", hex(off), "out of range", hex(md.types), "-", hex(md.etypes))</code></span>
+<span class="codeline" id="line-195"><code>				throw("runtime: name offset out of range")</code></span>
+<span class="codeline" id="line-196"><code>			}</code></span>
+<span class="codeline" id="line-197"><code>			return name{(*byte)(unsafe.Pointer(res))}</code></span>
+<span class="codeline" id="line-198"><code>		}</code></span>
+<span class="codeline" id="line-199"><code>	}</code></span>
+<span class="codeline" id="line-200"><code></code></span>
+<span class="codeline" id="line-201"><code>	// No module found. see if it is a run time name.</code></span>
+<span class="codeline" id="line-202"><code>	reflectOffsLock()</code></span>
+<span class="codeline" id="line-203"><code>	res, found := reflectOffs.m[int32(off)]</code></span>
+<span class="codeline" id="line-204"><code>	reflectOffsUnlock()</code></span>
+<span class="codeline" id="line-205"><code>	if !found {</code></span>
+<span class="codeline" id="line-206"><code>		println("runtime: nameOff", hex(off), "base", hex(base), "not in ranges:")</code></span>
+<span class="codeline" id="line-207"><code>		for next := &amp;firstmoduledata; next != nil; next = next.next {</code></span>
+<span class="codeline" id="line-208"><code>			println("\ttypes", hex(next.types), "etypes", hex(next.etypes))</code></span>
+<span class="codeline" id="line-209"><code>		}</code></span>
+<span class="codeline" id="line-210"><code>		throw("runtime: name offset base pointer out of range")</code></span>
+<span class="codeline" id="line-211"><code>	}</code></span>
+<span class="codeline" id="line-212"><code>	return name{(*byte)(res)}</code></span>
+<span class="codeline" id="line-213"><code>}</code></span>
+<span class="codeline" id="line-214"><code></code></span>
+<span class="codeline" id="line-215"><code>func (t *_type) nameOff(off nameOff) name {</code></span>
+<span class="codeline" id="line-216"><code>	return resolveNameOff(unsafe.Pointer(t), off)</code></span>
+<span class="codeline" id="line-217"><code>}</code></span>
+<span class="codeline" id="line-218"><code></code></span>
+<span class="codeline" id="line-219"><code>func resolveTypeOff(ptrInModule unsafe.Pointer, off typeOff) *_type {</code></span>
+<span class="codeline" id="line-220"><code>	if off == 0 || off == -1 {</code></span>
+<span class="codeline" id="line-221"><code>		// -1 is the sentinel value for unreachable code.</code></span>
+<span class="codeline" id="line-222"><code>		// See cmd/link/internal/ld/data.go:relocsym.</code></span>
+<span class="codeline" id="line-223"><code>		return nil</code></span>
+<span class="codeline" id="line-224"><code>	}</code></span>
+<span class="codeline" id="line-225"><code>	base := uintptr(ptrInModule)</code></span>
+<span class="codeline" id="line-226"><code>	var md *moduledata</code></span>
+<span class="codeline" id="line-227"><code>	for next := &amp;firstmoduledata; next != nil; next = next.next {</code></span>
+<span class="codeline" id="line-228"><code>		if base &gt;= next.types &amp;&amp; base &lt; next.etypes {</code></span>
+<span class="codeline" id="line-229"><code>			md = next</code></span>
+<span class="codeline" id="line-230"><code>			break</code></span>
+<span class="codeline" id="line-231"><code>		}</code></span>
+<span class="codeline" id="line-232"><code>	}</code></span>
+<span class="codeline" id="line-233"><code>	if md == nil {</code></span>
+<span class="codeline" id="line-234"><code>		reflectOffsLock()</code></span>
+<span class="codeline" id="line-235"><code>		res := reflectOffs.m[int32(off)]</code></span>
+<span class="codeline" id="line-236"><code>		reflectOffsUnlock()</code></span>
+<span class="codeline" id="line-237"><code>		if res == nil {</code></span>
+<span class="codeline" id="line-238"><code>			println("runtime: typeOff", hex(off), "base", hex(base), "not in ranges:")</code></span>
+<span class="codeline" id="line-239"><code>			for next := &amp;firstmoduledata; next != nil; next = next.next {</code></span>
+<span class="codeline" id="line-240"><code>				println("\ttypes", hex(next.types), "etypes", hex(next.etypes))</code></span>
+<span class="codeline" id="line-241"><code>			}</code></span>
+<span class="codeline" id="line-242"><code>			throw("runtime: type offset base pointer out of range")</code></span>
+<span class="codeline" id="line-243"><code>		}</code></span>
+<span class="codeline" id="line-244"><code>		return (*_type)(res)</code></span>
+<span class="codeline" id="line-245"><code>	}</code></span>
+<span class="codeline" id="line-246"><code>	if t := md.typemap[off]; t != nil {</code></span>
+<span class="codeline" id="line-247"><code>		return t</code></span>
+<span class="codeline" id="line-248"><code>	}</code></span>
+<span class="codeline" id="line-249"><code>	res := md.types + uintptr(off)</code></span>
+<span class="codeline" id="line-250"><code>	if res &gt; md.etypes {</code></span>
+<span class="codeline" id="line-251"><code>		println("runtime: typeOff", hex(off), "out of range", hex(md.types), "-", hex(md.etypes))</code></span>
+<span class="codeline" id="line-252"><code>		throw("runtime: type offset out of range")</code></span>
+<span class="codeline" id="line-253"><code>	}</code></span>
+<span class="codeline" id="line-254"><code>	return (*_type)(unsafe.Pointer(res))</code></span>
+<span class="codeline" id="line-255"><code>}</code></span>
+<span class="codeline" id="line-256"><code></code></span>
+<span class="codeline" id="line-257"><code>func (t *_type) typeOff(off typeOff) *_type {</code></span>
+<span class="codeline" id="line-258"><code>	return resolveTypeOff(unsafe.Pointer(t), off)</code></span>
+<span class="codeline" id="line-259"><code>}</code></span>
+<span class="codeline" id="line-260"><code></code></span>
+<span class="codeline" id="line-261"><code>func (t *_type) textOff(off textOff) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-262"><code>	if off == -1 {</code></span>
+<span class="codeline" id="line-263"><code>		// -1 is the sentinel value for unreachable code.</code></span>
+<span class="codeline" id="line-264"><code>		// See cmd/link/internal/ld/data.go:relocsym.</code></span>
+<span class="codeline" id="line-265"><code>		return unsafe.Pointer(^uintptr(0))</code></span>
+<span class="codeline" id="line-266"><code>	}</code></span>
+<span class="codeline" id="line-267"><code>	base := uintptr(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-268"><code>	var md *moduledata</code></span>
+<span class="codeline" id="line-269"><code>	for next := &amp;firstmoduledata; next != nil; next = next.next {</code></span>
+<span class="codeline" id="line-270"><code>		if base &gt;= next.types &amp;&amp; base &lt; next.etypes {</code></span>
+<span class="codeline" id="line-271"><code>			md = next</code></span>
+<span class="codeline" id="line-272"><code>			break</code></span>
+<span class="codeline" id="line-273"><code>		}</code></span>
+<span class="codeline" id="line-274"><code>	}</code></span>
+<span class="codeline" id="line-275"><code>	if md == nil {</code></span>
+<span class="codeline" id="line-276"><code>		reflectOffsLock()</code></span>
+<span class="codeline" id="line-277"><code>		res := reflectOffs.m[int32(off)]</code></span>
+<span class="codeline" id="line-278"><code>		reflectOffsUnlock()</code></span>
+<span class="codeline" id="line-279"><code>		if res == nil {</code></span>
+<span class="codeline" id="line-280"><code>			println("runtime: textOff", hex(off), "base", hex(base), "not in ranges:")</code></span>
+<span class="codeline" id="line-281"><code>			for next := &amp;firstmoduledata; next != nil; next = next.next {</code></span>
+<span class="codeline" id="line-282"><code>				println("\ttypes", hex(next.types), "etypes", hex(next.etypes))</code></span>
+<span class="codeline" id="line-283"><code>			}</code></span>
+<span class="codeline" id="line-284"><code>			throw("runtime: text offset base pointer out of range")</code></span>
+<span class="codeline" id="line-285"><code>		}</code></span>
+<span class="codeline" id="line-286"><code>		return res</code></span>
+<span class="codeline" id="line-287"><code>	}</code></span>
+<span class="codeline" id="line-288"><code>	res := uintptr(0)</code></span>
+<span class="codeline" id="line-289"><code></code></span>
+<span class="codeline" id="line-290"><code>	// The text, or instruction stream is generated as one large buffer.  The off (offset) for a method is</code></span>
+<span class="codeline" id="line-291"><code>	// its offset within this buffer.  If the total text size gets too large, there can be issues on platforms like ppc64 if</code></span>
+<span class="codeline" id="line-292"><code>	// the target of calls are too far for the call instruction.  To resolve the large text issue, the text is split</code></span>
+<span class="codeline" id="line-293"><code>	// into multiple text sections to allow the linker to generate long calls when necessary.  When this happens, the vaddr</code></span>
+<span class="codeline" id="line-294"><code>	// for each text section is set to its offset within the text.  Each method's offset is compared against the section</code></span>
+<span class="codeline" id="line-295"><code>	// vaddrs and sizes to determine the containing section.  Then the section relative offset is added to the section's</code></span>
+<span class="codeline" id="line-296"><code>	// relocated baseaddr to compute the method addess.</code></span>
+<span class="codeline" id="line-297"><code></code></span>
+<span class="codeline" id="line-298"><code>	if len(md.textsectmap) &gt; 1 {</code></span>
+<span class="codeline" id="line-299"><code>		for i := range md.textsectmap {</code></span>
+<span class="codeline" id="line-300"><code>			sectaddr := md.textsectmap[i].vaddr</code></span>
+<span class="codeline" id="line-301"><code>			sectlen := md.textsectmap[i].length</code></span>
+<span class="codeline" id="line-302"><code>			if uintptr(off) &gt;= sectaddr &amp;&amp; uintptr(off) &lt; sectaddr+sectlen {</code></span>
+<span class="codeline" id="line-303"><code>				res = md.textsectmap[i].baseaddr + uintptr(off) - uintptr(md.textsectmap[i].vaddr)</code></span>
+<span class="codeline" id="line-304"><code>				break</code></span>
+<span class="codeline" id="line-305"><code>			}</code></span>
+<span class="codeline" id="line-306"><code>		}</code></span>
+<span class="codeline" id="line-307"><code>	} else {</code></span>
+<span class="codeline" id="line-308"><code>		// single text section</code></span>
+<span class="codeline" id="line-309"><code>		res = md.text + uintptr(off)</code></span>
+<span class="codeline" id="line-310"><code>	}</code></span>
+<span class="codeline" id="line-311"><code></code></span>
+<span class="codeline" id="line-312"><code>	if res &gt; md.etext &amp;&amp; GOARCH != "wasm" { // on wasm, functions do not live in the same address space as the linear memory</code></span>
+<span class="codeline" id="line-313"><code>		println("runtime: textOff", hex(off), "out of range", hex(md.text), "-", hex(md.etext))</code></span>
+<span class="codeline" id="line-314"><code>		throw("runtime: text offset out of range")</code></span>
+<span class="codeline" id="line-315"><code>	}</code></span>
+<span class="codeline" id="line-316"><code>	return unsafe.Pointer(res)</code></span>
+<span class="codeline" id="line-317"><code>}</code></span>
+<span class="codeline" id="line-318"><code></code></span>
+<span class="codeline" id="line-319"><code>func (t *functype) in() []*_type {</code></span>
+<span class="codeline" id="line-320"><code>	// See funcType in reflect/type.go for details on data layout.</code></span>
+<span class="codeline" id="line-321"><code>	uadd := uintptr(unsafe.Sizeof(functype{}))</code></span>
+<span class="codeline" id="line-322"><code>	if t.typ.tflag&amp;tflagUncommon != 0 {</code></span>
+<span class="codeline" id="line-323"><code>		uadd += unsafe.Sizeof(uncommontype{})</code></span>
+<span class="codeline" id="line-324"><code>	}</code></span>
+<span class="codeline" id="line-325"><code>	return (*[1 &lt;&lt; 20]*_type)(add(unsafe.Pointer(t), uadd))[:t.inCount]</code></span>
+<span class="codeline" id="line-326"><code>}</code></span>
+<span class="codeline" id="line-327"><code></code></span>
+<span class="codeline" id="line-328"><code>func (t *functype) out() []*_type {</code></span>
+<span class="codeline" id="line-329"><code>	// See funcType in reflect/type.go for details on data layout.</code></span>
+<span class="codeline" id="line-330"><code>	uadd := uintptr(unsafe.Sizeof(functype{}))</code></span>
+<span class="codeline" id="line-331"><code>	if t.typ.tflag&amp;tflagUncommon != 0 {</code></span>
+<span class="codeline" id="line-332"><code>		uadd += unsafe.Sizeof(uncommontype{})</code></span>
+<span class="codeline" id="line-333"><code>	}</code></span>
+<span class="codeline" id="line-334"><code>	outCount := t.outCount &amp; (1&lt;&lt;15 - 1)</code></span>
+<span class="codeline" id="line-335"><code>	return (*[1 &lt;&lt; 20]*_type)(add(unsafe.Pointer(t), uadd))[t.inCount : t.inCount+outCount]</code></span>
+<span class="codeline" id="line-336"><code>}</code></span>
+<span class="codeline" id="line-337"><code></code></span>
+<span class="codeline" id="line-338"><code>func (t *functype) dotdotdot() bool {</code></span>
+<span class="codeline" id="line-339"><code>	return t.outCount&amp;(1&lt;&lt;15) != 0</code></span>
+<span class="codeline" id="line-340"><code>}</code></span>
+<span class="codeline" id="line-341"><code></code></span>
+<span class="codeline" id="line-342"><code>type nameOff int32</code></span>
+<span class="codeline" id="line-343"><code>type typeOff int32</code></span>
+<span class="codeline" id="line-344"><code>type textOff int32</code></span>
+<span class="codeline" id="line-345"><code></code></span>
+<span class="codeline" id="line-346"><code>type method struct {</code></span>
+<span class="codeline" id="line-347"><code>	name nameOff</code></span>
+<span class="codeline" id="line-348"><code>	mtyp typeOff</code></span>
+<span class="codeline" id="line-349"><code>	ifn  textOff</code></span>
+<span class="codeline" id="line-350"><code>	tfn  textOff</code></span>
+<span class="codeline" id="line-351"><code>}</code></span>
+<span class="codeline" id="line-352"><code></code></span>
+<span class="codeline" id="line-353"><code>type uncommontype struct {</code></span>
+<span class="codeline" id="line-354"><code>	pkgpath nameOff</code></span>
+<span class="codeline" id="line-355"><code>	mcount  uint16 // number of methods</code></span>
+<span class="codeline" id="line-356"><code>	xcount  uint16 // number of exported methods</code></span>
+<span class="codeline" id="line-357"><code>	moff    uint32 // offset from this uncommontype to [mcount]method</code></span>
+<span class="codeline" id="line-358"><code>	_       uint32 // unused</code></span>
+<span class="codeline" id="line-359"><code>}</code></span>
+<span class="codeline" id="line-360"><code></code></span>
+<span class="codeline" id="line-361"><code>type imethod struct {</code></span>
+<span class="codeline" id="line-362"><code>	name nameOff</code></span>
+<span class="codeline" id="line-363"><code>	ityp typeOff</code></span>
+<span class="codeline" id="line-364"><code>}</code></span>
+<span class="codeline" id="line-365"><code></code></span>
+<span class="codeline" id="line-366"><code>type interfacetype struct {</code></span>
+<span class="codeline" id="line-367"><code>	typ     _type</code></span>
+<span class="codeline" id="line-368"><code>	pkgpath name</code></span>
+<span class="codeline" id="line-369"><code>	mhdr    []imethod</code></span>
+<span class="codeline" id="line-370"><code>}</code></span>
+<span class="codeline" id="line-371"><code></code></span>
+<span class="codeline" id="line-372"><code>type maptype struct {</code></span>
+<span class="codeline" id="line-373"><code>	typ    _type</code></span>
+<span class="codeline" id="line-374"><code>	key    *_type</code></span>
+<span class="codeline" id="line-375"><code>	elem   *_type</code></span>
+<span class="codeline" id="line-376"><code>	bucket *_type // internal type representing a hash bucket</code></span>
+<span class="codeline" id="line-377"><code>	// function for hashing keys (ptr to key, seed) -&gt; hash</code></span>
+<span class="codeline" id="line-378"><code>	hasher     func(unsafe.Pointer, uintptr) uintptr</code></span>
+<span class="codeline" id="line-379"><code>	keysize    uint8  // size of key slot</code></span>
+<span class="codeline" id="line-380"><code>	elemsize   uint8  // size of elem slot</code></span>
+<span class="codeline" id="line-381"><code>	bucketsize uint16 // size of bucket</code></span>
+<span class="codeline" id="line-382"><code>	flags      uint32</code></span>
+<span class="codeline" id="line-383"><code>}</code></span>
+<span class="codeline" id="line-384"><code></code></span>
+<span class="codeline" id="line-385"><code>// Note: flag values must match those used in the TMAP case</code></span>
+<span class="codeline" id="line-386"><code>// in ../cmd/compile/internal/gc/reflect.go:dtypesym.</code></span>
+<span class="codeline" id="line-387"><code>func (mt *maptype) indirectkey() bool { // store ptr to key instead of key itself</code></span>
+<span class="codeline" id="line-388"><code>	return mt.flags&amp;1 != 0</code></span>
+<span class="codeline" id="line-389"><code>}</code></span>
+<span class="codeline" id="line-390"><code>func (mt *maptype) indirectelem() bool { // store ptr to elem instead of elem itself</code></span>
+<span class="codeline" id="line-391"><code>	return mt.flags&amp;2 != 0</code></span>
+<span class="codeline" id="line-392"><code>}</code></span>
+<span class="codeline" id="line-393"><code>func (mt *maptype) reflexivekey() bool { // true if k==k for all keys</code></span>
+<span class="codeline" id="line-394"><code>	return mt.flags&amp;4 != 0</code></span>
+<span class="codeline" id="line-395"><code>}</code></span>
+<span class="codeline" id="line-396"><code>func (mt *maptype) needkeyupdate() bool { // true if we need to update key on an overwrite</code></span>
+<span class="codeline" id="line-397"><code>	return mt.flags&amp;8 != 0</code></span>
+<span class="codeline" id="line-398"><code>}</code></span>
+<span class="codeline" id="line-399"><code>func (mt *maptype) hashMightPanic() bool { // true if hash function might panic</code></span>
+<span class="codeline" id="line-400"><code>	return mt.flags&amp;16 != 0</code></span>
+<span class="codeline" id="line-401"><code>}</code></span>
+<span class="codeline" id="line-402"><code></code></span>
+<span class="codeline" id="line-403"><code>type arraytype struct {</code></span>
+<span class="codeline" id="line-404"><code>	typ   _type</code></span>
+<span class="codeline" id="line-405"><code>	elem  *_type</code></span>
+<span class="codeline" id="line-406"><code>	slice *_type</code></span>
+<span class="codeline" id="line-407"><code>	len   uintptr</code></span>
+<span class="codeline" id="line-408"><code>}</code></span>
+<span class="codeline" id="line-409"><code></code></span>
+<span class="codeline" id="line-410"><code>type chantype struct {</code></span>
+<span class="codeline" id="line-411"><code>	typ  _type</code></span>
+<span class="codeline" id="line-412"><code>	elem *_type</code></span>
+<span class="codeline" id="line-413"><code>	dir  uintptr</code></span>
+<span class="codeline" id="line-414"><code>}</code></span>
+<span class="codeline" id="line-415"><code></code></span>
+<span class="codeline" id="line-416"><code>type slicetype struct {</code></span>
+<span class="codeline" id="line-417"><code>	typ  _type</code></span>
+<span class="codeline" id="line-418"><code>	elem *_type</code></span>
+<span class="codeline" id="line-419"><code>}</code></span>
+<span class="codeline" id="line-420"><code></code></span>
+<span class="codeline" id="line-421"><code>type functype struct {</code></span>
+<span class="codeline" id="line-422"><code>	typ      _type</code></span>
+<span class="codeline" id="line-423"><code>	inCount  uint16</code></span>
+<span class="codeline" id="line-424"><code>	outCount uint16</code></span>
+<span class="codeline" id="line-425"><code>}</code></span>
+<span class="codeline" id="line-426"><code></code></span>
+<span class="codeline" id="line-427"><code>type ptrtype struct {</code></span>
+<span class="codeline" id="line-428"><code>	typ  _type</code></span>
+<span class="codeline" id="line-429"><code>	elem *_type</code></span>
+<span class="codeline" id="line-430"><code>}</code></span>
+<span class="codeline" id="line-431"><code></code></span>
+<span class="codeline" id="line-432"><code>type structfield struct {</code></span>
+<span class="codeline" id="line-433"><code>	name       name</code></span>
+<span class="codeline" id="line-434"><code>	typ        *_type</code></span>
+<span class="codeline" id="line-435"><code>	offsetAnon uintptr</code></span>
+<span class="codeline" id="line-436"><code>}</code></span>
+<span class="codeline" id="line-437"><code></code></span>
+<span class="codeline" id="line-438"><code>func (f *structfield) offset() uintptr {</code></span>
+<span class="codeline" id="line-439"><code>	return f.offsetAnon &gt;&gt; 1</code></span>
+<span class="codeline" id="line-440"><code>}</code></span>
+<span class="codeline" id="line-441"><code></code></span>
+<span class="codeline" id="line-442"><code>type structtype struct {</code></span>
+<span class="codeline" id="line-443"><code>	typ     _type</code></span>
+<span class="codeline" id="line-444"><code>	pkgPath name</code></span>
+<span class="codeline" id="line-445"><code>	fields  []structfield</code></span>
+<span class="codeline" id="line-446"><code>}</code></span>
+<span class="codeline" id="line-447"><code></code></span>
+<span class="codeline" id="line-448"><code>// name is an encoded type name with optional extra data.</code></span>
+<span class="codeline" id="line-449"><code>// See reflect/type.go for details.</code></span>
+<span class="codeline" id="line-450"><code>type name struct {</code></span>
+<span class="codeline" id="line-451"><code>	bytes *byte</code></span>
+<span class="codeline" id="line-452"><code>}</code></span>
+<span class="codeline" id="line-453"><code></code></span>
+<span class="codeline" id="line-454"><code>func (n name) data(off int) *byte {</code></span>
+<span class="codeline" id="line-455"><code>	return (*byte)(add(unsafe.Pointer(n.bytes), uintptr(off)))</code></span>
+<span class="codeline" id="line-456"><code>}</code></span>
+<span class="codeline" id="line-457"><code></code></span>
+<span class="codeline" id="line-458"><code>func (n name) isExported() bool {</code></span>
+<span class="codeline" id="line-459"><code>	return (*n.bytes)&amp;(1&lt;&lt;0) != 0</code></span>
+<span class="codeline" id="line-460"><code>}</code></span>
+<span class="codeline" id="line-461"><code></code></span>
+<span class="codeline" id="line-462"><code>func (n name) nameLen() int {</code></span>
+<span class="codeline" id="line-463"><code>	return int(uint16(*n.data(1))&lt;&lt;8 | uint16(*n.data(2)))</code></span>
+<span class="codeline" id="line-464"><code>}</code></span>
+<span class="codeline" id="line-465"><code></code></span>
+<span class="codeline" id="line-466"><code>func (n name) tagLen() int {</code></span>
+<span class="codeline" id="line-467"><code>	if *n.data(0)&amp;(1&lt;&lt;1) == 0 {</code></span>
+<span class="codeline" id="line-468"><code>		return 0</code></span>
+<span class="codeline" id="line-469"><code>	}</code></span>
+<span class="codeline" id="line-470"><code>	off := 3 + n.nameLen()</code></span>
+<span class="codeline" id="line-471"><code>	return int(uint16(*n.data(off))&lt;&lt;8 | uint16(*n.data(off + 1)))</code></span>
+<span class="codeline" id="line-472"><code>}</code></span>
+<span class="codeline" id="line-473"><code></code></span>
+<span class="codeline" id="line-474"><code>func (n name) name() (s string) {</code></span>
+<span class="codeline" id="line-475"><code>	if n.bytes == nil {</code></span>
+<span class="codeline" id="line-476"><code>		return ""</code></span>
+<span class="codeline" id="line-477"><code>	}</code></span>
+<span class="codeline" id="line-478"><code>	nl := n.nameLen()</code></span>
+<span class="codeline" id="line-479"><code>	if nl == 0 {</code></span>
+<span class="codeline" id="line-480"><code>		return ""</code></span>
+<span class="codeline" id="line-481"><code>	}</code></span>
+<span class="codeline" id="line-482"><code>	hdr := (*stringStruct)(unsafe.Pointer(&amp;s))</code></span>
+<span class="codeline" id="line-483"><code>	hdr.str = unsafe.Pointer(n.data(3))</code></span>
+<span class="codeline" id="line-484"><code>	hdr.len = nl</code></span>
+<span class="codeline" id="line-485"><code>	return s</code></span>
+<span class="codeline" id="line-486"><code>}</code></span>
+<span class="codeline" id="line-487"><code></code></span>
+<span class="codeline" id="line-488"><code>func (n name) tag() (s string) {</code></span>
+<span class="codeline" id="line-489"><code>	tl := n.tagLen()</code></span>
+<span class="codeline" id="line-490"><code>	if tl == 0 {</code></span>
+<span class="codeline" id="line-491"><code>		return ""</code></span>
+<span class="codeline" id="line-492"><code>	}</code></span>
+<span class="codeline" id="line-493"><code>	nl := n.nameLen()</code></span>
+<span class="codeline" id="line-494"><code>	hdr := (*stringStruct)(unsafe.Pointer(&amp;s))</code></span>
+<span class="codeline" id="line-495"><code>	hdr.str = unsafe.Pointer(n.data(3 + nl + 2))</code></span>
+<span class="codeline" id="line-496"><code>	hdr.len = tl</code></span>
+<span class="codeline" id="line-497"><code>	return s</code></span>
+<span class="codeline" id="line-498"><code>}</code></span>
+<span class="codeline" id="line-499"><code></code></span>
+<span class="codeline" id="line-500"><code>func (n name) pkgPath() string {</code></span>
+<span class="codeline" id="line-501"><code>	if n.bytes == nil || *n.data(0)&amp;(1&lt;&lt;2) == 0 {</code></span>
+<span class="codeline" id="line-502"><code>		return ""</code></span>
+<span class="codeline" id="line-503"><code>	}</code></span>
+<span class="codeline" id="line-504"><code>	off := 3 + n.nameLen()</code></span>
+<span class="codeline" id="line-505"><code>	if tl := n.tagLen(); tl &gt; 0 {</code></span>
+<span class="codeline" id="line-506"><code>		off += 2 + tl</code></span>
+<span class="codeline" id="line-507"><code>	}</code></span>
+<span class="codeline" id="line-508"><code>	var nameOff nameOff</code></span>
+<span class="codeline" id="line-509"><code>	copy((*[4]byte)(unsafe.Pointer(&amp;nameOff))[:], (*[4]byte)(unsafe.Pointer(n.data(off)))[:])</code></span>
+<span class="codeline" id="line-510"><code>	pkgPathName := resolveNameOff(unsafe.Pointer(n.bytes), nameOff)</code></span>
+<span class="codeline" id="line-511"><code>	return pkgPathName.name()</code></span>
+<span class="codeline" id="line-512"><code>}</code></span>
+<span class="codeline" id="line-513"><code></code></span>
+<span class="codeline" id="line-514"><code>func (n name) isBlank() bool {</code></span>
+<span class="codeline" id="line-515"><code>	if n.bytes == nil {</code></span>
+<span class="codeline" id="line-516"><code>		return false</code></span>
+<span class="codeline" id="line-517"><code>	}</code></span>
+<span class="codeline" id="line-518"><code>	if n.nameLen() != 1 {</code></span>
+<span class="codeline" id="line-519"><code>		return false</code></span>
+<span class="codeline" id="line-520"><code>	}</code></span>
+<span class="codeline" id="line-521"><code>	return *n.data(3) == '_'</code></span>
+<span class="codeline" id="line-522"><code>}</code></span>
+<span class="codeline" id="line-523"><code></code></span>
+<span class="codeline" id="line-524"><code>// typelinksinit scans the types from extra modules and builds the</code></span>
+<span class="codeline" id="line-525"><code>// moduledata typemap used to de-duplicate type pointers.</code></span>
+<span class="codeline" id="line-526"><code>func typelinksinit() {</code></span>
+<span class="codeline" id="line-527"><code>	if firstmoduledata.next == nil {</code></span>
+<span class="codeline" id="line-528"><code>		return</code></span>
+<span class="codeline" id="line-529"><code>	}</code></span>
+<span class="codeline" id="line-530"><code>	typehash := make(map[uint32][]*_type, len(firstmoduledata.typelinks))</code></span>
+<span class="codeline" id="line-531"><code></code></span>
+<span class="codeline" id="line-532"><code>	modules := activeModules()</code></span>
+<span class="codeline" id="line-533"><code>	prev := modules[0]</code></span>
+<span class="codeline" id="line-534"><code>	for _, md := range modules[1:] {</code></span>
+<span class="codeline" id="line-535"><code>		// Collect types from the previous module into typehash.</code></span>
+<span class="codeline" id="line-536"><code>	collect:</code></span>
+<span class="codeline" id="line-537"><code>		for _, tl := range prev.typelinks {</code></span>
+<span class="codeline" id="line-538"><code>			var t *_type</code></span>
+<span class="codeline" id="line-539"><code>			if prev.typemap == nil {</code></span>
+<span class="codeline" id="line-540"><code>				t = (*_type)(unsafe.Pointer(prev.types + uintptr(tl)))</code></span>
+<span class="codeline" id="line-541"><code>			} else {</code></span>
+<span class="codeline" id="line-542"><code>				t = prev.typemap[typeOff(tl)]</code></span>
+<span class="codeline" id="line-543"><code>			}</code></span>
+<span class="codeline" id="line-544"><code>			// Add to typehash if not seen before.</code></span>
+<span class="codeline" id="line-545"><code>			tlist := typehash[t.hash]</code></span>
+<span class="codeline" id="line-546"><code>			for _, tcur := range tlist {</code></span>
+<span class="codeline" id="line-547"><code>				if tcur == t {</code></span>
+<span class="codeline" id="line-548"><code>					continue collect</code></span>
+<span class="codeline" id="line-549"><code>				}</code></span>
+<span class="codeline" id="line-550"><code>			}</code></span>
+<span class="codeline" id="line-551"><code>			typehash[t.hash] = append(tlist, t)</code></span>
+<span class="codeline" id="line-552"><code>		}</code></span>
+<span class="codeline" id="line-553"><code></code></span>
+<span class="codeline" id="line-554"><code>		if md.typemap == nil {</code></span>
+<span class="codeline" id="line-555"><code>			// If any of this module's typelinks match a type from a</code></span>
+<span class="codeline" id="line-556"><code>			// prior module, prefer that prior type by adding the offset</code></span>
+<span class="codeline" id="line-557"><code>			// to this module's typemap.</code></span>
+<span class="codeline" id="line-558"><code>			tm := make(map[typeOff]*_type, len(md.typelinks))</code></span>
+<span class="codeline" id="line-559"><code>			pinnedTypemaps = append(pinnedTypemaps, tm)</code></span>
+<span class="codeline" id="line-560"><code>			md.typemap = tm</code></span>
+<span class="codeline" id="line-561"><code>			for _, tl := range md.typelinks {</code></span>
+<span class="codeline" id="line-562"><code>				t := (*_type)(unsafe.Pointer(md.types + uintptr(tl)))</code></span>
+<span class="codeline" id="line-563"><code>				for _, candidate := range typehash[t.hash] {</code></span>
+<span class="codeline" id="line-564"><code>					seen := map[_typePair]struct{}{}</code></span>
+<span class="codeline" id="line-565"><code>					if typesEqual(t, candidate, seen) {</code></span>
+<span class="codeline" id="line-566"><code>						t = candidate</code></span>
+<span class="codeline" id="line-567"><code>						break</code></span>
+<span class="codeline" id="line-568"><code>					}</code></span>
+<span class="codeline" id="line-569"><code>				}</code></span>
+<span class="codeline" id="line-570"><code>				md.typemap[typeOff(tl)] = t</code></span>
+<span class="codeline" id="line-571"><code>			}</code></span>
+<span class="codeline" id="line-572"><code>		}</code></span>
+<span class="codeline" id="line-573"><code></code></span>
+<span class="codeline" id="line-574"><code>		prev = md</code></span>
+<span class="codeline" id="line-575"><code>	}</code></span>
+<span class="codeline" id="line-576"><code>}</code></span>
+<span class="codeline" id="line-577"><code></code></span>
+<span class="codeline" id="line-578"><code>type _typePair struct {</code></span>
+<span class="codeline" id="line-579"><code>	t1 *_type</code></span>
+<span class="codeline" id="line-580"><code>	t2 *_type</code></span>
+<span class="codeline" id="line-581"><code>}</code></span>
+<span class="codeline" id="line-582"><code></code></span>
+<span class="codeline" id="line-583"><code>// typesEqual reports whether two types are equal.</code></span>
+<span class="codeline" id="line-584"><code>//</code></span>
+<span class="codeline" id="line-585"><code>// Everywhere in the runtime and reflect packages, it is assumed that</code></span>
+<span class="codeline" id="line-586"><code>// there is exactly one *_type per Go type, so that pointer equality</code></span>
+<span class="codeline" id="line-587"><code>// can be used to test if types are equal. There is one place that</code></span>
+<span class="codeline" id="line-588"><code>// breaks this assumption: buildmode=shared. In this case a type can</code></span>
+<span class="codeline" id="line-589"><code>// appear as two different pieces of memory. This is hidden from the</code></span>
+<span class="codeline" id="line-590"><code>// runtime and reflect package by the per-module typemap built in</code></span>
+<span class="codeline" id="line-591"><code>// typelinksinit. It uses typesEqual to map types from later modules</code></span>
+<span class="codeline" id="line-592"><code>// back into earlier ones.</code></span>
+<span class="codeline" id="line-593"><code>//</code></span>
+<span class="codeline" id="line-594"><code>// Only typelinksinit needs this function.</code></span>
+<span class="codeline" id="line-595"><code>func typesEqual(t, v *_type, seen map[_typePair]struct{}) bool {</code></span>
+<span class="codeline" id="line-596"><code>	tp := _typePair{t, v}</code></span>
+<span class="codeline" id="line-597"><code>	if _, ok := seen[tp]; ok {</code></span>
+<span class="codeline" id="line-598"><code>		return true</code></span>
+<span class="codeline" id="line-599"><code>	}</code></span>
+<span class="codeline" id="line-600"><code></code></span>
+<span class="codeline" id="line-601"><code>	// mark these types as seen, and thus equivalent which prevents an infinite loop if</code></span>
+<span class="codeline" id="line-602"><code>	// the two types are identical, but recursively defined and loaded from</code></span>
+<span class="codeline" id="line-603"><code>	// different modules</code></span>
+<span class="codeline" id="line-604"><code>	seen[tp] = struct{}{}</code></span>
+<span class="codeline" id="line-605"><code></code></span>
+<span class="codeline" id="line-606"><code>	if t == v {</code></span>
+<span class="codeline" id="line-607"><code>		return true</code></span>
+<span class="codeline" id="line-608"><code>	}</code></span>
+<span class="codeline" id="line-609"><code>	kind := t.kind &amp; kindMask</code></span>
+<span class="codeline" id="line-610"><code>	if kind != v.kind&amp;kindMask {</code></span>
+<span class="codeline" id="line-611"><code>		return false</code></span>
+<span class="codeline" id="line-612"><code>	}</code></span>
+<span class="codeline" id="line-613"><code>	if t.string() != v.string() {</code></span>
+<span class="codeline" id="line-614"><code>		return false</code></span>
+<span class="codeline" id="line-615"><code>	}</code></span>
+<span class="codeline" id="line-616"><code>	ut := t.uncommon()</code></span>
+<span class="codeline" id="line-617"><code>	uv := v.uncommon()</code></span>
+<span class="codeline" id="line-618"><code>	if ut != nil || uv != nil {</code></span>
+<span class="codeline" id="line-619"><code>		if ut == nil || uv == nil {</code></span>
+<span class="codeline" id="line-620"><code>			return false</code></span>
+<span class="codeline" id="line-621"><code>		}</code></span>
+<span class="codeline" id="line-622"><code>		pkgpatht := t.nameOff(ut.pkgpath).name()</code></span>
+<span class="codeline" id="line-623"><code>		pkgpathv := v.nameOff(uv.pkgpath).name()</code></span>
+<span class="codeline" id="line-624"><code>		if pkgpatht != pkgpathv {</code></span>
+<span class="codeline" id="line-625"><code>			return false</code></span>
+<span class="codeline" id="line-626"><code>		}</code></span>
+<span class="codeline" id="line-627"><code>	}</code></span>
+<span class="codeline" id="line-628"><code>	if kindBool &lt;= kind &amp;&amp; kind &lt;= kindComplex128 {</code></span>
+<span class="codeline" id="line-629"><code>		return true</code></span>
+<span class="codeline" id="line-630"><code>	}</code></span>
+<span class="codeline" id="line-631"><code>	switch kind {</code></span>
+<span class="codeline" id="line-632"><code>	case kindString, kindUnsafePointer:</code></span>
+<span class="codeline" id="line-633"><code>		return true</code></span>
+<span class="codeline" id="line-634"><code>	case kindArray:</code></span>
+<span class="codeline" id="line-635"><code>		at := (*arraytype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-636"><code>		av := (*arraytype)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-637"><code>		return typesEqual(at.elem, av.elem, seen) &amp;&amp; at.len == av.len</code></span>
+<span class="codeline" id="line-638"><code>	case kindChan:</code></span>
+<span class="codeline" id="line-639"><code>		ct := (*chantype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-640"><code>		cv := (*chantype)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-641"><code>		return ct.dir == cv.dir &amp;&amp; typesEqual(ct.elem, cv.elem, seen)</code></span>
+<span class="codeline" id="line-642"><code>	case kindFunc:</code></span>
+<span class="codeline" id="line-643"><code>		ft := (*functype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-644"><code>		fv := (*functype)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-645"><code>		if ft.outCount != fv.outCount || ft.inCount != fv.inCount {</code></span>
+<span class="codeline" id="line-646"><code>			return false</code></span>
+<span class="codeline" id="line-647"><code>		}</code></span>
+<span class="codeline" id="line-648"><code>		tin, vin := ft.in(), fv.in()</code></span>
+<span class="codeline" id="line-649"><code>		for i := 0; i &lt; len(tin); i++ {</code></span>
+<span class="codeline" id="line-650"><code>			if !typesEqual(tin[i], vin[i], seen) {</code></span>
+<span class="codeline" id="line-651"><code>				return false</code></span>
+<span class="codeline" id="line-652"><code>			}</code></span>
+<span class="codeline" id="line-653"><code>		}</code></span>
+<span class="codeline" id="line-654"><code>		tout, vout := ft.out(), fv.out()</code></span>
+<span class="codeline" id="line-655"><code>		for i := 0; i &lt; len(tout); i++ {</code></span>
+<span class="codeline" id="line-656"><code>			if !typesEqual(tout[i], vout[i], seen) {</code></span>
+<span class="codeline" id="line-657"><code>				return false</code></span>
+<span class="codeline" id="line-658"><code>			}</code></span>
+<span class="codeline" id="line-659"><code>		}</code></span>
+<span class="codeline" id="line-660"><code>		return true</code></span>
+<span class="codeline" id="line-661"><code>	case kindInterface:</code></span>
+<span class="codeline" id="line-662"><code>		it := (*interfacetype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-663"><code>		iv := (*interfacetype)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-664"><code>		if it.pkgpath.name() != iv.pkgpath.name() {</code></span>
+<span class="codeline" id="line-665"><code>			return false</code></span>
+<span class="codeline" id="line-666"><code>		}</code></span>
+<span class="codeline" id="line-667"><code>		if len(it.mhdr) != len(iv.mhdr) {</code></span>
+<span class="codeline" id="line-668"><code>			return false</code></span>
+<span class="codeline" id="line-669"><code>		}</code></span>
+<span class="codeline" id="line-670"><code>		for i := range it.mhdr {</code></span>
+<span class="codeline" id="line-671"><code>			tm := &amp;it.mhdr[i]</code></span>
+<span class="codeline" id="line-672"><code>			vm := &amp;iv.mhdr[i]</code></span>
+<span class="codeline" id="line-673"><code>			// Note the mhdr array can be relocated from</code></span>
+<span class="codeline" id="line-674"><code>			// another module. See #17724.</code></span>
+<span class="codeline" id="line-675"><code>			tname := resolveNameOff(unsafe.Pointer(tm), tm.name)</code></span>
+<span class="codeline" id="line-676"><code>			vname := resolveNameOff(unsafe.Pointer(vm), vm.name)</code></span>
+<span class="codeline" id="line-677"><code>			if tname.name() != vname.name() {</code></span>
+<span class="codeline" id="line-678"><code>				return false</code></span>
+<span class="codeline" id="line-679"><code>			}</code></span>
+<span class="codeline" id="line-680"><code>			if tname.pkgPath() != vname.pkgPath() {</code></span>
+<span class="codeline" id="line-681"><code>				return false</code></span>
+<span class="codeline" id="line-682"><code>			}</code></span>
+<span class="codeline" id="line-683"><code>			tityp := resolveTypeOff(unsafe.Pointer(tm), tm.ityp)</code></span>
+<span class="codeline" id="line-684"><code>			vityp := resolveTypeOff(unsafe.Pointer(vm), vm.ityp)</code></span>
+<span class="codeline" id="line-685"><code>			if !typesEqual(tityp, vityp, seen) {</code></span>
+<span class="codeline" id="line-686"><code>				return false</code></span>
+<span class="codeline" id="line-687"><code>			}</code></span>
+<span class="codeline" id="line-688"><code>		}</code></span>
+<span class="codeline" id="line-689"><code>		return true</code></span>
+<span class="codeline" id="line-690"><code>	case kindMap:</code></span>
+<span class="codeline" id="line-691"><code>		mt := (*maptype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-692"><code>		mv := (*maptype)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-693"><code>		return typesEqual(mt.key, mv.key, seen) &amp;&amp; typesEqual(mt.elem, mv.elem, seen)</code></span>
+<span class="codeline" id="line-694"><code>	case kindPtr:</code></span>
+<span class="codeline" id="line-695"><code>		pt := (*ptrtype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-696"><code>		pv := (*ptrtype)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-697"><code>		return typesEqual(pt.elem, pv.elem, seen)</code></span>
+<span class="codeline" id="line-698"><code>	case kindSlice:</code></span>
+<span class="codeline" id="line-699"><code>		st := (*slicetype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-700"><code>		sv := (*slicetype)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-701"><code>		return typesEqual(st.elem, sv.elem, seen)</code></span>
+<span class="codeline" id="line-702"><code>	case kindStruct:</code></span>
+<span class="codeline" id="line-703"><code>		st := (*structtype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-704"><code>		sv := (*structtype)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-705"><code>		if len(st.fields) != len(sv.fields) {</code></span>
+<span class="codeline" id="line-706"><code>			return false</code></span>
+<span class="codeline" id="line-707"><code>		}</code></span>
+<span class="codeline" id="line-708"><code>		if st.pkgPath.name() != sv.pkgPath.name() {</code></span>
+<span class="codeline" id="line-709"><code>			return false</code></span>
+<span class="codeline" id="line-710"><code>		}</code></span>
+<span class="codeline" id="line-711"><code>		for i := range st.fields {</code></span>
+<span class="codeline" id="line-712"><code>			tf := &amp;st.fields[i]</code></span>
+<span class="codeline" id="line-713"><code>			vf := &amp;sv.fields[i]</code></span>
+<span class="codeline" id="line-714"><code>			if tf.name.name() != vf.name.name() {</code></span>
+<span class="codeline" id="line-715"><code>				return false</code></span>
+<span class="codeline" id="line-716"><code>			}</code></span>
+<span class="codeline" id="line-717"><code>			if !typesEqual(tf.typ, vf.typ, seen) {</code></span>
+<span class="codeline" id="line-718"><code>				return false</code></span>
+<span class="codeline" id="line-719"><code>			}</code></span>
+<span class="codeline" id="line-720"><code>			if tf.name.tag() != vf.name.tag() {</code></span>
+<span class="codeline" id="line-721"><code>				return false</code></span>
+<span class="codeline" id="line-722"><code>			}</code></span>
+<span class="codeline" id="line-723"><code>			if tf.offsetAnon != vf.offsetAnon {</code></span>
+<span class="codeline" id="line-724"><code>				return false</code></span>
+<span class="codeline" id="line-725"><code>			}</code></span>
+<span class="codeline" id="line-726"><code>		}</code></span>
+<span class="codeline" id="line-727"><code>		return true</code></span>
+<span class="codeline" id="line-728"><code>	default:</code></span>
+<span class="codeline" id="line-729"><code>		println("runtime: impossible type kind", kind)</code></span>
+<span class="codeline" id="line-730"><code>		throw("runtime: impossible type kind")</code></span>
+<span class="codeline" id="line-731"><code>		return false</code></span>
+<span class="codeline" id="line-732"><code>	}</code></span>
+<span class="codeline" id="line-733"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

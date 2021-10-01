@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: writev.go in package internal/poll</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	writev.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/poll.html">internal/poll</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2016 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build darwin dragonfly freebsd illumos linux netbsd openbsd</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package poll</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"io"</code></span>
+<span class="codeline" id="line-11"><code>	"syscall"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>// Writev wraps the writev system call.</code></span>
+<span class="codeline" id="line-15"><code>func (fd *FD) Writev(v *[][]byte) (int64, error) {</code></span>
+<span class="codeline" id="line-16"><code>	if err := fd.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-17"><code>		return 0, err</code></span>
+<span class="codeline" id="line-18"><code>	}</code></span>
+<span class="codeline" id="line-19"><code>	defer fd.writeUnlock()</code></span>
+<span class="codeline" id="line-20"><code>	if err := fd.pd.prepareWrite(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-21"><code>		return 0, err</code></span>
+<span class="codeline" id="line-22"><code>	}</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>	var iovecs []syscall.Iovec</code></span>
+<span class="codeline" id="line-25"><code>	if fd.iovecs != nil {</code></span>
+<span class="codeline" id="line-26"><code>		iovecs = *fd.iovecs</code></span>
+<span class="codeline" id="line-27"><code>	}</code></span>
+<span class="codeline" id="line-28"><code>	// TODO: read from sysconf(_SC_IOV_MAX)? The Linux default is</code></span>
+<span class="codeline" id="line-29"><code>	// 1024 and this seems conservative enough for now. Darwin's</code></span>
+<span class="codeline" id="line-30"><code>	// UIO_MAXIOV also seems to be 1024.</code></span>
+<span class="codeline" id="line-31"><code>	maxVec := 1024</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	var n int64</code></span>
+<span class="codeline" id="line-34"><code>	var err error</code></span>
+<span class="codeline" id="line-35"><code>	for len(*v) &gt; 0 {</code></span>
+<span class="codeline" id="line-36"><code>		iovecs = iovecs[:0]</code></span>
+<span class="codeline" id="line-37"><code>		for _, chunk := range *v {</code></span>
+<span class="codeline" id="line-38"><code>			if len(chunk) == 0 {</code></span>
+<span class="codeline" id="line-39"><code>				continue</code></span>
+<span class="codeline" id="line-40"><code>			}</code></span>
+<span class="codeline" id="line-41"><code>			iovecs = append(iovecs, newIovecWithBase(&amp;chunk[0]))</code></span>
+<span class="codeline" id="line-42"><code>			if fd.IsStream &amp;&amp; len(chunk) &gt; 1&lt;&lt;30 {</code></span>
+<span class="codeline" id="line-43"><code>				iovecs[len(iovecs)-1].SetLen(1 &lt;&lt; 30)</code></span>
+<span class="codeline" id="line-44"><code>				break // continue chunk on next writev</code></span>
+<span class="codeline" id="line-45"><code>			}</code></span>
+<span class="codeline" id="line-46"><code>			iovecs[len(iovecs)-1].SetLen(len(chunk))</code></span>
+<span class="codeline" id="line-47"><code>			if len(iovecs) == maxVec {</code></span>
+<span class="codeline" id="line-48"><code>				break</code></span>
+<span class="codeline" id="line-49"><code>			}</code></span>
+<span class="codeline" id="line-50"><code>		}</code></span>
+<span class="codeline" id="line-51"><code>		if len(iovecs) == 0 {</code></span>
+<span class="codeline" id="line-52"><code>			break</code></span>
+<span class="codeline" id="line-53"><code>		}</code></span>
+<span class="codeline" id="line-54"><code>		if fd.iovecs == nil {</code></span>
+<span class="codeline" id="line-55"><code>			fd.iovecs = new([]syscall.Iovec)</code></span>
+<span class="codeline" id="line-56"><code>		}</code></span>
+<span class="codeline" id="line-57"><code>		*fd.iovecs = iovecs // cache</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>		var wrote uintptr</code></span>
+<span class="codeline" id="line-60"><code>		wrote, err = writev(fd.Sysfd, iovecs)</code></span>
+<span class="codeline" id="line-61"><code>		if wrote == ^uintptr(0) {</code></span>
+<span class="codeline" id="line-62"><code>			wrote = 0</code></span>
+<span class="codeline" id="line-63"><code>		}</code></span>
+<span class="codeline" id="line-64"><code>		TestHookDidWritev(int(wrote))</code></span>
+<span class="codeline" id="line-65"><code>		n += int64(wrote)</code></span>
+<span class="codeline" id="line-66"><code>		consume(v, int64(wrote))</code></span>
+<span class="codeline" id="line-67"><code>		for i := range iovecs {</code></span>
+<span class="codeline" id="line-68"><code>			iovecs[i] = syscall.Iovec{}</code></span>
+<span class="codeline" id="line-69"><code>		}</code></span>
+<span class="codeline" id="line-70"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-71"><code>			if err == syscall.EINTR {</code></span>
+<span class="codeline" id="line-72"><code>				continue</code></span>
+<span class="codeline" id="line-73"><code>			}</code></span>
+<span class="codeline" id="line-74"><code>			if err == syscall.EAGAIN {</code></span>
+<span class="codeline" id="line-75"><code>				if err = fd.pd.waitWrite(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-76"><code>					continue</code></span>
+<span class="codeline" id="line-77"><code>				}</code></span>
+<span class="codeline" id="line-78"><code>			}</code></span>
+<span class="codeline" id="line-79"><code>			break</code></span>
+<span class="codeline" id="line-80"><code>		}</code></span>
+<span class="codeline" id="line-81"><code>		if n == 0 {</code></span>
+<span class="codeline" id="line-82"><code>			err = io.ErrUnexpectedEOF</code></span>
+<span class="codeline" id="line-83"><code>			break</code></span>
+<span class="codeline" id="line-84"><code>		}</code></span>
+<span class="codeline" id="line-85"><code>	}</code></span>
+<span class="codeline" id="line-86"><code>	return n, err</code></span>
+<span class="codeline" id="line-87"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

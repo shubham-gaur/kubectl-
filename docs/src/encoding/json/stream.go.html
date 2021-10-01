@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: stream.go in package encoding/json</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	stream.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/encoding/json.html">encoding/json</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package json</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"bytes"</code></span>
+<span class="codeline" id="line-9"><code>	"errors"</code></span>
+<span class="codeline" id="line-10"><code>	"io"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// A Decoder reads and decodes JSON values from an input stream.</code></span>
+<span class="codeline" id="line-14"><code>type Decoder struct {</code></span>
+<span class="codeline" id="line-15"><code>	r       io.Reader</code></span>
+<span class="codeline" id="line-16"><code>	buf     []byte</code></span>
+<span class="codeline" id="line-17"><code>	d       decodeState</code></span>
+<span class="codeline" id="line-18"><code>	scanp   int   // start of unread data in buf</code></span>
+<span class="codeline" id="line-19"><code>	scanned int64 // amount of data already scanned</code></span>
+<span class="codeline" id="line-20"><code>	scan    scanner</code></span>
+<span class="codeline" id="line-21"><code>	err     error</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>	tokenState int</code></span>
+<span class="codeline" id="line-24"><code>	tokenStack []int</code></span>
+<span class="codeline" id="line-25"><code>}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>// NewDecoder returns a new decoder that reads from r.</code></span>
+<span class="codeline" id="line-28"><code>//</code></span>
+<span class="codeline" id="line-29"><code>// The decoder introduces its own buffering and may</code></span>
+<span class="codeline" id="line-30"><code>// read data from r beyond the JSON values requested.</code></span>
+<span class="codeline" id="line-31"><code>func NewDecoder(r io.Reader) *Decoder {</code></span>
+<span class="codeline" id="line-32"><code>	return &amp;Decoder{r: r}</code></span>
+<span class="codeline" id="line-33"><code>}</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>// UseNumber causes the Decoder to unmarshal a number into an interface{} as a</code></span>
+<span class="codeline" id="line-36"><code>// Number instead of as a float64.</code></span>
+<span class="codeline" id="line-37"><code>func (dec *Decoder) UseNumber() { dec.d.useNumber = true }</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>// DisallowUnknownFields causes the Decoder to return an error when the destination</code></span>
+<span class="codeline" id="line-40"><code>// is a struct and the input contains object keys which do not match any</code></span>
+<span class="codeline" id="line-41"><code>// non-ignored, exported fields in the destination.</code></span>
+<span class="codeline" id="line-42"><code>func (dec *Decoder) DisallowUnknownFields() { dec.d.disallowUnknownFields = true }</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>// Decode reads the next JSON-encoded value from its</code></span>
+<span class="codeline" id="line-45"><code>// input and stores it in the value pointed to by v.</code></span>
+<span class="codeline" id="line-46"><code>//</code></span>
+<span class="codeline" id="line-47"><code>// See the documentation for Unmarshal for details about</code></span>
+<span class="codeline" id="line-48"><code>// the conversion of JSON into a Go value.</code></span>
+<span class="codeline" id="line-49"><code>func (dec *Decoder) Decode(v interface{}) error {</code></span>
+<span class="codeline" id="line-50"><code>	if dec.err != nil {</code></span>
+<span class="codeline" id="line-51"><code>		return dec.err</code></span>
+<span class="codeline" id="line-52"><code>	}</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>	if err := dec.tokenPrepareForDecode(); err != nil {</code></span>
+<span class="codeline" id="line-55"><code>		return err</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>	if !dec.tokenValueAllowed() {</code></span>
+<span class="codeline" id="line-59"><code>		return &amp;SyntaxError{msg: "not at beginning of value", Offset: dec.InputOffset()}</code></span>
+<span class="codeline" id="line-60"><code>	}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>	// Read whole value into buffer.</code></span>
+<span class="codeline" id="line-63"><code>	n, err := dec.readValue()</code></span>
+<span class="codeline" id="line-64"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-65"><code>		return err</code></span>
+<span class="codeline" id="line-66"><code>	}</code></span>
+<span class="codeline" id="line-67"><code>	dec.d.init(dec.buf[dec.scanp : dec.scanp+n])</code></span>
+<span class="codeline" id="line-68"><code>	dec.scanp += n</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>	// Don't save err from unmarshal into dec.err:</code></span>
+<span class="codeline" id="line-71"><code>	// the connection is still usable since we read a complete JSON</code></span>
+<span class="codeline" id="line-72"><code>	// object from it before the error happened.</code></span>
+<span class="codeline" id="line-73"><code>	err = dec.d.unmarshal(v)</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>	// fixup token streaming state</code></span>
+<span class="codeline" id="line-76"><code>	dec.tokenValueEnd()</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>	return err</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+<span class="codeline" id="line-80"><code></code></span>
+<span class="codeline" id="line-81"><code>// Buffered returns a reader of the data remaining in the Decoder's</code></span>
+<span class="codeline" id="line-82"><code>// buffer. The reader is valid until the next call to Decode.</code></span>
+<span class="codeline" id="line-83"><code>func (dec *Decoder) Buffered() io.Reader {</code></span>
+<span class="codeline" id="line-84"><code>	return bytes.NewReader(dec.buf[dec.scanp:])</code></span>
+<span class="codeline" id="line-85"><code>}</code></span>
+<span class="codeline" id="line-86"><code></code></span>
+<span class="codeline" id="line-87"><code>// readValue reads a JSON value into dec.buf.</code></span>
+<span class="codeline" id="line-88"><code>// It returns the length of the encoding.</code></span>
+<span class="codeline" id="line-89"><code>func (dec *Decoder) readValue() (int, error) {</code></span>
+<span class="codeline" id="line-90"><code>	dec.scan.reset()</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>	scanp := dec.scanp</code></span>
+<span class="codeline" id="line-93"><code>	var err error</code></span>
+<span class="codeline" id="line-94"><code>Input:</code></span>
+<span class="codeline" id="line-95"><code>	// help the compiler see that scanp is never negative, so it can remove</code></span>
+<span class="codeline" id="line-96"><code>	// some bounds checks below.</code></span>
+<span class="codeline" id="line-97"><code>	for scanp &gt;= 0 {</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>		// Look in the buffer for a new value.</code></span>
+<span class="codeline" id="line-100"><code>		for ; scanp &lt; len(dec.buf); scanp++ {</code></span>
+<span class="codeline" id="line-101"><code>			c := dec.buf[scanp]</code></span>
+<span class="codeline" id="line-102"><code>			dec.scan.bytes++</code></span>
+<span class="codeline" id="line-103"><code>			switch dec.scan.step(&amp;dec.scan, c) {</code></span>
+<span class="codeline" id="line-104"><code>			case scanEnd:</code></span>
+<span class="codeline" id="line-105"><code>				// scanEnd is delayed one byte so we decrement</code></span>
+<span class="codeline" id="line-106"><code>				// the scanner bytes count by 1 to ensure that</code></span>
+<span class="codeline" id="line-107"><code>				// this value is correct in the next call of Decode.</code></span>
+<span class="codeline" id="line-108"><code>				dec.scan.bytes--</code></span>
+<span class="codeline" id="line-109"><code>				break Input</code></span>
+<span class="codeline" id="line-110"><code>			case scanEndObject, scanEndArray:</code></span>
+<span class="codeline" id="line-111"><code>				// scanEnd is delayed one byte.</code></span>
+<span class="codeline" id="line-112"><code>				// We might block trying to get that byte from src,</code></span>
+<span class="codeline" id="line-113"><code>				// so instead invent a space byte.</code></span>
+<span class="codeline" id="line-114"><code>				if stateEndValue(&amp;dec.scan, ' ') == scanEnd {</code></span>
+<span class="codeline" id="line-115"><code>					scanp++</code></span>
+<span class="codeline" id="line-116"><code>					break Input</code></span>
+<span class="codeline" id="line-117"><code>				}</code></span>
+<span class="codeline" id="line-118"><code>			case scanError:</code></span>
+<span class="codeline" id="line-119"><code>				dec.err = dec.scan.err</code></span>
+<span class="codeline" id="line-120"><code>				return 0, dec.scan.err</code></span>
+<span class="codeline" id="line-121"><code>			}</code></span>
+<span class="codeline" id="line-122"><code>		}</code></span>
+<span class="codeline" id="line-123"><code></code></span>
+<span class="codeline" id="line-124"><code>		// Did the last read have an error?</code></span>
+<span class="codeline" id="line-125"><code>		// Delayed until now to allow buffer scan.</code></span>
+<span class="codeline" id="line-126"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-127"><code>			if err == io.EOF {</code></span>
+<span class="codeline" id="line-128"><code>				if dec.scan.step(&amp;dec.scan, ' ') == scanEnd {</code></span>
+<span class="codeline" id="line-129"><code>					break Input</code></span>
+<span class="codeline" id="line-130"><code>				}</code></span>
+<span class="codeline" id="line-131"><code>				if nonSpace(dec.buf) {</code></span>
+<span class="codeline" id="line-132"><code>					err = io.ErrUnexpectedEOF</code></span>
+<span class="codeline" id="line-133"><code>				}</code></span>
+<span class="codeline" id="line-134"><code>			}</code></span>
+<span class="codeline" id="line-135"><code>			dec.err = err</code></span>
+<span class="codeline" id="line-136"><code>			return 0, err</code></span>
+<span class="codeline" id="line-137"><code>		}</code></span>
+<span class="codeline" id="line-138"><code></code></span>
+<span class="codeline" id="line-139"><code>		n := scanp - dec.scanp</code></span>
+<span class="codeline" id="line-140"><code>		err = dec.refill()</code></span>
+<span class="codeline" id="line-141"><code>		scanp = dec.scanp + n</code></span>
+<span class="codeline" id="line-142"><code>	}</code></span>
+<span class="codeline" id="line-143"><code>	return scanp - dec.scanp, nil</code></span>
+<span class="codeline" id="line-144"><code>}</code></span>
+<span class="codeline" id="line-145"><code></code></span>
+<span class="codeline" id="line-146"><code>func (dec *Decoder) refill() error {</code></span>
+<span class="codeline" id="line-147"><code>	// Make room to read more into the buffer.</code></span>
+<span class="codeline" id="line-148"><code>	// First slide down data already consumed.</code></span>
+<span class="codeline" id="line-149"><code>	if dec.scanp &gt; 0 {</code></span>
+<span class="codeline" id="line-150"><code>		dec.scanned += int64(dec.scanp)</code></span>
+<span class="codeline" id="line-151"><code>		n := copy(dec.buf, dec.buf[dec.scanp:])</code></span>
+<span class="codeline" id="line-152"><code>		dec.buf = dec.buf[:n]</code></span>
+<span class="codeline" id="line-153"><code>		dec.scanp = 0</code></span>
+<span class="codeline" id="line-154"><code>	}</code></span>
+<span class="codeline" id="line-155"><code></code></span>
+<span class="codeline" id="line-156"><code>	// Grow buffer if not large enough.</code></span>
+<span class="codeline" id="line-157"><code>	const minRead = 512</code></span>
+<span class="codeline" id="line-158"><code>	if cap(dec.buf)-len(dec.buf) &lt; minRead {</code></span>
+<span class="codeline" id="line-159"><code>		newBuf := make([]byte, len(dec.buf), 2*cap(dec.buf)+minRead)</code></span>
+<span class="codeline" id="line-160"><code>		copy(newBuf, dec.buf)</code></span>
+<span class="codeline" id="line-161"><code>		dec.buf = newBuf</code></span>
+<span class="codeline" id="line-162"><code>	}</code></span>
+<span class="codeline" id="line-163"><code></code></span>
+<span class="codeline" id="line-164"><code>	// Read. Delay error for next iteration (after scan).</code></span>
+<span class="codeline" id="line-165"><code>	n, err := dec.r.Read(dec.buf[len(dec.buf):cap(dec.buf)])</code></span>
+<span class="codeline" id="line-166"><code>	dec.buf = dec.buf[0 : len(dec.buf)+n]</code></span>
+<span class="codeline" id="line-167"><code></code></span>
+<span class="codeline" id="line-168"><code>	return err</code></span>
+<span class="codeline" id="line-169"><code>}</code></span>
+<span class="codeline" id="line-170"><code></code></span>
+<span class="codeline" id="line-171"><code>func nonSpace(b []byte) bool {</code></span>
+<span class="codeline" id="line-172"><code>	for _, c := range b {</code></span>
+<span class="codeline" id="line-173"><code>		if !isSpace(c) {</code></span>
+<span class="codeline" id="line-174"><code>			return true</code></span>
+<span class="codeline" id="line-175"><code>		}</code></span>
+<span class="codeline" id="line-176"><code>	}</code></span>
+<span class="codeline" id="line-177"><code>	return false</code></span>
+<span class="codeline" id="line-178"><code>}</code></span>
+<span class="codeline" id="line-179"><code></code></span>
+<span class="codeline" id="line-180"><code>// An Encoder writes JSON values to an output stream.</code></span>
+<span class="codeline" id="line-181"><code>type Encoder struct {</code></span>
+<span class="codeline" id="line-182"><code>	w          io.Writer</code></span>
+<span class="codeline" id="line-183"><code>	err        error</code></span>
+<span class="codeline" id="line-184"><code>	escapeHTML bool</code></span>
+<span class="codeline" id="line-185"><code></code></span>
+<span class="codeline" id="line-186"><code>	indentBuf    *bytes.Buffer</code></span>
+<span class="codeline" id="line-187"><code>	indentPrefix string</code></span>
+<span class="codeline" id="line-188"><code>	indentValue  string</code></span>
+<span class="codeline" id="line-189"><code>}</code></span>
+<span class="codeline" id="line-190"><code></code></span>
+<span class="codeline" id="line-191"><code>// NewEncoder returns a new encoder that writes to w.</code></span>
+<span class="codeline" id="line-192"><code>func NewEncoder(w io.Writer) *Encoder {</code></span>
+<span class="codeline" id="line-193"><code>	return &amp;Encoder{w: w, escapeHTML: true}</code></span>
+<span class="codeline" id="line-194"><code>}</code></span>
+<span class="codeline" id="line-195"><code></code></span>
+<span class="codeline" id="line-196"><code>// Encode writes the JSON encoding of v to the stream,</code></span>
+<span class="codeline" id="line-197"><code>// followed by a newline character.</code></span>
+<span class="codeline" id="line-198"><code>//</code></span>
+<span class="codeline" id="line-199"><code>// See the documentation for Marshal for details about the</code></span>
+<span class="codeline" id="line-200"><code>// conversion of Go values to JSON.</code></span>
+<span class="codeline" id="line-201"><code>func (enc *Encoder) Encode(v interface{}) error {</code></span>
+<span class="codeline" id="line-202"><code>	if enc.err != nil {</code></span>
+<span class="codeline" id="line-203"><code>		return enc.err</code></span>
+<span class="codeline" id="line-204"><code>	}</code></span>
+<span class="codeline" id="line-205"><code>	e := newEncodeState()</code></span>
+<span class="codeline" id="line-206"><code>	err := e.marshal(v, encOpts{escapeHTML: enc.escapeHTML})</code></span>
+<span class="codeline" id="line-207"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-208"><code>		return err</code></span>
+<span class="codeline" id="line-209"><code>	}</code></span>
+<span class="codeline" id="line-210"><code></code></span>
+<span class="codeline" id="line-211"><code>	// Terminate each value with a newline.</code></span>
+<span class="codeline" id="line-212"><code>	// This makes the output look a little nicer</code></span>
+<span class="codeline" id="line-213"><code>	// when debugging, and some kind of space</code></span>
+<span class="codeline" id="line-214"><code>	// is required if the encoded value was a number,</code></span>
+<span class="codeline" id="line-215"><code>	// so that the reader knows there aren't more</code></span>
+<span class="codeline" id="line-216"><code>	// digits coming.</code></span>
+<span class="codeline" id="line-217"><code>	e.WriteByte('\n')</code></span>
+<span class="codeline" id="line-218"><code></code></span>
+<span class="codeline" id="line-219"><code>	b := e.Bytes()</code></span>
+<span class="codeline" id="line-220"><code>	if enc.indentPrefix != "" || enc.indentValue != "" {</code></span>
+<span class="codeline" id="line-221"><code>		if enc.indentBuf == nil {</code></span>
+<span class="codeline" id="line-222"><code>			enc.indentBuf = new(bytes.Buffer)</code></span>
+<span class="codeline" id="line-223"><code>		}</code></span>
+<span class="codeline" id="line-224"><code>		enc.indentBuf.Reset()</code></span>
+<span class="codeline" id="line-225"><code>		err = Indent(enc.indentBuf, b, enc.indentPrefix, enc.indentValue)</code></span>
+<span class="codeline" id="line-226"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-227"><code>			return err</code></span>
+<span class="codeline" id="line-228"><code>		}</code></span>
+<span class="codeline" id="line-229"><code>		b = enc.indentBuf.Bytes()</code></span>
+<span class="codeline" id="line-230"><code>	}</code></span>
+<span class="codeline" id="line-231"><code>	if _, err = enc.w.Write(b); err != nil {</code></span>
+<span class="codeline" id="line-232"><code>		enc.err = err</code></span>
+<span class="codeline" id="line-233"><code>	}</code></span>
+<span class="codeline" id="line-234"><code>	encodeStatePool.Put(e)</code></span>
+<span class="codeline" id="line-235"><code>	return err</code></span>
+<span class="codeline" id="line-236"><code>}</code></span>
+<span class="codeline" id="line-237"><code></code></span>
+<span class="codeline" id="line-238"><code>// SetIndent instructs the encoder to format each subsequent encoded</code></span>
+<span class="codeline" id="line-239"><code>// value as if indented by the package-level function Indent(dst, src, prefix, indent).</code></span>
+<span class="codeline" id="line-240"><code>// Calling SetIndent("", "") disables indentation.</code></span>
+<span class="codeline" id="line-241"><code>func (enc *Encoder) SetIndent(prefix, indent string) {</code></span>
+<span class="codeline" id="line-242"><code>	enc.indentPrefix = prefix</code></span>
+<span class="codeline" id="line-243"><code>	enc.indentValue = indent</code></span>
+<span class="codeline" id="line-244"><code>}</code></span>
+<span class="codeline" id="line-245"><code></code></span>
+<span class="codeline" id="line-246"><code>// SetEscapeHTML specifies whether problematic HTML characters</code></span>
+<span class="codeline" id="line-247"><code>// should be escaped inside JSON quoted strings.</code></span>
+<span class="codeline" id="line-248"><code>// The default behavior is to escape &amp;, &lt;, and &gt; to \u0026, \u003c, and \u003e</code></span>
+<span class="codeline" id="line-249"><code>// to avoid certain safety problems that can arise when embedding JSON in HTML.</code></span>
+<span class="codeline" id="line-250"><code>//</code></span>
+<span class="codeline" id="line-251"><code>// In non-HTML settings where the escaping interferes with the readability</code></span>
+<span class="codeline" id="line-252"><code>// of the output, SetEscapeHTML(false) disables this behavior.</code></span>
+<span class="codeline" id="line-253"><code>func (enc *Encoder) SetEscapeHTML(on bool) {</code></span>
+<span class="codeline" id="line-254"><code>	enc.escapeHTML = on</code></span>
+<span class="codeline" id="line-255"><code>}</code></span>
+<span class="codeline" id="line-256"><code></code></span>
+<span class="codeline" id="line-257"><code>// RawMessage is a raw encoded JSON value.</code></span>
+<span class="codeline" id="line-258"><code>// It implements Marshaler and Unmarshaler and can</code></span>
+<span class="codeline" id="line-259"><code>// be used to delay JSON decoding or precompute a JSON encoding.</code></span>
+<span class="codeline" id="line-260"><code>type RawMessage []byte</code></span>
+<span class="codeline" id="line-261"><code></code></span>
+<span class="codeline" id="line-262"><code>// MarshalJSON returns m as the JSON encoding of m.</code></span>
+<span class="codeline" id="line-263"><code>func (m RawMessage) MarshalJSON() ([]byte, error) {</code></span>
+<span class="codeline" id="line-264"><code>	if m == nil {</code></span>
+<span class="codeline" id="line-265"><code>		return []byte("null"), nil</code></span>
+<span class="codeline" id="line-266"><code>	}</code></span>
+<span class="codeline" id="line-267"><code>	return m, nil</code></span>
+<span class="codeline" id="line-268"><code>}</code></span>
+<span class="codeline" id="line-269"><code></code></span>
+<span class="codeline" id="line-270"><code>// UnmarshalJSON sets *m to a copy of data.</code></span>
+<span class="codeline" id="line-271"><code>func (m *RawMessage) UnmarshalJSON(data []byte) error {</code></span>
+<span class="codeline" id="line-272"><code>	if m == nil {</code></span>
+<span class="codeline" id="line-273"><code>		return errors.New("json.RawMessage: UnmarshalJSON on nil pointer")</code></span>
+<span class="codeline" id="line-274"><code>	}</code></span>
+<span class="codeline" id="line-275"><code>	*m = append((*m)[0:0], data...)</code></span>
+<span class="codeline" id="line-276"><code>	return nil</code></span>
+<span class="codeline" id="line-277"><code>}</code></span>
+<span class="codeline" id="line-278"><code></code></span>
+<span class="codeline" id="line-279"><code>var _ Marshaler = (*RawMessage)(nil)</code></span>
+<span class="codeline" id="line-280"><code>var _ Unmarshaler = (*RawMessage)(nil)</code></span>
+<span class="codeline" id="line-281"><code></code></span>
+<span class="codeline" id="line-282"><code>// A Token holds a value of one of these types:</code></span>
+<span class="codeline" id="line-283"><code>//</code></span>
+<span class="codeline" id="line-284"><code>//	Delim, for the four JSON delimiters [ ] { }</code></span>
+<span class="codeline" id="line-285"><code>//	bool, for JSON booleans</code></span>
+<span class="codeline" id="line-286"><code>//	float64, for JSON numbers</code></span>
+<span class="codeline" id="line-287"><code>//	Number, for JSON numbers</code></span>
+<span class="codeline" id="line-288"><code>//	string, for JSON string literals</code></span>
+<span class="codeline" id="line-289"><code>//	nil, for JSON null</code></span>
+<span class="codeline" id="line-290"><code>//</code></span>
+<span class="codeline" id="line-291"><code>type Token interface{}</code></span>
+<span class="codeline" id="line-292"><code></code></span>
+<span class="codeline" id="line-293"><code>const (</code></span>
+<span class="codeline" id="line-294"><code>	tokenTopValue = iota</code></span>
+<span class="codeline" id="line-295"><code>	tokenArrayStart</code></span>
+<span class="codeline" id="line-296"><code>	tokenArrayValue</code></span>
+<span class="codeline" id="line-297"><code>	tokenArrayComma</code></span>
+<span class="codeline" id="line-298"><code>	tokenObjectStart</code></span>
+<span class="codeline" id="line-299"><code>	tokenObjectKey</code></span>
+<span class="codeline" id="line-300"><code>	tokenObjectColon</code></span>
+<span class="codeline" id="line-301"><code>	tokenObjectValue</code></span>
+<span class="codeline" id="line-302"><code>	tokenObjectComma</code></span>
+<span class="codeline" id="line-303"><code>)</code></span>
+<span class="codeline" id="line-304"><code></code></span>
+<span class="codeline" id="line-305"><code>// advance tokenstate from a separator state to a value state</code></span>
+<span class="codeline" id="line-306"><code>func (dec *Decoder) tokenPrepareForDecode() error {</code></span>
+<span class="codeline" id="line-307"><code>	// Note: Not calling peek before switch, to avoid</code></span>
+<span class="codeline" id="line-308"><code>	// putting peek into the standard Decode path.</code></span>
+<span class="codeline" id="line-309"><code>	// peek is only called when using the Token API.</code></span>
+<span class="codeline" id="line-310"><code>	switch dec.tokenState {</code></span>
+<span class="codeline" id="line-311"><code>	case tokenArrayComma:</code></span>
+<span class="codeline" id="line-312"><code>		c, err := dec.peek()</code></span>
+<span class="codeline" id="line-313"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-314"><code>			return err</code></span>
+<span class="codeline" id="line-315"><code>		}</code></span>
+<span class="codeline" id="line-316"><code>		if c != ',' {</code></span>
+<span class="codeline" id="line-317"><code>			return &amp;SyntaxError{"expected comma after array element", dec.InputOffset()}</code></span>
+<span class="codeline" id="line-318"><code>		}</code></span>
+<span class="codeline" id="line-319"><code>		dec.scanp++</code></span>
+<span class="codeline" id="line-320"><code>		dec.tokenState = tokenArrayValue</code></span>
+<span class="codeline" id="line-321"><code>	case tokenObjectColon:</code></span>
+<span class="codeline" id="line-322"><code>		c, err := dec.peek()</code></span>
+<span class="codeline" id="line-323"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-324"><code>			return err</code></span>
+<span class="codeline" id="line-325"><code>		}</code></span>
+<span class="codeline" id="line-326"><code>		if c != ':' {</code></span>
+<span class="codeline" id="line-327"><code>			return &amp;SyntaxError{"expected colon after object key", dec.InputOffset()}</code></span>
+<span class="codeline" id="line-328"><code>		}</code></span>
+<span class="codeline" id="line-329"><code>		dec.scanp++</code></span>
+<span class="codeline" id="line-330"><code>		dec.tokenState = tokenObjectValue</code></span>
+<span class="codeline" id="line-331"><code>	}</code></span>
+<span class="codeline" id="line-332"><code>	return nil</code></span>
+<span class="codeline" id="line-333"><code>}</code></span>
+<span class="codeline" id="line-334"><code></code></span>
+<span class="codeline" id="line-335"><code>func (dec *Decoder) tokenValueAllowed() bool {</code></span>
+<span class="codeline" id="line-336"><code>	switch dec.tokenState {</code></span>
+<span class="codeline" id="line-337"><code>	case tokenTopValue, tokenArrayStart, tokenArrayValue, tokenObjectValue:</code></span>
+<span class="codeline" id="line-338"><code>		return true</code></span>
+<span class="codeline" id="line-339"><code>	}</code></span>
+<span class="codeline" id="line-340"><code>	return false</code></span>
+<span class="codeline" id="line-341"><code>}</code></span>
+<span class="codeline" id="line-342"><code></code></span>
+<span class="codeline" id="line-343"><code>func (dec *Decoder) tokenValueEnd() {</code></span>
+<span class="codeline" id="line-344"><code>	switch dec.tokenState {</code></span>
+<span class="codeline" id="line-345"><code>	case tokenArrayStart, tokenArrayValue:</code></span>
+<span class="codeline" id="line-346"><code>		dec.tokenState = tokenArrayComma</code></span>
+<span class="codeline" id="line-347"><code>	case tokenObjectValue:</code></span>
+<span class="codeline" id="line-348"><code>		dec.tokenState = tokenObjectComma</code></span>
+<span class="codeline" id="line-349"><code>	}</code></span>
+<span class="codeline" id="line-350"><code>}</code></span>
+<span class="codeline" id="line-351"><code></code></span>
+<span class="codeline" id="line-352"><code>// A Delim is a JSON array or object delimiter, one of [ ] { or }.</code></span>
+<span class="codeline" id="line-353"><code>type Delim rune</code></span>
+<span class="codeline" id="line-354"><code></code></span>
+<span class="codeline" id="line-355"><code>func (d Delim) String() string {</code></span>
+<span class="codeline" id="line-356"><code>	return string(d)</code></span>
+<span class="codeline" id="line-357"><code>}</code></span>
+<span class="codeline" id="line-358"><code></code></span>
+<span class="codeline" id="line-359"><code>// Token returns the next JSON token in the input stream.</code></span>
+<span class="codeline" id="line-360"><code>// At the end of the input stream, Token returns nil, io.EOF.</code></span>
+<span class="codeline" id="line-361"><code>//</code></span>
+<span class="codeline" id="line-362"><code>// Token guarantees that the delimiters [ ] { } it returns are</code></span>
+<span class="codeline" id="line-363"><code>// properly nested and matched: if Token encounters an unexpected</code></span>
+<span class="codeline" id="line-364"><code>// delimiter in the input, it will return an error.</code></span>
+<span class="codeline" id="line-365"><code>//</code></span>
+<span class="codeline" id="line-366"><code>// The input stream consists of basic JSON values—bool, string,</code></span>
+<span class="codeline" id="line-367"><code>// number, and null—along with delimiters [ ] { } of type Delim</code></span>
+<span class="codeline" id="line-368"><code>// to mark the start and end of arrays and objects.</code></span>
+<span class="codeline" id="line-369"><code>// Commas and colons are elided.</code></span>
+<span class="codeline" id="line-370"><code>func (dec *Decoder) Token() (Token, error) {</code></span>
+<span class="codeline" id="line-371"><code>	for {</code></span>
+<span class="codeline" id="line-372"><code>		c, err := dec.peek()</code></span>
+<span class="codeline" id="line-373"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-374"><code>			return nil, err</code></span>
+<span class="codeline" id="line-375"><code>		}</code></span>
+<span class="codeline" id="line-376"><code>		switch c {</code></span>
+<span class="codeline" id="line-377"><code>		case '[':</code></span>
+<span class="codeline" id="line-378"><code>			if !dec.tokenValueAllowed() {</code></span>
+<span class="codeline" id="line-379"><code>				return dec.tokenError(c)</code></span>
+<span class="codeline" id="line-380"><code>			}</code></span>
+<span class="codeline" id="line-381"><code>			dec.scanp++</code></span>
+<span class="codeline" id="line-382"><code>			dec.tokenStack = append(dec.tokenStack, dec.tokenState)</code></span>
+<span class="codeline" id="line-383"><code>			dec.tokenState = tokenArrayStart</code></span>
+<span class="codeline" id="line-384"><code>			return Delim('['), nil</code></span>
+<span class="codeline" id="line-385"><code></code></span>
+<span class="codeline" id="line-386"><code>		case ']':</code></span>
+<span class="codeline" id="line-387"><code>			if dec.tokenState != tokenArrayStart &amp;&amp; dec.tokenState != tokenArrayComma {</code></span>
+<span class="codeline" id="line-388"><code>				return dec.tokenError(c)</code></span>
+<span class="codeline" id="line-389"><code>			}</code></span>
+<span class="codeline" id="line-390"><code>			dec.scanp++</code></span>
+<span class="codeline" id="line-391"><code>			dec.tokenState = dec.tokenStack[len(dec.tokenStack)-1]</code></span>
+<span class="codeline" id="line-392"><code>			dec.tokenStack = dec.tokenStack[:len(dec.tokenStack)-1]</code></span>
+<span class="codeline" id="line-393"><code>			dec.tokenValueEnd()</code></span>
+<span class="codeline" id="line-394"><code>			return Delim(']'), nil</code></span>
+<span class="codeline" id="line-395"><code></code></span>
+<span class="codeline" id="line-396"><code>		case '{':</code></span>
+<span class="codeline" id="line-397"><code>			if !dec.tokenValueAllowed() {</code></span>
+<span class="codeline" id="line-398"><code>				return dec.tokenError(c)</code></span>
+<span class="codeline" id="line-399"><code>			}</code></span>
+<span class="codeline" id="line-400"><code>			dec.scanp++</code></span>
+<span class="codeline" id="line-401"><code>			dec.tokenStack = append(dec.tokenStack, dec.tokenState)</code></span>
+<span class="codeline" id="line-402"><code>			dec.tokenState = tokenObjectStart</code></span>
+<span class="codeline" id="line-403"><code>			return Delim('{'), nil</code></span>
+<span class="codeline" id="line-404"><code></code></span>
+<span class="codeline" id="line-405"><code>		case '}':</code></span>
+<span class="codeline" id="line-406"><code>			if dec.tokenState != tokenObjectStart &amp;&amp; dec.tokenState != tokenObjectComma {</code></span>
+<span class="codeline" id="line-407"><code>				return dec.tokenError(c)</code></span>
+<span class="codeline" id="line-408"><code>			}</code></span>
+<span class="codeline" id="line-409"><code>			dec.scanp++</code></span>
+<span class="codeline" id="line-410"><code>			dec.tokenState = dec.tokenStack[len(dec.tokenStack)-1]</code></span>
+<span class="codeline" id="line-411"><code>			dec.tokenStack = dec.tokenStack[:len(dec.tokenStack)-1]</code></span>
+<span class="codeline" id="line-412"><code>			dec.tokenValueEnd()</code></span>
+<span class="codeline" id="line-413"><code>			return Delim('}'), nil</code></span>
+<span class="codeline" id="line-414"><code></code></span>
+<span class="codeline" id="line-415"><code>		case ':':</code></span>
+<span class="codeline" id="line-416"><code>			if dec.tokenState != tokenObjectColon {</code></span>
+<span class="codeline" id="line-417"><code>				return dec.tokenError(c)</code></span>
+<span class="codeline" id="line-418"><code>			}</code></span>
+<span class="codeline" id="line-419"><code>			dec.scanp++</code></span>
+<span class="codeline" id="line-420"><code>			dec.tokenState = tokenObjectValue</code></span>
+<span class="codeline" id="line-421"><code>			continue</code></span>
+<span class="codeline" id="line-422"><code></code></span>
+<span class="codeline" id="line-423"><code>		case ',':</code></span>
+<span class="codeline" id="line-424"><code>			if dec.tokenState == tokenArrayComma {</code></span>
+<span class="codeline" id="line-425"><code>				dec.scanp++</code></span>
+<span class="codeline" id="line-426"><code>				dec.tokenState = tokenArrayValue</code></span>
+<span class="codeline" id="line-427"><code>				continue</code></span>
+<span class="codeline" id="line-428"><code>			}</code></span>
+<span class="codeline" id="line-429"><code>			if dec.tokenState == tokenObjectComma {</code></span>
+<span class="codeline" id="line-430"><code>				dec.scanp++</code></span>
+<span class="codeline" id="line-431"><code>				dec.tokenState = tokenObjectKey</code></span>
+<span class="codeline" id="line-432"><code>				continue</code></span>
+<span class="codeline" id="line-433"><code>			}</code></span>
+<span class="codeline" id="line-434"><code>			return dec.tokenError(c)</code></span>
+<span class="codeline" id="line-435"><code></code></span>
+<span class="codeline" id="line-436"><code>		case '"':</code></span>
+<span class="codeline" id="line-437"><code>			if dec.tokenState == tokenObjectStart || dec.tokenState == tokenObjectKey {</code></span>
+<span class="codeline" id="line-438"><code>				var x string</code></span>
+<span class="codeline" id="line-439"><code>				old := dec.tokenState</code></span>
+<span class="codeline" id="line-440"><code>				dec.tokenState = tokenTopValue</code></span>
+<span class="codeline" id="line-441"><code>				err := dec.Decode(&amp;x)</code></span>
+<span class="codeline" id="line-442"><code>				dec.tokenState = old</code></span>
+<span class="codeline" id="line-443"><code>				if err != nil {</code></span>
+<span class="codeline" id="line-444"><code>					return nil, err</code></span>
+<span class="codeline" id="line-445"><code>				}</code></span>
+<span class="codeline" id="line-446"><code>				dec.tokenState = tokenObjectColon</code></span>
+<span class="codeline" id="line-447"><code>				return x, nil</code></span>
+<span class="codeline" id="line-448"><code>			}</code></span>
+<span class="codeline" id="line-449"><code>			fallthrough</code></span>
+<span class="codeline" id="line-450"><code></code></span>
+<span class="codeline" id="line-451"><code>		default:</code></span>
+<span class="codeline" id="line-452"><code>			if !dec.tokenValueAllowed() {</code></span>
+<span class="codeline" id="line-453"><code>				return dec.tokenError(c)</code></span>
+<span class="codeline" id="line-454"><code>			}</code></span>
+<span class="codeline" id="line-455"><code>			var x interface{}</code></span>
+<span class="codeline" id="line-456"><code>			if err := dec.Decode(&amp;x); err != nil {</code></span>
+<span class="codeline" id="line-457"><code>				return nil, err</code></span>
+<span class="codeline" id="line-458"><code>			}</code></span>
+<span class="codeline" id="line-459"><code>			return x, nil</code></span>
+<span class="codeline" id="line-460"><code>		}</code></span>
+<span class="codeline" id="line-461"><code>	}</code></span>
+<span class="codeline" id="line-462"><code>}</code></span>
+<span class="codeline" id="line-463"><code></code></span>
+<span class="codeline" id="line-464"><code>func (dec *Decoder) tokenError(c byte) (Token, error) {</code></span>
+<span class="codeline" id="line-465"><code>	var context string</code></span>
+<span class="codeline" id="line-466"><code>	switch dec.tokenState {</code></span>
+<span class="codeline" id="line-467"><code>	case tokenTopValue:</code></span>
+<span class="codeline" id="line-468"><code>		context = " looking for beginning of value"</code></span>
+<span class="codeline" id="line-469"><code>	case tokenArrayStart, tokenArrayValue, tokenObjectValue:</code></span>
+<span class="codeline" id="line-470"><code>		context = " looking for beginning of value"</code></span>
+<span class="codeline" id="line-471"><code>	case tokenArrayComma:</code></span>
+<span class="codeline" id="line-472"><code>		context = " after array element"</code></span>
+<span class="codeline" id="line-473"><code>	case tokenObjectKey:</code></span>
+<span class="codeline" id="line-474"><code>		context = " looking for beginning of object key string"</code></span>
+<span class="codeline" id="line-475"><code>	case tokenObjectColon:</code></span>
+<span class="codeline" id="line-476"><code>		context = " after object key"</code></span>
+<span class="codeline" id="line-477"><code>	case tokenObjectComma:</code></span>
+<span class="codeline" id="line-478"><code>		context = " after object key:value pair"</code></span>
+<span class="codeline" id="line-479"><code>	}</code></span>
+<span class="codeline" id="line-480"><code>	return nil, &amp;SyntaxError{"invalid character " + quoteChar(c) + context, dec.InputOffset()}</code></span>
+<span class="codeline" id="line-481"><code>}</code></span>
+<span class="codeline" id="line-482"><code></code></span>
+<span class="codeline" id="line-483"><code>// More reports whether there is another element in the</code></span>
+<span class="codeline" id="line-484"><code>// current array or object being parsed.</code></span>
+<span class="codeline" id="line-485"><code>func (dec *Decoder) More() bool {</code></span>
+<span class="codeline" id="line-486"><code>	c, err := dec.peek()</code></span>
+<span class="codeline" id="line-487"><code>	return err == nil &amp;&amp; c != ']' &amp;&amp; c != '}'</code></span>
+<span class="codeline" id="line-488"><code>}</code></span>
+<span class="codeline" id="line-489"><code></code></span>
+<span class="codeline" id="line-490"><code>func (dec *Decoder) peek() (byte, error) {</code></span>
+<span class="codeline" id="line-491"><code>	var err error</code></span>
+<span class="codeline" id="line-492"><code>	for {</code></span>
+<span class="codeline" id="line-493"><code>		for i := dec.scanp; i &lt; len(dec.buf); i++ {</code></span>
+<span class="codeline" id="line-494"><code>			c := dec.buf[i]</code></span>
+<span class="codeline" id="line-495"><code>			if isSpace(c) {</code></span>
+<span class="codeline" id="line-496"><code>				continue</code></span>
+<span class="codeline" id="line-497"><code>			}</code></span>
+<span class="codeline" id="line-498"><code>			dec.scanp = i</code></span>
+<span class="codeline" id="line-499"><code>			return c, nil</code></span>
+<span class="codeline" id="line-500"><code>		}</code></span>
+<span class="codeline" id="line-501"><code>		// buffer has been scanned, now report any error</code></span>
+<span class="codeline" id="line-502"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-503"><code>			return 0, err</code></span>
+<span class="codeline" id="line-504"><code>		}</code></span>
+<span class="codeline" id="line-505"><code>		err = dec.refill()</code></span>
+<span class="codeline" id="line-506"><code>	}</code></span>
+<span class="codeline" id="line-507"><code>}</code></span>
+<span class="codeline" id="line-508"><code></code></span>
+<span class="codeline" id="line-509"><code>// InputOffset returns the input stream byte offset of the current decoder position.</code></span>
+<span class="codeline" id="line-510"><code>// The offset gives the location of the end of the most recently returned token</code></span>
+<span class="codeline" id="line-511"><code>// and the beginning of the next token.</code></span>
+<span class="codeline" id="line-512"><code>func (dec *Decoder) InputOffset() int64 {</code></span>
+<span class="codeline" id="line-513"><code>	return dec.scanned + int64(dec.scanp)</code></span>
+<span class="codeline" id="line-514"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

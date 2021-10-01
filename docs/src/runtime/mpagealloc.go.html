@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mpagealloc.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mpagealloc.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2019 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Page allocator.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// The page allocator manages mapped pages (defined by pageSize, NOT</code></span>
+<span class="codeline" id="line-8"><code>// physPageSize) for allocation and re-use. It is embedded into mheap.</code></span>
+<span class="codeline" id="line-9"><code>//</code></span>
+<span class="codeline" id="line-10"><code>// Pages are managed using a bitmap that is sharded into chunks.</code></span>
+<span class="codeline" id="line-11"><code>// In the bitmap, 1 means in-use, and 0 means free. The bitmap spans the</code></span>
+<span class="codeline" id="line-12"><code>// process's address space. Chunks are managed in a sparse-array-style structure</code></span>
+<span class="codeline" id="line-13"><code>// similar to mheap.arenas, since the bitmap may be large on some systems.</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// The bitmap is efficiently searched by using a radix tree in combination</code></span>
+<span class="codeline" id="line-16"><code>// with fast bit-wise intrinsics. Allocation is performed using an address-ordered</code></span>
+<span class="codeline" id="line-17"><code>// first-fit approach.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// Each entry in the radix tree is a summary that describes three properties of</code></span>
+<span class="codeline" id="line-20"><code>// a particular region of the address space: the number of contiguous free pages</code></span>
+<span class="codeline" id="line-21"><code>// at the start and end of the region it represents, and the maximum number of</code></span>
+<span class="codeline" id="line-22"><code>// contiguous free pages found anywhere in that region.</code></span>
+<span class="codeline" id="line-23"><code>//</code></span>
+<span class="codeline" id="line-24"><code>// Each level of the radix tree is stored as one contiguous array, which represents</code></span>
+<span class="codeline" id="line-25"><code>// a different granularity of subdivision of the processes' address space. Thus, this</code></span>
+<span class="codeline" id="line-26"><code>// radix tree is actually implicit in these large arrays, as opposed to having explicit</code></span>
+<span class="codeline" id="line-27"><code>// dynamically-allocated pointer-based node structures. Naturally, these arrays may be</code></span>
+<span class="codeline" id="line-28"><code>// quite large for system with large address spaces, so in these cases they are mapped</code></span>
+<span class="codeline" id="line-29"><code>// into memory as needed. The leaf summaries of the tree correspond to a bitmap chunk.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// The root level (referred to as L0 and index 0 in pageAlloc.summary) has each</code></span>
+<span class="codeline" id="line-32"><code>// summary represent the largest section of address space (16 GiB on 64-bit systems),</code></span>
+<span class="codeline" id="line-33"><code>// with each subsequent level representing successively smaller subsections until we</code></span>
+<span class="codeline" id="line-34"><code>// reach the finest granularity at the leaves, a chunk.</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>// More specifically, each summary in each level (except for leaf summaries)</code></span>
+<span class="codeline" id="line-37"><code>// represents some number of entries in the following level. For example, each</code></span>
+<span class="codeline" id="line-38"><code>// summary in the root level may represent a 16 GiB region of address space,</code></span>
+<span class="codeline" id="line-39"><code>// and in the next level there could be 8 corresponding entries which represent 2</code></span>
+<span class="codeline" id="line-40"><code>// GiB subsections of that 16 GiB region, each of which could correspond to 8</code></span>
+<span class="codeline" id="line-41"><code>// entries in the next level which each represent 256 MiB regions, and so on.</code></span>
+<span class="codeline" id="line-42"><code>//</code></span>
+<span class="codeline" id="line-43"><code>// Thus, this design only scales to heaps so large, but can always be extended to</code></span>
+<span class="codeline" id="line-44"><code>// larger heaps by simply adding levels to the radix tree, which mostly costs</code></span>
+<span class="codeline" id="line-45"><code>// additional virtual address space. The choice of managing large arrays also means</code></span>
+<span class="codeline" id="line-46"><code>// that a large amount of virtual address space may be reserved by the runtime.</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>package runtime</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>import (</code></span>
+<span class="codeline" id="line-51"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-52"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-53"><code>)</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>const (</code></span>
+<span class="codeline" id="line-56"><code>	// The size of a bitmap chunk, i.e. the amount of bits (that is, pages) to consider</code></span>
+<span class="codeline" id="line-57"><code>	// in the bitmap at once.</code></span>
+<span class="codeline" id="line-58"><code>	pallocChunkPages    = 1 &lt;&lt; logPallocChunkPages</code></span>
+<span class="codeline" id="line-59"><code>	pallocChunkBytes    = pallocChunkPages * pageSize</code></span>
+<span class="codeline" id="line-60"><code>	logPallocChunkPages = 9</code></span>
+<span class="codeline" id="line-61"><code>	logPallocChunkBytes = logPallocChunkPages + pageShift</code></span>
+<span class="codeline" id="line-62"><code></code></span>
+<span class="codeline" id="line-63"><code>	// The number of radix bits for each level.</code></span>
+<span class="codeline" id="line-64"><code>	//</code></span>
+<span class="codeline" id="line-65"><code>	// The value of 3 is chosen such that the block of summaries we need to scan at</code></span>
+<span class="codeline" id="line-66"><code>	// each level fits in 64 bytes (2^3 summaries * 8 bytes per summary), which is</code></span>
+<span class="codeline" id="line-67"><code>	// close to the L1 cache line width on many systems. Also, a value of 3 fits 4 tree</code></span>
+<span class="codeline" id="line-68"><code>	// levels perfectly into the 21-bit pallocBits summary field at the root level.</code></span>
+<span class="codeline" id="line-69"><code>	//</code></span>
+<span class="codeline" id="line-70"><code>	// The following equation explains how each of the constants relate:</code></span>
+<span class="codeline" id="line-71"><code>	// summaryL0Bits + (summaryLevels-1)*summaryLevelBits + logPallocChunkBytes = heapAddrBits</code></span>
+<span class="codeline" id="line-72"><code>	//</code></span>
+<span class="codeline" id="line-73"><code>	// summaryLevels is an architecture-dependent value defined in mpagealloc_*.go.</code></span>
+<span class="codeline" id="line-74"><code>	summaryLevelBits = 3</code></span>
+<span class="codeline" id="line-75"><code>	summaryL0Bits    = heapAddrBits - logPallocChunkBytes - (summaryLevels-1)*summaryLevelBits</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>	// pallocChunksL2Bits is the number of bits of the chunk index number</code></span>
+<span class="codeline" id="line-78"><code>	// covered by the second level of the chunks map.</code></span>
+<span class="codeline" id="line-79"><code>	//</code></span>
+<span class="codeline" id="line-80"><code>	// See (*pageAlloc).chunks for more details. Update the documentation</code></span>
+<span class="codeline" id="line-81"><code>	// there should this change.</code></span>
+<span class="codeline" id="line-82"><code>	pallocChunksL2Bits  = heapAddrBits - logPallocChunkBytes - pallocChunksL1Bits</code></span>
+<span class="codeline" id="line-83"><code>	pallocChunksL1Shift = pallocChunksL2Bits</code></span>
+<span class="codeline" id="line-84"><code>)</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>// Maximum searchAddr value, which indicates that the heap has no free space.</code></span>
+<span class="codeline" id="line-87"><code>//</code></span>
+<span class="codeline" id="line-88"><code>// We alias maxOffAddr just to make it clear that this is the maximum address</code></span>
+<span class="codeline" id="line-89"><code>// for the page allocator's search space. See maxOffAddr for details.</code></span>
+<span class="codeline" id="line-90"><code>var maxSearchAddr = maxOffAddr</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>// Global chunk index.</code></span>
+<span class="codeline" id="line-93"><code>//</code></span>
+<span class="codeline" id="line-94"><code>// Represents an index into the leaf level of the radix tree.</code></span>
+<span class="codeline" id="line-95"><code>// Similar to arenaIndex, except instead of arenas, it divides the address</code></span>
+<span class="codeline" id="line-96"><code>// space into chunks.</code></span>
+<span class="codeline" id="line-97"><code>type chunkIdx uint</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>// chunkIndex returns the global index of the palloc chunk containing the</code></span>
+<span class="codeline" id="line-100"><code>// pointer p.</code></span>
+<span class="codeline" id="line-101"><code>func chunkIndex(p uintptr) chunkIdx {</code></span>
+<span class="codeline" id="line-102"><code>	return chunkIdx((p - arenaBaseOffset) / pallocChunkBytes)</code></span>
+<span class="codeline" id="line-103"><code>}</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>// chunkIndex returns the base address of the palloc chunk at index ci.</code></span>
+<span class="codeline" id="line-106"><code>func chunkBase(ci chunkIdx) uintptr {</code></span>
+<span class="codeline" id="line-107"><code>	return uintptr(ci)*pallocChunkBytes + arenaBaseOffset</code></span>
+<span class="codeline" id="line-108"><code>}</code></span>
+<span class="codeline" id="line-109"><code></code></span>
+<span class="codeline" id="line-110"><code>// chunkPageIndex computes the index of the page that contains p,</code></span>
+<span class="codeline" id="line-111"><code>// relative to the chunk which contains p.</code></span>
+<span class="codeline" id="line-112"><code>func chunkPageIndex(p uintptr) uint {</code></span>
+<span class="codeline" id="line-113"><code>	return uint(p % pallocChunkBytes / pageSize)</code></span>
+<span class="codeline" id="line-114"><code>}</code></span>
+<span class="codeline" id="line-115"><code></code></span>
+<span class="codeline" id="line-116"><code>// l1 returns the index into the first level of (*pageAlloc).chunks.</code></span>
+<span class="codeline" id="line-117"><code>func (i chunkIdx) l1() uint {</code></span>
+<span class="codeline" id="line-118"><code>	if pallocChunksL1Bits == 0 {</code></span>
+<span class="codeline" id="line-119"><code>		// Let the compiler optimize this away if there's no</code></span>
+<span class="codeline" id="line-120"><code>		// L1 map.</code></span>
+<span class="codeline" id="line-121"><code>		return 0</code></span>
+<span class="codeline" id="line-122"><code>	} else {</code></span>
+<span class="codeline" id="line-123"><code>		return uint(i) &gt;&gt; pallocChunksL1Shift</code></span>
+<span class="codeline" id="line-124"><code>	}</code></span>
+<span class="codeline" id="line-125"><code>}</code></span>
+<span class="codeline" id="line-126"><code></code></span>
+<span class="codeline" id="line-127"><code>// l2 returns the index into the second level of (*pageAlloc).chunks.</code></span>
+<span class="codeline" id="line-128"><code>func (i chunkIdx) l2() uint {</code></span>
+<span class="codeline" id="line-129"><code>	if pallocChunksL1Bits == 0 {</code></span>
+<span class="codeline" id="line-130"><code>		return uint(i)</code></span>
+<span class="codeline" id="line-131"><code>	} else {</code></span>
+<span class="codeline" id="line-132"><code>		return uint(i) &amp; (1&lt;&lt;pallocChunksL2Bits - 1)</code></span>
+<span class="codeline" id="line-133"><code>	}</code></span>
+<span class="codeline" id="line-134"><code>}</code></span>
+<span class="codeline" id="line-135"><code></code></span>
+<span class="codeline" id="line-136"><code>// offAddrToLevelIndex converts an address in the offset address space</code></span>
+<span class="codeline" id="line-137"><code>// to the index into summary[level] containing addr.</code></span>
+<span class="codeline" id="line-138"><code>func offAddrToLevelIndex(level int, addr offAddr) int {</code></span>
+<span class="codeline" id="line-139"><code>	return int((addr.a - arenaBaseOffset) &gt;&gt; levelShift[level])</code></span>
+<span class="codeline" id="line-140"><code>}</code></span>
+<span class="codeline" id="line-141"><code></code></span>
+<span class="codeline" id="line-142"><code>// levelIndexToOffAddr converts an index into summary[level] into</code></span>
+<span class="codeline" id="line-143"><code>// the corresponding address in the offset address space.</code></span>
+<span class="codeline" id="line-144"><code>func levelIndexToOffAddr(level, idx int) offAddr {</code></span>
+<span class="codeline" id="line-145"><code>	return offAddr{(uintptr(idx) &lt;&lt; levelShift[level]) + arenaBaseOffset}</code></span>
+<span class="codeline" id="line-146"><code>}</code></span>
+<span class="codeline" id="line-147"><code></code></span>
+<span class="codeline" id="line-148"><code>// addrsToSummaryRange converts base and limit pointers into a range</code></span>
+<span class="codeline" id="line-149"><code>// of entries for the given summary level.</code></span>
+<span class="codeline" id="line-150"><code>//</code></span>
+<span class="codeline" id="line-151"><code>// The returned range is inclusive on the lower bound and exclusive on</code></span>
+<span class="codeline" id="line-152"><code>// the upper bound.</code></span>
+<span class="codeline" id="line-153"><code>func addrsToSummaryRange(level int, base, limit uintptr) (lo int, hi int) {</code></span>
+<span class="codeline" id="line-154"><code>	// This is slightly more nuanced than just a shift for the exclusive</code></span>
+<span class="codeline" id="line-155"><code>	// upper-bound. Note that the exclusive upper bound may be within a</code></span>
+<span class="codeline" id="line-156"><code>	// summary at this level, meaning if we just do the obvious computation</code></span>
+<span class="codeline" id="line-157"><code>	// hi will end up being an inclusive upper bound. Unfortunately, just</code></span>
+<span class="codeline" id="line-158"><code>	// adding 1 to that is too broad since we might be on the very edge of</code></span>
+<span class="codeline" id="line-159"><code>	// of a summary's max page count boundary for this level</code></span>
+<span class="codeline" id="line-160"><code>	// (1 &lt;&lt; levelLogPages[level]). So, make limit an inclusive upper bound</code></span>
+<span class="codeline" id="line-161"><code>	// then shift, then add 1, so we get an exclusive upper bound at the end.</code></span>
+<span class="codeline" id="line-162"><code>	lo = int((base - arenaBaseOffset) &gt;&gt; levelShift[level])</code></span>
+<span class="codeline" id="line-163"><code>	hi = int(((limit-1)-arenaBaseOffset)&gt;&gt;levelShift[level]) + 1</code></span>
+<span class="codeline" id="line-164"><code>	return</code></span>
+<span class="codeline" id="line-165"><code>}</code></span>
+<span class="codeline" id="line-166"><code></code></span>
+<span class="codeline" id="line-167"><code>// blockAlignSummaryRange aligns indices into the given level to that</code></span>
+<span class="codeline" id="line-168"><code>// level's block width (1 &lt;&lt; levelBits[level]). It assumes lo is inclusive</code></span>
+<span class="codeline" id="line-169"><code>// and hi is exclusive, and so aligns them down and up respectively.</code></span>
+<span class="codeline" id="line-170"><code>func blockAlignSummaryRange(level int, lo, hi int) (int, int) {</code></span>
+<span class="codeline" id="line-171"><code>	e := uintptr(1) &lt;&lt; levelBits[level]</code></span>
+<span class="codeline" id="line-172"><code>	return int(alignDown(uintptr(lo), e)), int(alignUp(uintptr(hi), e))</code></span>
+<span class="codeline" id="line-173"><code>}</code></span>
+<span class="codeline" id="line-174"><code></code></span>
+<span class="codeline" id="line-175"><code>type pageAlloc struct {</code></span>
+<span class="codeline" id="line-176"><code>	// Radix tree of summaries.</code></span>
+<span class="codeline" id="line-177"><code>	//</code></span>
+<span class="codeline" id="line-178"><code>	// Each slice's cap represents the whole memory reservation.</code></span>
+<span class="codeline" id="line-179"><code>	// Each slice's len reflects the allocator's maximum known</code></span>
+<span class="codeline" id="line-180"><code>	// mapped heap address for that level.</code></span>
+<span class="codeline" id="line-181"><code>	//</code></span>
+<span class="codeline" id="line-182"><code>	// The backing store of each summary level is reserved in init</code></span>
+<span class="codeline" id="line-183"><code>	// and may or may not be committed in grow (small address spaces</code></span>
+<span class="codeline" id="line-184"><code>	// may commit all the memory in init).</code></span>
+<span class="codeline" id="line-185"><code>	//</code></span>
+<span class="codeline" id="line-186"><code>	// The purpose of keeping len &lt;= cap is to enforce bounds checks</code></span>
+<span class="codeline" id="line-187"><code>	// on the top end of the slice so that instead of an unknown</code></span>
+<span class="codeline" id="line-188"><code>	// runtime segmentation fault, we get a much friendlier out-of-bounds</code></span>
+<span class="codeline" id="line-189"><code>	// error.</code></span>
+<span class="codeline" id="line-190"><code>	//</code></span>
+<span class="codeline" id="line-191"><code>	// To iterate over a summary level, use inUse to determine which ranges</code></span>
+<span class="codeline" id="line-192"><code>	// are currently available. Otherwise one might try to access</code></span>
+<span class="codeline" id="line-193"><code>	// memory which is only Reserved which may result in a hard fault.</code></span>
+<span class="codeline" id="line-194"><code>	//</code></span>
+<span class="codeline" id="line-195"><code>	// We may still get segmentation faults &lt; len since some of that</code></span>
+<span class="codeline" id="line-196"><code>	// memory may not be committed yet.</code></span>
+<span class="codeline" id="line-197"><code>	summary [summaryLevels][]pallocSum</code></span>
+<span class="codeline" id="line-198"><code></code></span>
+<span class="codeline" id="line-199"><code>	// chunks is a slice of bitmap chunks.</code></span>
+<span class="codeline" id="line-200"><code>	//</code></span>
+<span class="codeline" id="line-201"><code>	// The total size of chunks is quite large on most 64-bit platforms</code></span>
+<span class="codeline" id="line-202"><code>	// (O(GiB) or more) if flattened, so rather than making one large mapping</code></span>
+<span class="codeline" id="line-203"><code>	// (which has problems on some platforms, even when PROT_NONE) we use a</code></span>
+<span class="codeline" id="line-204"><code>	// two-level sparse array approach similar to the arena index in mheap.</code></span>
+<span class="codeline" id="line-205"><code>	//</code></span>
+<span class="codeline" id="line-206"><code>	// To find the chunk containing a memory address `a`, do:</code></span>
+<span class="codeline" id="line-207"><code>	//   chunkOf(chunkIndex(a))</code></span>
+<span class="codeline" id="line-208"><code>	//</code></span>
+<span class="codeline" id="line-209"><code>	// Below is a table describing the configuration for chunks for various</code></span>
+<span class="codeline" id="line-210"><code>	// heapAddrBits supported by the runtime.</code></span>
+<span class="codeline" id="line-211"><code>	//</code></span>
+<span class="codeline" id="line-212"><code>	// heapAddrBits | L1 Bits | L2 Bits | L2 Entry Size</code></span>
+<span class="codeline" id="line-213"><code>	// ------------------------------------------------</code></span>
+<span class="codeline" id="line-214"><code>	// 32           | 0       | 10      | 128 KiB</code></span>
+<span class="codeline" id="line-215"><code>	// 33 (iOS)     | 0       | 11      | 256 KiB</code></span>
+<span class="codeline" id="line-216"><code>	// 48           | 13      | 13      | 1 MiB</code></span>
+<span class="codeline" id="line-217"><code>	//</code></span>
+<span class="codeline" id="line-218"><code>	// There's no reason to use the L1 part of chunks on 32-bit, the</code></span>
+<span class="codeline" id="line-219"><code>	// address space is small so the L2 is small. For platforms with a</code></span>
+<span class="codeline" id="line-220"><code>	// 48-bit address space, we pick the L1 such that the L2 is 1 MiB</code></span>
+<span class="codeline" id="line-221"><code>	// in size, which is a good balance between low granularity without</code></span>
+<span class="codeline" id="line-222"><code>	// making the impact on BSS too high (note the L1 is stored directly</code></span>
+<span class="codeline" id="line-223"><code>	// in pageAlloc).</code></span>
+<span class="codeline" id="line-224"><code>	//</code></span>
+<span class="codeline" id="line-225"><code>	// To iterate over the bitmap, use inUse to determine which ranges</code></span>
+<span class="codeline" id="line-226"><code>	// are currently available. Otherwise one might iterate over unused</code></span>
+<span class="codeline" id="line-227"><code>	// ranges.</code></span>
+<span class="codeline" id="line-228"><code>	//</code></span>
+<span class="codeline" id="line-229"><code>	// TODO(mknyszek): Consider changing the definition of the bitmap</code></span>
+<span class="codeline" id="line-230"><code>	// such that 1 means free and 0 means in-use so that summaries and</code></span>
+<span class="codeline" id="line-231"><code>	// the bitmaps align better on zero-values.</code></span>
+<span class="codeline" id="line-232"><code>	chunks [1 &lt;&lt; pallocChunksL1Bits]*[1 &lt;&lt; pallocChunksL2Bits]pallocData</code></span>
+<span class="codeline" id="line-233"><code></code></span>
+<span class="codeline" id="line-234"><code>	// The address to start an allocation search with. It must never</code></span>
+<span class="codeline" id="line-235"><code>	// point to any memory that is not contained in inUse, i.e.</code></span>
+<span class="codeline" id="line-236"><code>	// inUse.contains(searchAddr.addr()) must always be true. The one</code></span>
+<span class="codeline" id="line-237"><code>	// exception to this rule is that it may take on the value of</code></span>
+<span class="codeline" id="line-238"><code>	// maxOffAddr to indicate that the heap is exhausted.</code></span>
+<span class="codeline" id="line-239"><code>	//</code></span>
+<span class="codeline" id="line-240"><code>	// We guarantee that all valid heap addresses below this value</code></span>
+<span class="codeline" id="line-241"><code>	// are allocated and not worth searching.</code></span>
+<span class="codeline" id="line-242"><code>	searchAddr offAddr</code></span>
+<span class="codeline" id="line-243"><code></code></span>
+<span class="codeline" id="line-244"><code>	// start and end represent the chunk indices</code></span>
+<span class="codeline" id="line-245"><code>	// which pageAlloc knows about. It assumes</code></span>
+<span class="codeline" id="line-246"><code>	// chunks in the range [start, end) are</code></span>
+<span class="codeline" id="line-247"><code>	// currently ready to use.</code></span>
+<span class="codeline" id="line-248"><code>	start, end chunkIdx</code></span>
+<span class="codeline" id="line-249"><code></code></span>
+<span class="codeline" id="line-250"><code>	// inUse is a slice of ranges of address space which are</code></span>
+<span class="codeline" id="line-251"><code>	// known by the page allocator to be currently in-use (passed</code></span>
+<span class="codeline" id="line-252"><code>	// to grow).</code></span>
+<span class="codeline" id="line-253"><code>	//</code></span>
+<span class="codeline" id="line-254"><code>	// This field is currently unused on 32-bit architectures but</code></span>
+<span class="codeline" id="line-255"><code>	// is harmless to track. We care much more about having a</code></span>
+<span class="codeline" id="line-256"><code>	// contiguous heap in these cases and take additional measures</code></span>
+<span class="codeline" id="line-257"><code>	// to ensure that, so in nearly all cases this should have just</code></span>
+<span class="codeline" id="line-258"><code>	// 1 element.</code></span>
+<span class="codeline" id="line-259"><code>	//</code></span>
+<span class="codeline" id="line-260"><code>	// All access is protected by the mheapLock.</code></span>
+<span class="codeline" id="line-261"><code>	inUse addrRanges</code></span>
+<span class="codeline" id="line-262"><code></code></span>
+<span class="codeline" id="line-263"><code>	// scav stores the scavenger state.</code></span>
+<span class="codeline" id="line-264"><code>	//</code></span>
+<span class="codeline" id="line-265"><code>	// All fields are protected by mheapLock.</code></span>
+<span class="codeline" id="line-266"><code>	scav struct {</code></span>
+<span class="codeline" id="line-267"><code>		// inUse is a slice of ranges of address space which have not</code></span>
+<span class="codeline" id="line-268"><code>		// yet been looked at by the scavenger.</code></span>
+<span class="codeline" id="line-269"><code>		inUse addrRanges</code></span>
+<span class="codeline" id="line-270"><code></code></span>
+<span class="codeline" id="line-271"><code>		// gen is the scavenge generation number.</code></span>
+<span class="codeline" id="line-272"><code>		gen uint32</code></span>
+<span class="codeline" id="line-273"><code></code></span>
+<span class="codeline" id="line-274"><code>		// reservationBytes is how large of a reservation should be made</code></span>
+<span class="codeline" id="line-275"><code>		// in bytes of address space for each scavenge iteration.</code></span>
+<span class="codeline" id="line-276"><code>		reservationBytes uintptr</code></span>
+<span class="codeline" id="line-277"><code></code></span>
+<span class="codeline" id="line-278"><code>		// released is the amount of memory released this generation.</code></span>
+<span class="codeline" id="line-279"><code>		released uintptr</code></span>
+<span class="codeline" id="line-280"><code></code></span>
+<span class="codeline" id="line-281"><code>		// scavLWM is the lowest (offset) address that the scavenger reached this</code></span>
+<span class="codeline" id="line-282"><code>		// scavenge generation.</code></span>
+<span class="codeline" id="line-283"><code>		scavLWM offAddr</code></span>
+<span class="codeline" id="line-284"><code></code></span>
+<span class="codeline" id="line-285"><code>		// freeHWM is the highest (offset) address of a page that was freed to</code></span>
+<span class="codeline" id="line-286"><code>		// the page allocator this scavenge generation.</code></span>
+<span class="codeline" id="line-287"><code>		freeHWM offAddr</code></span>
+<span class="codeline" id="line-288"><code>	}</code></span>
+<span class="codeline" id="line-289"><code></code></span>
+<span class="codeline" id="line-290"><code>	// mheap_.lock. This level of indirection makes it possible</code></span>
+<span class="codeline" id="line-291"><code>	// to test pageAlloc indepedently of the runtime allocator.</code></span>
+<span class="codeline" id="line-292"><code>	mheapLock *mutex</code></span>
+<span class="codeline" id="line-293"><code></code></span>
+<span class="codeline" id="line-294"><code>	// sysStat is the runtime memstat to update when new system</code></span>
+<span class="codeline" id="line-295"><code>	// memory is committed by the pageAlloc for allocation metadata.</code></span>
+<span class="codeline" id="line-296"><code>	sysStat *sysMemStat</code></span>
+<span class="codeline" id="line-297"><code></code></span>
+<span class="codeline" id="line-298"><code>	// Whether or not this struct is being used in tests.</code></span>
+<span class="codeline" id="line-299"><code>	test bool</code></span>
+<span class="codeline" id="line-300"><code>}</code></span>
+<span class="codeline" id="line-301"><code></code></span>
+<span class="codeline" id="line-302"><code>func (p *pageAlloc) init(mheapLock *mutex, sysStat *sysMemStat) {</code></span>
+<span class="codeline" id="line-303"><code>	if levelLogPages[0] &gt; logMaxPackedValue {</code></span>
+<span class="codeline" id="line-304"><code>		// We can't represent 1&lt;&lt;levelLogPages[0] pages, the maximum number</code></span>
+<span class="codeline" id="line-305"><code>		// of pages we need to represent at the root level, in a summary, which</code></span>
+<span class="codeline" id="line-306"><code>		// is a big problem. Throw.</code></span>
+<span class="codeline" id="line-307"><code>		print("runtime: root level max pages = ", 1&lt;&lt;levelLogPages[0], "\n")</code></span>
+<span class="codeline" id="line-308"><code>		print("runtime: summary max pages = ", maxPackedValue, "\n")</code></span>
+<span class="codeline" id="line-309"><code>		throw("root level max pages doesn't fit in summary")</code></span>
+<span class="codeline" id="line-310"><code>	}</code></span>
+<span class="codeline" id="line-311"><code>	p.sysStat = sysStat</code></span>
+<span class="codeline" id="line-312"><code></code></span>
+<span class="codeline" id="line-313"><code>	// Initialize p.inUse.</code></span>
+<span class="codeline" id="line-314"><code>	p.inUse.init(sysStat)</code></span>
+<span class="codeline" id="line-315"><code></code></span>
+<span class="codeline" id="line-316"><code>	// System-dependent initialization.</code></span>
+<span class="codeline" id="line-317"><code>	p.sysInit()</code></span>
+<span class="codeline" id="line-318"><code></code></span>
+<span class="codeline" id="line-319"><code>	// Start with the searchAddr in a state indicating there's no free memory.</code></span>
+<span class="codeline" id="line-320"><code>	p.searchAddr = maxSearchAddr</code></span>
+<span class="codeline" id="line-321"><code></code></span>
+<span class="codeline" id="line-322"><code>	// Set the mheapLock.</code></span>
+<span class="codeline" id="line-323"><code>	p.mheapLock = mheapLock</code></span>
+<span class="codeline" id="line-324"><code></code></span>
+<span class="codeline" id="line-325"><code>	// Initialize scavenge tracking state.</code></span>
+<span class="codeline" id="line-326"><code>	p.scav.scavLWM = maxSearchAddr</code></span>
+<span class="codeline" id="line-327"><code>}</code></span>
+<span class="codeline" id="line-328"><code></code></span>
+<span class="codeline" id="line-329"><code>// tryChunkOf returns the bitmap data for the given chunk.</code></span>
+<span class="codeline" id="line-330"><code>//</code></span>
+<span class="codeline" id="line-331"><code>// Returns nil if the chunk data has not been mapped.</code></span>
+<span class="codeline" id="line-332"><code>func (p *pageAlloc) tryChunkOf(ci chunkIdx) *pallocData {</code></span>
+<span class="codeline" id="line-333"><code>	l2 := p.chunks[ci.l1()]</code></span>
+<span class="codeline" id="line-334"><code>	if l2 == nil {</code></span>
+<span class="codeline" id="line-335"><code>		return nil</code></span>
+<span class="codeline" id="line-336"><code>	}</code></span>
+<span class="codeline" id="line-337"><code>	return &amp;l2[ci.l2()]</code></span>
+<span class="codeline" id="line-338"><code>}</code></span>
+<span class="codeline" id="line-339"><code></code></span>
+<span class="codeline" id="line-340"><code>// chunkOf returns the chunk at the given chunk index.</code></span>
+<span class="codeline" id="line-341"><code>//</code></span>
+<span class="codeline" id="line-342"><code>// The chunk index must be valid or this method may throw.</code></span>
+<span class="codeline" id="line-343"><code>func (p *pageAlloc) chunkOf(ci chunkIdx) *pallocData {</code></span>
+<span class="codeline" id="line-344"><code>	return &amp;p.chunks[ci.l1()][ci.l2()]</code></span>
+<span class="codeline" id="line-345"><code>}</code></span>
+<span class="codeline" id="line-346"><code></code></span>
+<span class="codeline" id="line-347"><code>// grow sets up the metadata for the address range [base, base+size).</code></span>
+<span class="codeline" id="line-348"><code>// It may allocate metadata, in which case *p.sysStat will be updated.</code></span>
+<span class="codeline" id="line-349"><code>//</code></span>
+<span class="codeline" id="line-350"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-351"><code>func (p *pageAlloc) grow(base, size uintptr) {</code></span>
+<span class="codeline" id="line-352"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-353"><code></code></span>
+<span class="codeline" id="line-354"><code>	// Round up to chunks, since we can't deal with increments smaller</code></span>
+<span class="codeline" id="line-355"><code>	// than chunks. Also, sysGrow expects aligned values.</code></span>
+<span class="codeline" id="line-356"><code>	limit := alignUp(base+size, pallocChunkBytes)</code></span>
+<span class="codeline" id="line-357"><code>	base = alignDown(base, pallocChunkBytes)</code></span>
+<span class="codeline" id="line-358"><code></code></span>
+<span class="codeline" id="line-359"><code>	// Grow the summary levels in a system-dependent manner.</code></span>
+<span class="codeline" id="line-360"><code>	// We just update a bunch of additional metadata here.</code></span>
+<span class="codeline" id="line-361"><code>	p.sysGrow(base, limit)</code></span>
+<span class="codeline" id="line-362"><code></code></span>
+<span class="codeline" id="line-363"><code>	// Update p.start and p.end.</code></span>
+<span class="codeline" id="line-364"><code>	// If no growth happened yet, start == 0. This is generally</code></span>
+<span class="codeline" id="line-365"><code>	// safe since the zero page is unmapped.</code></span>
+<span class="codeline" id="line-366"><code>	firstGrowth := p.start == 0</code></span>
+<span class="codeline" id="line-367"><code>	start, end := chunkIndex(base), chunkIndex(limit)</code></span>
+<span class="codeline" id="line-368"><code>	if firstGrowth || start &lt; p.start {</code></span>
+<span class="codeline" id="line-369"><code>		p.start = start</code></span>
+<span class="codeline" id="line-370"><code>	}</code></span>
+<span class="codeline" id="line-371"><code>	if end &gt; p.end {</code></span>
+<span class="codeline" id="line-372"><code>		p.end = end</code></span>
+<span class="codeline" id="line-373"><code>	}</code></span>
+<span class="codeline" id="line-374"><code>	// Note that [base, limit) will never overlap with any existing</code></span>
+<span class="codeline" id="line-375"><code>	// range inUse because grow only ever adds never-used memory</code></span>
+<span class="codeline" id="line-376"><code>	// regions to the page allocator.</code></span>
+<span class="codeline" id="line-377"><code>	p.inUse.add(makeAddrRange(base, limit))</code></span>
+<span class="codeline" id="line-378"><code></code></span>
+<span class="codeline" id="line-379"><code>	// A grow operation is a lot like a free operation, so if our</code></span>
+<span class="codeline" id="line-380"><code>	// chunk ends up below p.searchAddr, update p.searchAddr to the</code></span>
+<span class="codeline" id="line-381"><code>	// new address, just like in free.</code></span>
+<span class="codeline" id="line-382"><code>	if b := (offAddr{base}); b.lessThan(p.searchAddr) {</code></span>
+<span class="codeline" id="line-383"><code>		p.searchAddr = b</code></span>
+<span class="codeline" id="line-384"><code>	}</code></span>
+<span class="codeline" id="line-385"><code></code></span>
+<span class="codeline" id="line-386"><code>	// Add entries into chunks, which is sparse, if needed. Then,</code></span>
+<span class="codeline" id="line-387"><code>	// initialize the bitmap.</code></span>
+<span class="codeline" id="line-388"><code>	//</code></span>
+<span class="codeline" id="line-389"><code>	// Newly-grown memory is always considered scavenged.</code></span>
+<span class="codeline" id="line-390"><code>	// Set all the bits in the scavenged bitmaps high.</code></span>
+<span class="codeline" id="line-391"><code>	for c := chunkIndex(base); c &lt; chunkIndex(limit); c++ {</code></span>
+<span class="codeline" id="line-392"><code>		if p.chunks[c.l1()] == nil {</code></span>
+<span class="codeline" id="line-393"><code>			// Create the necessary l2 entry.</code></span>
+<span class="codeline" id="line-394"><code>			//</code></span>
+<span class="codeline" id="line-395"><code>			// Store it atomically to avoid races with readers which</code></span>
+<span class="codeline" id="line-396"><code>			// don't acquire the heap lock.</code></span>
+<span class="codeline" id="line-397"><code>			r := sysAlloc(unsafe.Sizeof(*p.chunks[0]), p.sysStat)</code></span>
+<span class="codeline" id="line-398"><code>			atomic.StorepNoWB(unsafe.Pointer(&amp;p.chunks[c.l1()]), r)</code></span>
+<span class="codeline" id="line-399"><code>		}</code></span>
+<span class="codeline" id="line-400"><code>		p.chunkOf(c).scavenged.setRange(0, pallocChunkPages)</code></span>
+<span class="codeline" id="line-401"><code>	}</code></span>
+<span class="codeline" id="line-402"><code></code></span>
+<span class="codeline" id="line-403"><code>	// Update summaries accordingly. The grow acts like a free, so</code></span>
+<span class="codeline" id="line-404"><code>	// we need to ensure this newly-free memory is visible in the</code></span>
+<span class="codeline" id="line-405"><code>	// summaries.</code></span>
+<span class="codeline" id="line-406"><code>	p.update(base, size/pageSize, true, false)</code></span>
+<span class="codeline" id="line-407"><code>}</code></span>
+<span class="codeline" id="line-408"><code></code></span>
+<span class="codeline" id="line-409"><code>// update updates heap metadata. It must be called each time the bitmap</code></span>
+<span class="codeline" id="line-410"><code>// is updated.</code></span>
+<span class="codeline" id="line-411"><code>//</code></span>
+<span class="codeline" id="line-412"><code>// If contig is true, update does some optimizations assuming that there was</code></span>
+<span class="codeline" id="line-413"><code>// a contiguous allocation or free between addr and addr+npages. alloc indicates</code></span>
+<span class="codeline" id="line-414"><code>// whether the operation performed was an allocation or a free.</code></span>
+<span class="codeline" id="line-415"><code>//</code></span>
+<span class="codeline" id="line-416"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-417"><code>func (p *pageAlloc) update(base, npages uintptr, contig, alloc bool) {</code></span>
+<span class="codeline" id="line-418"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-419"><code></code></span>
+<span class="codeline" id="line-420"><code>	// base, limit, start, and end are inclusive.</code></span>
+<span class="codeline" id="line-421"><code>	limit := base + npages*pageSize - 1</code></span>
+<span class="codeline" id="line-422"><code>	sc, ec := chunkIndex(base), chunkIndex(limit)</code></span>
+<span class="codeline" id="line-423"><code></code></span>
+<span class="codeline" id="line-424"><code>	// Handle updating the lowest level first.</code></span>
+<span class="codeline" id="line-425"><code>	if sc == ec {</code></span>
+<span class="codeline" id="line-426"><code>		// Fast path: the allocation doesn't span more than one chunk,</code></span>
+<span class="codeline" id="line-427"><code>		// so update this one and if the summary didn't change, return.</code></span>
+<span class="codeline" id="line-428"><code>		x := p.summary[len(p.summary)-1][sc]</code></span>
+<span class="codeline" id="line-429"><code>		y := p.chunkOf(sc).summarize()</code></span>
+<span class="codeline" id="line-430"><code>		if x == y {</code></span>
+<span class="codeline" id="line-431"><code>			return</code></span>
+<span class="codeline" id="line-432"><code>		}</code></span>
+<span class="codeline" id="line-433"><code>		p.summary[len(p.summary)-1][sc] = y</code></span>
+<span class="codeline" id="line-434"><code>	} else if contig {</code></span>
+<span class="codeline" id="line-435"><code>		// Slow contiguous path: the allocation spans more than one chunk</code></span>
+<span class="codeline" id="line-436"><code>		// and at least one summary is guaranteed to change.</code></span>
+<span class="codeline" id="line-437"><code>		summary := p.summary[len(p.summary)-1]</code></span>
+<span class="codeline" id="line-438"><code></code></span>
+<span class="codeline" id="line-439"><code>		// Update the summary for chunk sc.</code></span>
+<span class="codeline" id="line-440"><code>		summary[sc] = p.chunkOf(sc).summarize()</code></span>
+<span class="codeline" id="line-441"><code></code></span>
+<span class="codeline" id="line-442"><code>		// Update the summaries for chunks in between, which are</code></span>
+<span class="codeline" id="line-443"><code>		// either totally allocated or freed.</code></span>
+<span class="codeline" id="line-444"><code>		whole := p.summary[len(p.summary)-1][sc+1 : ec]</code></span>
+<span class="codeline" id="line-445"><code>		if alloc {</code></span>
+<span class="codeline" id="line-446"><code>			// Should optimize into a memclr.</code></span>
+<span class="codeline" id="line-447"><code>			for i := range whole {</code></span>
+<span class="codeline" id="line-448"><code>				whole[i] = 0</code></span>
+<span class="codeline" id="line-449"><code>			}</code></span>
+<span class="codeline" id="line-450"><code>		} else {</code></span>
+<span class="codeline" id="line-451"><code>			for i := range whole {</code></span>
+<span class="codeline" id="line-452"><code>				whole[i] = freeChunkSum</code></span>
+<span class="codeline" id="line-453"><code>			}</code></span>
+<span class="codeline" id="line-454"><code>		}</code></span>
+<span class="codeline" id="line-455"><code></code></span>
+<span class="codeline" id="line-456"><code>		// Update the summary for chunk ec.</code></span>
+<span class="codeline" id="line-457"><code>		summary[ec] = p.chunkOf(ec).summarize()</code></span>
+<span class="codeline" id="line-458"><code>	} else {</code></span>
+<span class="codeline" id="line-459"><code>		// Slow general path: the allocation spans more than one chunk</code></span>
+<span class="codeline" id="line-460"><code>		// and at least one summary is guaranteed to change.</code></span>
+<span class="codeline" id="line-461"><code>		//</code></span>
+<span class="codeline" id="line-462"><code>		// We can't assume a contiguous allocation happened, so walk over</code></span>
+<span class="codeline" id="line-463"><code>		// every chunk in the range and manually recompute the summary.</code></span>
+<span class="codeline" id="line-464"><code>		summary := p.summary[len(p.summary)-1]</code></span>
+<span class="codeline" id="line-465"><code>		for c := sc; c &lt;= ec; c++ {</code></span>
+<span class="codeline" id="line-466"><code>			summary[c] = p.chunkOf(c).summarize()</code></span>
+<span class="codeline" id="line-467"><code>		}</code></span>
+<span class="codeline" id="line-468"><code>	}</code></span>
+<span class="codeline" id="line-469"><code></code></span>
+<span class="codeline" id="line-470"><code>	// Walk up the radix tree and update the summaries appropriately.</code></span>
+<span class="codeline" id="line-471"><code>	changed := true</code></span>
+<span class="codeline" id="line-472"><code>	for l := len(p.summary) - 2; l &gt;= 0 &amp;&amp; changed; l-- {</code></span>
+<span class="codeline" id="line-473"><code>		// Update summaries at level l from summaries at level l+1.</code></span>
+<span class="codeline" id="line-474"><code>		changed = false</code></span>
+<span class="codeline" id="line-475"><code></code></span>
+<span class="codeline" id="line-476"><code>		// "Constants" for the previous level which we</code></span>
+<span class="codeline" id="line-477"><code>		// need to compute the summary from that level.</code></span>
+<span class="codeline" id="line-478"><code>		logEntriesPerBlock := levelBits[l+1]</code></span>
+<span class="codeline" id="line-479"><code>		logMaxPages := levelLogPages[l+1]</code></span>
+<span class="codeline" id="line-480"><code></code></span>
+<span class="codeline" id="line-481"><code>		// lo and hi describe all the parts of the level we need to look at.</code></span>
+<span class="codeline" id="line-482"><code>		lo, hi := addrsToSummaryRange(l, base, limit+1)</code></span>
+<span class="codeline" id="line-483"><code></code></span>
+<span class="codeline" id="line-484"><code>		// Iterate over each block, updating the corresponding summary in the less-granular level.</code></span>
+<span class="codeline" id="line-485"><code>		for i := lo; i &lt; hi; i++ {</code></span>
+<span class="codeline" id="line-486"><code>			children := p.summary[l+1][i&lt;&lt;logEntriesPerBlock : (i+1)&lt;&lt;logEntriesPerBlock]</code></span>
+<span class="codeline" id="line-487"><code>			sum := mergeSummaries(children, logMaxPages)</code></span>
+<span class="codeline" id="line-488"><code>			old := p.summary[l][i]</code></span>
+<span class="codeline" id="line-489"><code>			if old != sum {</code></span>
+<span class="codeline" id="line-490"><code>				changed = true</code></span>
+<span class="codeline" id="line-491"><code>				p.summary[l][i] = sum</code></span>
+<span class="codeline" id="line-492"><code>			}</code></span>
+<span class="codeline" id="line-493"><code>		}</code></span>
+<span class="codeline" id="line-494"><code>	}</code></span>
+<span class="codeline" id="line-495"><code>}</code></span>
+<span class="codeline" id="line-496"><code></code></span>
+<span class="codeline" id="line-497"><code>// allocRange marks the range of memory [base, base+npages*pageSize) as</code></span>
+<span class="codeline" id="line-498"><code>// allocated. It also updates the summaries to reflect the newly-updated</code></span>
+<span class="codeline" id="line-499"><code>// bitmap.</code></span>
+<span class="codeline" id="line-500"><code>//</code></span>
+<span class="codeline" id="line-501"><code>// Returns the amount of scavenged memory in bytes present in the</code></span>
+<span class="codeline" id="line-502"><code>// allocated range.</code></span>
+<span class="codeline" id="line-503"><code>//</code></span>
+<span class="codeline" id="line-504"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-505"><code>func (p *pageAlloc) allocRange(base, npages uintptr) uintptr {</code></span>
+<span class="codeline" id="line-506"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-507"><code></code></span>
+<span class="codeline" id="line-508"><code>	limit := base + npages*pageSize - 1</code></span>
+<span class="codeline" id="line-509"><code>	sc, ec := chunkIndex(base), chunkIndex(limit)</code></span>
+<span class="codeline" id="line-510"><code>	si, ei := chunkPageIndex(base), chunkPageIndex(limit)</code></span>
+<span class="codeline" id="line-511"><code></code></span>
+<span class="codeline" id="line-512"><code>	scav := uint(0)</code></span>
+<span class="codeline" id="line-513"><code>	if sc == ec {</code></span>
+<span class="codeline" id="line-514"><code>		// The range doesn't cross any chunk boundaries.</code></span>
+<span class="codeline" id="line-515"><code>		chunk := p.chunkOf(sc)</code></span>
+<span class="codeline" id="line-516"><code>		scav += chunk.scavenged.popcntRange(si, ei+1-si)</code></span>
+<span class="codeline" id="line-517"><code>		chunk.allocRange(si, ei+1-si)</code></span>
+<span class="codeline" id="line-518"><code>	} else {</code></span>
+<span class="codeline" id="line-519"><code>		// The range crosses at least one chunk boundary.</code></span>
+<span class="codeline" id="line-520"><code>		chunk := p.chunkOf(sc)</code></span>
+<span class="codeline" id="line-521"><code>		scav += chunk.scavenged.popcntRange(si, pallocChunkPages-si)</code></span>
+<span class="codeline" id="line-522"><code>		chunk.allocRange(si, pallocChunkPages-si)</code></span>
+<span class="codeline" id="line-523"><code>		for c := sc + 1; c &lt; ec; c++ {</code></span>
+<span class="codeline" id="line-524"><code>			chunk := p.chunkOf(c)</code></span>
+<span class="codeline" id="line-525"><code>			scav += chunk.scavenged.popcntRange(0, pallocChunkPages)</code></span>
+<span class="codeline" id="line-526"><code>			chunk.allocAll()</code></span>
+<span class="codeline" id="line-527"><code>		}</code></span>
+<span class="codeline" id="line-528"><code>		chunk = p.chunkOf(ec)</code></span>
+<span class="codeline" id="line-529"><code>		scav += chunk.scavenged.popcntRange(0, ei+1)</code></span>
+<span class="codeline" id="line-530"><code>		chunk.allocRange(0, ei+1)</code></span>
+<span class="codeline" id="line-531"><code>	}</code></span>
+<span class="codeline" id="line-532"><code>	p.update(base, npages, true, true)</code></span>
+<span class="codeline" id="line-533"><code>	return uintptr(scav) * pageSize</code></span>
+<span class="codeline" id="line-534"><code>}</code></span>
+<span class="codeline" id="line-535"><code></code></span>
+<span class="codeline" id="line-536"><code>// findMappedAddr returns the smallest mapped offAddr that is</code></span>
+<span class="codeline" id="line-537"><code>// &gt;= addr. That is, if addr refers to mapped memory, then it is</code></span>
+<span class="codeline" id="line-538"><code>// returned. If addr is higher than any mapped region, then</code></span>
+<span class="codeline" id="line-539"><code>// it returns maxOffAddr.</code></span>
+<span class="codeline" id="line-540"><code>//</code></span>
+<span class="codeline" id="line-541"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-542"><code>func (p *pageAlloc) findMappedAddr(addr offAddr) offAddr {</code></span>
+<span class="codeline" id="line-543"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-544"><code></code></span>
+<span class="codeline" id="line-545"><code>	// If we're not in a test, validate first by checking mheap_.arenas.</code></span>
+<span class="codeline" id="line-546"><code>	// This is a fast path which is only safe to use outside of testing.</code></span>
+<span class="codeline" id="line-547"><code>	ai := arenaIndex(addr.addr())</code></span>
+<span class="codeline" id="line-548"><code>	if p.test || mheap_.arenas[ai.l1()] == nil || mheap_.arenas[ai.l1()][ai.l2()] == nil {</code></span>
+<span class="codeline" id="line-549"><code>		vAddr, ok := p.inUse.findAddrGreaterEqual(addr.addr())</code></span>
+<span class="codeline" id="line-550"><code>		if ok {</code></span>
+<span class="codeline" id="line-551"><code>			return offAddr{vAddr}</code></span>
+<span class="codeline" id="line-552"><code>		} else {</code></span>
+<span class="codeline" id="line-553"><code>			// The candidate search address is greater than any</code></span>
+<span class="codeline" id="line-554"><code>			// known address, which means we definitely have no</code></span>
+<span class="codeline" id="line-555"><code>			// free memory left.</code></span>
+<span class="codeline" id="line-556"><code>			return maxOffAddr</code></span>
+<span class="codeline" id="line-557"><code>		}</code></span>
+<span class="codeline" id="line-558"><code>	}</code></span>
+<span class="codeline" id="line-559"><code>	return addr</code></span>
+<span class="codeline" id="line-560"><code>}</code></span>
+<span class="codeline" id="line-561"><code></code></span>
+<span class="codeline" id="line-562"><code>// find searches for the first (address-ordered) contiguous free region of</code></span>
+<span class="codeline" id="line-563"><code>// npages in size and returns a base address for that region.</code></span>
+<span class="codeline" id="line-564"><code>//</code></span>
+<span class="codeline" id="line-565"><code>// It uses p.searchAddr to prune its search and assumes that no palloc chunks</code></span>
+<span class="codeline" id="line-566"><code>// below chunkIndex(p.searchAddr) contain any free memory at all.</code></span>
+<span class="codeline" id="line-567"><code>//</code></span>
+<span class="codeline" id="line-568"><code>// find also computes and returns a candidate p.searchAddr, which may or</code></span>
+<span class="codeline" id="line-569"><code>// may not prune more of the address space than p.searchAddr already does.</code></span>
+<span class="codeline" id="line-570"><code>// This candidate is always a valid p.searchAddr.</code></span>
+<span class="codeline" id="line-571"><code>//</code></span>
+<span class="codeline" id="line-572"><code>// find represents the slow path and the full radix tree search.</code></span>
+<span class="codeline" id="line-573"><code>//</code></span>
+<span class="codeline" id="line-574"><code>// Returns a base address of 0 on failure, in which case the candidate</code></span>
+<span class="codeline" id="line-575"><code>// searchAddr returned is invalid and must be ignored.</code></span>
+<span class="codeline" id="line-576"><code>//</code></span>
+<span class="codeline" id="line-577"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-578"><code>func (p *pageAlloc) find(npages uintptr) (uintptr, offAddr) {</code></span>
+<span class="codeline" id="line-579"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-580"><code></code></span>
+<span class="codeline" id="line-581"><code>	// Search algorithm.</code></span>
+<span class="codeline" id="line-582"><code>	//</code></span>
+<span class="codeline" id="line-583"><code>	// This algorithm walks each level l of the radix tree from the root level</code></span>
+<span class="codeline" id="line-584"><code>	// to the leaf level. It iterates over at most 1 &lt;&lt; levelBits[l] of entries</code></span>
+<span class="codeline" id="line-585"><code>	// in a given level in the radix tree, and uses the summary information to</code></span>
+<span class="codeline" id="line-586"><code>	// find either:</code></span>
+<span class="codeline" id="line-587"><code>	//  1) That a given subtree contains a large enough contiguous region, at</code></span>
+<span class="codeline" id="line-588"><code>	//     which point it continues iterating on the next level, or</code></span>
+<span class="codeline" id="line-589"><code>	//  2) That there are enough contiguous boundary-crossing bits to satisfy</code></span>
+<span class="codeline" id="line-590"><code>	//     the allocation, at which point it knows exactly where to start</code></span>
+<span class="codeline" id="line-591"><code>	//     allocating from.</code></span>
+<span class="codeline" id="line-592"><code>	//</code></span>
+<span class="codeline" id="line-593"><code>	// i tracks the index into the current level l's structure for the</code></span>
+<span class="codeline" id="line-594"><code>	// contiguous 1 &lt;&lt; levelBits[l] entries we're actually interested in.</code></span>
+<span class="codeline" id="line-595"><code>	//</code></span>
+<span class="codeline" id="line-596"><code>	// NOTE: Technically this search could allocate a region which crosses</code></span>
+<span class="codeline" id="line-597"><code>	// the arenaBaseOffset boundary, which when arenaBaseOffset != 0, is</code></span>
+<span class="codeline" id="line-598"><code>	// a discontinuity. However, the only way this could happen is if the</code></span>
+<span class="codeline" id="line-599"><code>	// page at the zero address is mapped, and this is impossible on</code></span>
+<span class="codeline" id="line-600"><code>	// every system we support where arenaBaseOffset != 0. So, the</code></span>
+<span class="codeline" id="line-601"><code>	// discontinuity is already encoded in the fact that the OS will never</code></span>
+<span class="codeline" id="line-602"><code>	// map the zero page for us, and this function doesn't try to handle</code></span>
+<span class="codeline" id="line-603"><code>	// this case in any way.</code></span>
+<span class="codeline" id="line-604"><code></code></span>
+<span class="codeline" id="line-605"><code>	// i is the beginning of the block of entries we're searching at the</code></span>
+<span class="codeline" id="line-606"><code>	// current level.</code></span>
+<span class="codeline" id="line-607"><code>	i := 0</code></span>
+<span class="codeline" id="line-608"><code></code></span>
+<span class="codeline" id="line-609"><code>	// firstFree is the region of address space that we are certain to</code></span>
+<span class="codeline" id="line-610"><code>	// find the first free page in the heap. base and bound are the inclusive</code></span>
+<span class="codeline" id="line-611"><code>	// bounds of this window, and both are addresses in the linearized, contiguous</code></span>
+<span class="codeline" id="line-612"><code>	// view of the address space (with arenaBaseOffset pre-added). At each level,</code></span>
+<span class="codeline" id="line-613"><code>	// this window is narrowed as we find the memory region containing the</code></span>
+<span class="codeline" id="line-614"><code>	// first free page of memory. To begin with, the range reflects the</code></span>
+<span class="codeline" id="line-615"><code>	// full process address space.</code></span>
+<span class="codeline" id="line-616"><code>	//</code></span>
+<span class="codeline" id="line-617"><code>	// firstFree is updated by calling foundFree each time free space in the</code></span>
+<span class="codeline" id="line-618"><code>	// heap is discovered.</code></span>
+<span class="codeline" id="line-619"><code>	//</code></span>
+<span class="codeline" id="line-620"><code>	// At the end of the search, base.addr() is the best new</code></span>
+<span class="codeline" id="line-621"><code>	// searchAddr we could deduce in this search.</code></span>
+<span class="codeline" id="line-622"><code>	firstFree := struct {</code></span>
+<span class="codeline" id="line-623"><code>		base, bound offAddr</code></span>
+<span class="codeline" id="line-624"><code>	}{</code></span>
+<span class="codeline" id="line-625"><code>		base:  minOffAddr,</code></span>
+<span class="codeline" id="line-626"><code>		bound: maxOffAddr,</code></span>
+<span class="codeline" id="line-627"><code>	}</code></span>
+<span class="codeline" id="line-628"><code>	// foundFree takes the given address range [addr, addr+size) and</code></span>
+<span class="codeline" id="line-629"><code>	// updates firstFree if it is a narrower range. The input range must</code></span>
+<span class="codeline" id="line-630"><code>	// either be fully contained within firstFree or not overlap with it</code></span>
+<span class="codeline" id="line-631"><code>	// at all.</code></span>
+<span class="codeline" id="line-632"><code>	//</code></span>
+<span class="codeline" id="line-633"><code>	// This way, we'll record the first summary we find with any free</code></span>
+<span class="codeline" id="line-634"><code>	// pages on the root level and narrow that down if we descend into</code></span>
+<span class="codeline" id="line-635"><code>	// that summary. But as soon as we need to iterate beyond that summary</code></span>
+<span class="codeline" id="line-636"><code>	// in a level to find a large enough range, we'll stop narrowing.</code></span>
+<span class="codeline" id="line-637"><code>	foundFree := func(addr offAddr, size uintptr) {</code></span>
+<span class="codeline" id="line-638"><code>		if firstFree.base.lessEqual(addr) &amp;&amp; addr.add(size-1).lessEqual(firstFree.bound) {</code></span>
+<span class="codeline" id="line-639"><code>			// This range fits within the current firstFree window, so narrow</code></span>
+<span class="codeline" id="line-640"><code>			// down the firstFree window to the base and bound of this range.</code></span>
+<span class="codeline" id="line-641"><code>			firstFree.base = addr</code></span>
+<span class="codeline" id="line-642"><code>			firstFree.bound = addr.add(size - 1)</code></span>
+<span class="codeline" id="line-643"><code>		} else if !(addr.add(size-1).lessThan(firstFree.base) || firstFree.bound.lessThan(addr)) {</code></span>
+<span class="codeline" id="line-644"><code>			// This range only partially overlaps with the firstFree range,</code></span>
+<span class="codeline" id="line-645"><code>			// so throw.</code></span>
+<span class="codeline" id="line-646"><code>			print("runtime: addr = ", hex(addr.addr()), ", size = ", size, "\n")</code></span>
+<span class="codeline" id="line-647"><code>			print("runtime: base = ", hex(firstFree.base.addr()), ", bound = ", hex(firstFree.bound.addr()), "\n")</code></span>
+<span class="codeline" id="line-648"><code>			throw("range partially overlaps")</code></span>
+<span class="codeline" id="line-649"><code>		}</code></span>
+<span class="codeline" id="line-650"><code>	}</code></span>
+<span class="codeline" id="line-651"><code></code></span>
+<span class="codeline" id="line-652"><code>	// lastSum is the summary which we saw on the previous level that made us</code></span>
+<span class="codeline" id="line-653"><code>	// move on to the next level. Used to print additional information in the</code></span>
+<span class="codeline" id="line-654"><code>	// case of a catastrophic failure.</code></span>
+<span class="codeline" id="line-655"><code>	// lastSumIdx is that summary's index in the previous level.</code></span>
+<span class="codeline" id="line-656"><code>	lastSum := packPallocSum(0, 0, 0)</code></span>
+<span class="codeline" id="line-657"><code>	lastSumIdx := -1</code></span>
+<span class="codeline" id="line-658"><code></code></span>
+<span class="codeline" id="line-659"><code>nextLevel:</code></span>
+<span class="codeline" id="line-660"><code>	for l := 0; l &lt; len(p.summary); l++ {</code></span>
+<span class="codeline" id="line-661"><code>		// For the root level, entriesPerBlock is the whole level.</code></span>
+<span class="codeline" id="line-662"><code>		entriesPerBlock := 1 &lt;&lt; levelBits[l]</code></span>
+<span class="codeline" id="line-663"><code>		logMaxPages := levelLogPages[l]</code></span>
+<span class="codeline" id="line-664"><code></code></span>
+<span class="codeline" id="line-665"><code>		// We've moved into a new level, so let's update i to our new</code></span>
+<span class="codeline" id="line-666"><code>		// starting index. This is a no-op for level 0.</code></span>
+<span class="codeline" id="line-667"><code>		i &lt;&lt;= levelBits[l]</code></span>
+<span class="codeline" id="line-668"><code></code></span>
+<span class="codeline" id="line-669"><code>		// Slice out the block of entries we care about.</code></span>
+<span class="codeline" id="line-670"><code>		entries := p.summary[l][i : i+entriesPerBlock]</code></span>
+<span class="codeline" id="line-671"><code></code></span>
+<span class="codeline" id="line-672"><code>		// Determine j0, the first index we should start iterating from.</code></span>
+<span class="codeline" id="line-673"><code>		// The searchAddr may help us eliminate iterations if we followed the</code></span>
+<span class="codeline" id="line-674"><code>		// searchAddr on the previous level or we're on the root leve, in which</code></span>
+<span class="codeline" id="line-675"><code>		// case the searchAddr should be the same as i after levelShift.</code></span>
+<span class="codeline" id="line-676"><code>		j0 := 0</code></span>
+<span class="codeline" id="line-677"><code>		if searchIdx := offAddrToLevelIndex(l, p.searchAddr); searchIdx&amp;^(entriesPerBlock-1) == i {</code></span>
+<span class="codeline" id="line-678"><code>			j0 = searchIdx &amp; (entriesPerBlock - 1)</code></span>
+<span class="codeline" id="line-679"><code>		}</code></span>
+<span class="codeline" id="line-680"><code></code></span>
+<span class="codeline" id="line-681"><code>		// Run over the level entries looking for</code></span>
+<span class="codeline" id="line-682"><code>		// a contiguous run of at least npages either</code></span>
+<span class="codeline" id="line-683"><code>		// within an entry or across entries.</code></span>
+<span class="codeline" id="line-684"><code>		//</code></span>
+<span class="codeline" id="line-685"><code>		// base contains the page index (relative to</code></span>
+<span class="codeline" id="line-686"><code>		// the first entry's first page) of the currently</code></span>
+<span class="codeline" id="line-687"><code>		// considered run of consecutive pages.</code></span>
+<span class="codeline" id="line-688"><code>		//</code></span>
+<span class="codeline" id="line-689"><code>		// size contains the size of the currently considered</code></span>
+<span class="codeline" id="line-690"><code>		// run of consecutive pages.</code></span>
+<span class="codeline" id="line-691"><code>		var base, size uint</code></span>
+<span class="codeline" id="line-692"><code>		for j := j0; j &lt; len(entries); j++ {</code></span>
+<span class="codeline" id="line-693"><code>			sum := entries[j]</code></span>
+<span class="codeline" id="line-694"><code>			if sum == 0 {</code></span>
+<span class="codeline" id="line-695"><code>				// A full entry means we broke any streak and</code></span>
+<span class="codeline" id="line-696"><code>				// that we should skip it altogether.</code></span>
+<span class="codeline" id="line-697"><code>				size = 0</code></span>
+<span class="codeline" id="line-698"><code>				continue</code></span>
+<span class="codeline" id="line-699"><code>			}</code></span>
+<span class="codeline" id="line-700"><code></code></span>
+<span class="codeline" id="line-701"><code>			// We've encountered a non-zero summary which means</code></span>
+<span class="codeline" id="line-702"><code>			// free memory, so update firstFree.</code></span>
+<span class="codeline" id="line-703"><code>			foundFree(levelIndexToOffAddr(l, i+j), (uintptr(1)&lt;&lt;logMaxPages)*pageSize)</code></span>
+<span class="codeline" id="line-704"><code></code></span>
+<span class="codeline" id="line-705"><code>			s := sum.start()</code></span>
+<span class="codeline" id="line-706"><code>			if size+s &gt;= uint(npages) {</code></span>
+<span class="codeline" id="line-707"><code>				// If size == 0 we don't have a run yet,</code></span>
+<span class="codeline" id="line-708"><code>				// which means base isn't valid. So, set</code></span>
+<span class="codeline" id="line-709"><code>				// base to the first page in this block.</code></span>
+<span class="codeline" id="line-710"><code>				if size == 0 {</code></span>
+<span class="codeline" id="line-711"><code>					base = uint(j) &lt;&lt; logMaxPages</code></span>
+<span class="codeline" id="line-712"><code>				}</code></span>
+<span class="codeline" id="line-713"><code>				// We hit npages; we're done!</code></span>
+<span class="codeline" id="line-714"><code>				size += s</code></span>
+<span class="codeline" id="line-715"><code>				break</code></span>
+<span class="codeline" id="line-716"><code>			}</code></span>
+<span class="codeline" id="line-717"><code>			if sum.max() &gt;= uint(npages) {</code></span>
+<span class="codeline" id="line-718"><code>				// The entry itself contains npages contiguous</code></span>
+<span class="codeline" id="line-719"><code>				// free pages, so continue on the next level</code></span>
+<span class="codeline" id="line-720"><code>				// to find that run.</code></span>
+<span class="codeline" id="line-721"><code>				i += j</code></span>
+<span class="codeline" id="line-722"><code>				lastSumIdx = i</code></span>
+<span class="codeline" id="line-723"><code>				lastSum = sum</code></span>
+<span class="codeline" id="line-724"><code>				continue nextLevel</code></span>
+<span class="codeline" id="line-725"><code>			}</code></span>
+<span class="codeline" id="line-726"><code>			if size == 0 || s &lt; 1&lt;&lt;logMaxPages {</code></span>
+<span class="codeline" id="line-727"><code>				// We either don't have a current run started, or this entry</code></span>
+<span class="codeline" id="line-728"><code>				// isn't totally free (meaning we can't continue the current</code></span>
+<span class="codeline" id="line-729"><code>				// one), so try to begin a new run by setting size and base</code></span>
+<span class="codeline" id="line-730"><code>				// based on sum.end.</code></span>
+<span class="codeline" id="line-731"><code>				size = sum.end()</code></span>
+<span class="codeline" id="line-732"><code>				base = uint(j+1)&lt;&lt;logMaxPages - size</code></span>
+<span class="codeline" id="line-733"><code>				continue</code></span>
+<span class="codeline" id="line-734"><code>			}</code></span>
+<span class="codeline" id="line-735"><code>			// The entry is completely free, so continue the run.</code></span>
+<span class="codeline" id="line-736"><code>			size += 1 &lt;&lt; logMaxPages</code></span>
+<span class="codeline" id="line-737"><code>		}</code></span>
+<span class="codeline" id="line-738"><code>		if size &gt;= uint(npages) {</code></span>
+<span class="codeline" id="line-739"><code>			// We found a sufficiently large run of free pages straddling</code></span>
+<span class="codeline" id="line-740"><code>			// some boundary, so compute the address and return it.</code></span>
+<span class="codeline" id="line-741"><code>			addr := levelIndexToOffAddr(l, i).add(uintptr(base) * pageSize).addr()</code></span>
+<span class="codeline" id="line-742"><code>			return addr, p.findMappedAddr(firstFree.base)</code></span>
+<span class="codeline" id="line-743"><code>		}</code></span>
+<span class="codeline" id="line-744"><code>		if l == 0 {</code></span>
+<span class="codeline" id="line-745"><code>			// We're at level zero, so that means we've exhausted our search.</code></span>
+<span class="codeline" id="line-746"><code>			return 0, maxSearchAddr</code></span>
+<span class="codeline" id="line-747"><code>		}</code></span>
+<span class="codeline" id="line-748"><code></code></span>
+<span class="codeline" id="line-749"><code>		// We're not at level zero, and we exhausted the level we were looking in.</code></span>
+<span class="codeline" id="line-750"><code>		// This means that either our calculations were wrong or the level above</code></span>
+<span class="codeline" id="line-751"><code>		// lied to us. In either case, dump some useful state and throw.</code></span>
+<span class="codeline" id="line-752"><code>		print("runtime: summary[", l-1, "][", lastSumIdx, "] = ", lastSum.start(), ", ", lastSum.max(), ", ", lastSum.end(), "\n")</code></span>
+<span class="codeline" id="line-753"><code>		print("runtime: level = ", l, ", npages = ", npages, ", j0 = ", j0, "\n")</code></span>
+<span class="codeline" id="line-754"><code>		print("runtime: p.searchAddr = ", hex(p.searchAddr.addr()), ", i = ", i, "\n")</code></span>
+<span class="codeline" id="line-755"><code>		print("runtime: levelShift[level] = ", levelShift[l], ", levelBits[level] = ", levelBits[l], "\n")</code></span>
+<span class="codeline" id="line-756"><code>		for j := 0; j &lt; len(entries); j++ {</code></span>
+<span class="codeline" id="line-757"><code>			sum := entries[j]</code></span>
+<span class="codeline" id="line-758"><code>			print("runtime: summary[", l, "][", i+j, "] = (", sum.start(), ", ", sum.max(), ", ", sum.end(), ")\n")</code></span>
+<span class="codeline" id="line-759"><code>		}</code></span>
+<span class="codeline" id="line-760"><code>		throw("bad summary data")</code></span>
+<span class="codeline" id="line-761"><code>	}</code></span>
+<span class="codeline" id="line-762"><code></code></span>
+<span class="codeline" id="line-763"><code>	// Since we've gotten to this point, that means we haven't found a</code></span>
+<span class="codeline" id="line-764"><code>	// sufficiently-sized free region straddling some boundary (chunk or larger).</code></span>
+<span class="codeline" id="line-765"><code>	// This means the last summary we inspected must have had a large enough "max"</code></span>
+<span class="codeline" id="line-766"><code>	// value, so look inside the chunk to find a suitable run.</code></span>
+<span class="codeline" id="line-767"><code>	//</code></span>
+<span class="codeline" id="line-768"><code>	// After iterating over all levels, i must contain a chunk index which</code></span>
+<span class="codeline" id="line-769"><code>	// is what the final level represents.</code></span>
+<span class="codeline" id="line-770"><code>	ci := chunkIdx(i)</code></span>
+<span class="codeline" id="line-771"><code>	j, searchIdx := p.chunkOf(ci).find(npages, 0)</code></span>
+<span class="codeline" id="line-772"><code>	if j == ^uint(0) {</code></span>
+<span class="codeline" id="line-773"><code>		// We couldn't find any space in this chunk despite the summaries telling</code></span>
+<span class="codeline" id="line-774"><code>		// us it should be there. There's likely a bug, so dump some state and throw.</code></span>
+<span class="codeline" id="line-775"><code>		sum := p.summary[len(p.summary)-1][i]</code></span>
+<span class="codeline" id="line-776"><code>		print("runtime: summary[", len(p.summary)-1, "][", i, "] = (", sum.start(), ", ", sum.max(), ", ", sum.end(), ")\n")</code></span>
+<span class="codeline" id="line-777"><code>		print("runtime: npages = ", npages, "\n")</code></span>
+<span class="codeline" id="line-778"><code>		throw("bad summary data")</code></span>
+<span class="codeline" id="line-779"><code>	}</code></span>
+<span class="codeline" id="line-780"><code></code></span>
+<span class="codeline" id="line-781"><code>	// Compute the address at which the free space starts.</code></span>
+<span class="codeline" id="line-782"><code>	addr := chunkBase(ci) + uintptr(j)*pageSize</code></span>
+<span class="codeline" id="line-783"><code></code></span>
+<span class="codeline" id="line-784"><code>	// Since we actually searched the chunk, we may have</code></span>
+<span class="codeline" id="line-785"><code>	// found an even narrower free window.</code></span>
+<span class="codeline" id="line-786"><code>	searchAddr := chunkBase(ci) + uintptr(searchIdx)*pageSize</code></span>
+<span class="codeline" id="line-787"><code>	foundFree(offAddr{searchAddr}, chunkBase(ci+1)-searchAddr)</code></span>
+<span class="codeline" id="line-788"><code>	return addr, p.findMappedAddr(firstFree.base)</code></span>
+<span class="codeline" id="line-789"><code>}</code></span>
+<span class="codeline" id="line-790"><code></code></span>
+<span class="codeline" id="line-791"><code>// alloc allocates npages worth of memory from the page heap, returning the base</code></span>
+<span class="codeline" id="line-792"><code>// address for the allocation and the amount of scavenged memory in bytes</code></span>
+<span class="codeline" id="line-793"><code>// contained in the region [base address, base address + npages*pageSize).</code></span>
+<span class="codeline" id="line-794"><code>//</code></span>
+<span class="codeline" id="line-795"><code>// Returns a 0 base address on failure, in which case other returned values</code></span>
+<span class="codeline" id="line-796"><code>// should be ignored.</code></span>
+<span class="codeline" id="line-797"><code>//</code></span>
+<span class="codeline" id="line-798"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-799"><code>//</code></span>
+<span class="codeline" id="line-800"><code>// Must run on the system stack because p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-801"><code>//</code></span>
+<span class="codeline" id="line-802"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-803"><code>func (p *pageAlloc) alloc(npages uintptr) (addr uintptr, scav uintptr) {</code></span>
+<span class="codeline" id="line-804"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-805"><code></code></span>
+<span class="codeline" id="line-806"><code>	// If the searchAddr refers to a region which has a higher address than</code></span>
+<span class="codeline" id="line-807"><code>	// any known chunk, then we know we're out of memory.</code></span>
+<span class="codeline" id="line-808"><code>	if chunkIndex(p.searchAddr.addr()) &gt;= p.end {</code></span>
+<span class="codeline" id="line-809"><code>		return 0, 0</code></span>
+<span class="codeline" id="line-810"><code>	}</code></span>
+<span class="codeline" id="line-811"><code></code></span>
+<span class="codeline" id="line-812"><code>	// If npages has a chance of fitting in the chunk where the searchAddr is,</code></span>
+<span class="codeline" id="line-813"><code>	// search it directly.</code></span>
+<span class="codeline" id="line-814"><code>	searchAddr := minOffAddr</code></span>
+<span class="codeline" id="line-815"><code>	if pallocChunkPages-chunkPageIndex(p.searchAddr.addr()) &gt;= uint(npages) {</code></span>
+<span class="codeline" id="line-816"><code>		// npages is guaranteed to be no greater than pallocChunkPages here.</code></span>
+<span class="codeline" id="line-817"><code>		i := chunkIndex(p.searchAddr.addr())</code></span>
+<span class="codeline" id="line-818"><code>		if max := p.summary[len(p.summary)-1][i].max(); max &gt;= uint(npages) {</code></span>
+<span class="codeline" id="line-819"><code>			j, searchIdx := p.chunkOf(i).find(npages, chunkPageIndex(p.searchAddr.addr()))</code></span>
+<span class="codeline" id="line-820"><code>			if j == ^uint(0) {</code></span>
+<span class="codeline" id="line-821"><code>				print("runtime: max = ", max, ", npages = ", npages, "\n")</code></span>
+<span class="codeline" id="line-822"><code>				print("runtime: searchIdx = ", chunkPageIndex(p.searchAddr.addr()), ", p.searchAddr = ", hex(p.searchAddr.addr()), "\n")</code></span>
+<span class="codeline" id="line-823"><code>				throw("bad summary data")</code></span>
+<span class="codeline" id="line-824"><code>			}</code></span>
+<span class="codeline" id="line-825"><code>			addr = chunkBase(i) + uintptr(j)*pageSize</code></span>
+<span class="codeline" id="line-826"><code>			searchAddr = offAddr{chunkBase(i) + uintptr(searchIdx)*pageSize}</code></span>
+<span class="codeline" id="line-827"><code>			goto Found</code></span>
+<span class="codeline" id="line-828"><code>		}</code></span>
+<span class="codeline" id="line-829"><code>	}</code></span>
+<span class="codeline" id="line-830"><code>	// We failed to use a searchAddr for one reason or another, so try</code></span>
+<span class="codeline" id="line-831"><code>	// the slow path.</code></span>
+<span class="codeline" id="line-832"><code>	addr, searchAddr = p.find(npages)</code></span>
+<span class="codeline" id="line-833"><code>	if addr == 0 {</code></span>
+<span class="codeline" id="line-834"><code>		if npages == 1 {</code></span>
+<span class="codeline" id="line-835"><code>			// We failed to find a single free page, the smallest unit</code></span>
+<span class="codeline" id="line-836"><code>			// of allocation. This means we know the heap is completely</code></span>
+<span class="codeline" id="line-837"><code>			// exhausted. Otherwise, the heap still might have free</code></span>
+<span class="codeline" id="line-838"><code>			// space in it, just not enough contiguous space to</code></span>
+<span class="codeline" id="line-839"><code>			// accommodate npages.</code></span>
+<span class="codeline" id="line-840"><code>			p.searchAddr = maxSearchAddr</code></span>
+<span class="codeline" id="line-841"><code>		}</code></span>
+<span class="codeline" id="line-842"><code>		return 0, 0</code></span>
+<span class="codeline" id="line-843"><code>	}</code></span>
+<span class="codeline" id="line-844"><code>Found:</code></span>
+<span class="codeline" id="line-845"><code>	// Go ahead and actually mark the bits now that we have an address.</code></span>
+<span class="codeline" id="line-846"><code>	scav = p.allocRange(addr, npages)</code></span>
+<span class="codeline" id="line-847"><code></code></span>
+<span class="codeline" id="line-848"><code>	// If we found a higher searchAddr, we know that all the</code></span>
+<span class="codeline" id="line-849"><code>	// heap memory before that searchAddr in an offset address space is</code></span>
+<span class="codeline" id="line-850"><code>	// allocated, so bump p.searchAddr up to the new one.</code></span>
+<span class="codeline" id="line-851"><code>	if p.searchAddr.lessThan(searchAddr) {</code></span>
+<span class="codeline" id="line-852"><code>		p.searchAddr = searchAddr</code></span>
+<span class="codeline" id="line-853"><code>	}</code></span>
+<span class="codeline" id="line-854"><code>	return addr, scav</code></span>
+<span class="codeline" id="line-855"><code>}</code></span>
+<span class="codeline" id="line-856"><code></code></span>
+<span class="codeline" id="line-857"><code>// free returns npages worth of memory starting at base back to the page heap.</code></span>
+<span class="codeline" id="line-858"><code>//</code></span>
+<span class="codeline" id="line-859"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-860"><code>//</code></span>
+<span class="codeline" id="line-861"><code>// Must run on the system stack because p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-862"><code>//</code></span>
+<span class="codeline" id="line-863"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-864"><code>func (p *pageAlloc) free(base, npages uintptr) {</code></span>
+<span class="codeline" id="line-865"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-866"><code></code></span>
+<span class="codeline" id="line-867"><code>	// If we're freeing pages below the p.searchAddr, update searchAddr.</code></span>
+<span class="codeline" id="line-868"><code>	if b := (offAddr{base}); b.lessThan(p.searchAddr) {</code></span>
+<span class="codeline" id="line-869"><code>		p.searchAddr = b</code></span>
+<span class="codeline" id="line-870"><code>	}</code></span>
+<span class="codeline" id="line-871"><code>	// Update the free high watermark for the scavenger.</code></span>
+<span class="codeline" id="line-872"><code>	limit := base + npages*pageSize - 1</code></span>
+<span class="codeline" id="line-873"><code>	if offLimit := (offAddr{limit}); p.scav.freeHWM.lessThan(offLimit) {</code></span>
+<span class="codeline" id="line-874"><code>		p.scav.freeHWM = offLimit</code></span>
+<span class="codeline" id="line-875"><code>	}</code></span>
+<span class="codeline" id="line-876"><code>	if npages == 1 {</code></span>
+<span class="codeline" id="line-877"><code>		// Fast path: we're clearing a single bit, and we know exactly</code></span>
+<span class="codeline" id="line-878"><code>		// where it is, so mark it directly.</code></span>
+<span class="codeline" id="line-879"><code>		i := chunkIndex(base)</code></span>
+<span class="codeline" id="line-880"><code>		p.chunkOf(i).free1(chunkPageIndex(base))</code></span>
+<span class="codeline" id="line-881"><code>	} else {</code></span>
+<span class="codeline" id="line-882"><code>		// Slow path: we're clearing more bits so we may need to iterate.</code></span>
+<span class="codeline" id="line-883"><code>		sc, ec := chunkIndex(base), chunkIndex(limit)</code></span>
+<span class="codeline" id="line-884"><code>		si, ei := chunkPageIndex(base), chunkPageIndex(limit)</code></span>
+<span class="codeline" id="line-885"><code></code></span>
+<span class="codeline" id="line-886"><code>		if sc == ec {</code></span>
+<span class="codeline" id="line-887"><code>			// The range doesn't cross any chunk boundaries.</code></span>
+<span class="codeline" id="line-888"><code>			p.chunkOf(sc).free(si, ei+1-si)</code></span>
+<span class="codeline" id="line-889"><code>		} else {</code></span>
+<span class="codeline" id="line-890"><code>			// The range crosses at least one chunk boundary.</code></span>
+<span class="codeline" id="line-891"><code>			p.chunkOf(sc).free(si, pallocChunkPages-si)</code></span>
+<span class="codeline" id="line-892"><code>			for c := sc + 1; c &lt; ec; c++ {</code></span>
+<span class="codeline" id="line-893"><code>				p.chunkOf(c).freeAll()</code></span>
+<span class="codeline" id="line-894"><code>			}</code></span>
+<span class="codeline" id="line-895"><code>			p.chunkOf(ec).free(0, ei+1)</code></span>
+<span class="codeline" id="line-896"><code>		}</code></span>
+<span class="codeline" id="line-897"><code>	}</code></span>
+<span class="codeline" id="line-898"><code>	p.update(base, npages, true, false)</code></span>
+<span class="codeline" id="line-899"><code>}</code></span>
+<span class="codeline" id="line-900"><code></code></span>
+<span class="codeline" id="line-901"><code>const (</code></span>
+<span class="codeline" id="line-902"><code>	pallocSumBytes = unsafe.Sizeof(pallocSum(0))</code></span>
+<span class="codeline" id="line-903"><code></code></span>
+<span class="codeline" id="line-904"><code>	// maxPackedValue is the maximum value that any of the three fields in</code></span>
+<span class="codeline" id="line-905"><code>	// the pallocSum may take on.</code></span>
+<span class="codeline" id="line-906"><code>	maxPackedValue    = 1 &lt;&lt; logMaxPackedValue</code></span>
+<span class="codeline" id="line-907"><code>	logMaxPackedValue = logPallocChunkPages + (summaryLevels-1)*summaryLevelBits</code></span>
+<span class="codeline" id="line-908"><code></code></span>
+<span class="codeline" id="line-909"><code>	freeChunkSum = pallocSum(uint64(pallocChunkPages) |</code></span>
+<span class="codeline" id="line-910"><code>		uint64(pallocChunkPages&lt;&lt;logMaxPackedValue) |</code></span>
+<span class="codeline" id="line-911"><code>		uint64(pallocChunkPages&lt;&lt;(2*logMaxPackedValue)))</code></span>
+<span class="codeline" id="line-912"><code>)</code></span>
+<span class="codeline" id="line-913"><code></code></span>
+<span class="codeline" id="line-914"><code>// pallocSum is a packed summary type which packs three numbers: start, max,</code></span>
+<span class="codeline" id="line-915"><code>// and end into a single 8-byte value. Each of these values are a summary of</code></span>
+<span class="codeline" id="line-916"><code>// a bitmap and are thus counts, each of which may have a maximum value of</code></span>
+<span class="codeline" id="line-917"><code>// 2^21 - 1, or all three may be equal to 2^21. The latter case is represented</code></span>
+<span class="codeline" id="line-918"><code>// by just setting the 64th bit.</code></span>
+<span class="codeline" id="line-919"><code>type pallocSum uint64</code></span>
+<span class="codeline" id="line-920"><code></code></span>
+<span class="codeline" id="line-921"><code>// packPallocSum takes a start, max, and end value and produces a pallocSum.</code></span>
+<span class="codeline" id="line-922"><code>func packPallocSum(start, max, end uint) pallocSum {</code></span>
+<span class="codeline" id="line-923"><code>	if max == maxPackedValue {</code></span>
+<span class="codeline" id="line-924"><code>		return pallocSum(uint64(1 &lt;&lt; 63))</code></span>
+<span class="codeline" id="line-925"><code>	}</code></span>
+<span class="codeline" id="line-926"><code>	return pallocSum((uint64(start) &amp; (maxPackedValue - 1)) |</code></span>
+<span class="codeline" id="line-927"><code>		((uint64(max) &amp; (maxPackedValue - 1)) &lt;&lt; logMaxPackedValue) |</code></span>
+<span class="codeline" id="line-928"><code>		((uint64(end) &amp; (maxPackedValue - 1)) &lt;&lt; (2 * logMaxPackedValue)))</code></span>
+<span class="codeline" id="line-929"><code>}</code></span>
+<span class="codeline" id="line-930"><code></code></span>
+<span class="codeline" id="line-931"><code>// start extracts the start value from a packed sum.</code></span>
+<span class="codeline" id="line-932"><code>func (p pallocSum) start() uint {</code></span>
+<span class="codeline" id="line-933"><code>	if uint64(p)&amp;uint64(1&lt;&lt;63) != 0 {</code></span>
+<span class="codeline" id="line-934"><code>		return maxPackedValue</code></span>
+<span class="codeline" id="line-935"><code>	}</code></span>
+<span class="codeline" id="line-936"><code>	return uint(uint64(p) &amp; (maxPackedValue - 1))</code></span>
+<span class="codeline" id="line-937"><code>}</code></span>
+<span class="codeline" id="line-938"><code></code></span>
+<span class="codeline" id="line-939"><code>// max extracts the max value from a packed sum.</code></span>
+<span class="codeline" id="line-940"><code>func (p pallocSum) max() uint {</code></span>
+<span class="codeline" id="line-941"><code>	if uint64(p)&amp;uint64(1&lt;&lt;63) != 0 {</code></span>
+<span class="codeline" id="line-942"><code>		return maxPackedValue</code></span>
+<span class="codeline" id="line-943"><code>	}</code></span>
+<span class="codeline" id="line-944"><code>	return uint((uint64(p) &gt;&gt; logMaxPackedValue) &amp; (maxPackedValue - 1))</code></span>
+<span class="codeline" id="line-945"><code>}</code></span>
+<span class="codeline" id="line-946"><code></code></span>
+<span class="codeline" id="line-947"><code>// end extracts the end value from a packed sum.</code></span>
+<span class="codeline" id="line-948"><code>func (p pallocSum) end() uint {</code></span>
+<span class="codeline" id="line-949"><code>	if uint64(p)&amp;uint64(1&lt;&lt;63) != 0 {</code></span>
+<span class="codeline" id="line-950"><code>		return maxPackedValue</code></span>
+<span class="codeline" id="line-951"><code>	}</code></span>
+<span class="codeline" id="line-952"><code>	return uint((uint64(p) &gt;&gt; (2 * logMaxPackedValue)) &amp; (maxPackedValue - 1))</code></span>
+<span class="codeline" id="line-953"><code>}</code></span>
+<span class="codeline" id="line-954"><code></code></span>
+<span class="codeline" id="line-955"><code>// unpack unpacks all three values from the summary.</code></span>
+<span class="codeline" id="line-956"><code>func (p pallocSum) unpack() (uint, uint, uint) {</code></span>
+<span class="codeline" id="line-957"><code>	if uint64(p)&amp;uint64(1&lt;&lt;63) != 0 {</code></span>
+<span class="codeline" id="line-958"><code>		return maxPackedValue, maxPackedValue, maxPackedValue</code></span>
+<span class="codeline" id="line-959"><code>	}</code></span>
+<span class="codeline" id="line-960"><code>	return uint(uint64(p) &amp; (maxPackedValue - 1)),</code></span>
+<span class="codeline" id="line-961"><code>		uint((uint64(p) &gt;&gt; logMaxPackedValue) &amp; (maxPackedValue - 1)),</code></span>
+<span class="codeline" id="line-962"><code>		uint((uint64(p) &gt;&gt; (2 * logMaxPackedValue)) &amp; (maxPackedValue - 1))</code></span>
+<span class="codeline" id="line-963"><code>}</code></span>
+<span class="codeline" id="line-964"><code></code></span>
+<span class="codeline" id="line-965"><code>// mergeSummaries merges consecutive summaries which may each represent at</code></span>
+<span class="codeline" id="line-966"><code>// most 1 &lt;&lt; logMaxPagesPerSum pages each together into one.</code></span>
+<span class="codeline" id="line-967"><code>func mergeSummaries(sums []pallocSum, logMaxPagesPerSum uint) pallocSum {</code></span>
+<span class="codeline" id="line-968"><code>	// Merge the summaries in sums into one.</code></span>
+<span class="codeline" id="line-969"><code>	//</code></span>
+<span class="codeline" id="line-970"><code>	// We do this by keeping a running summary representing the merged</code></span>
+<span class="codeline" id="line-971"><code>	// summaries of sums[:i] in start, max, and end.</code></span>
+<span class="codeline" id="line-972"><code>	start, max, end := sums[0].unpack()</code></span>
+<span class="codeline" id="line-973"><code>	for i := 1; i &lt; len(sums); i++ {</code></span>
+<span class="codeline" id="line-974"><code>		// Merge in sums[i].</code></span>
+<span class="codeline" id="line-975"><code>		si, mi, ei := sums[i].unpack()</code></span>
+<span class="codeline" id="line-976"><code></code></span>
+<span class="codeline" id="line-977"><code>		// Merge in sums[i].start only if the running summary is</code></span>
+<span class="codeline" id="line-978"><code>		// completely free, otherwise this summary's start</code></span>
+<span class="codeline" id="line-979"><code>		// plays no role in the combined sum.</code></span>
+<span class="codeline" id="line-980"><code>		if start == uint(i)&lt;&lt;logMaxPagesPerSum {</code></span>
+<span class="codeline" id="line-981"><code>			start += si</code></span>
+<span class="codeline" id="line-982"><code>		}</code></span>
+<span class="codeline" id="line-983"><code></code></span>
+<span class="codeline" id="line-984"><code>		// Recompute the max value of the running sum by looking</code></span>
+<span class="codeline" id="line-985"><code>		// across the boundary between the running sum and sums[i]</code></span>
+<span class="codeline" id="line-986"><code>		// and at the max sums[i], taking the greatest of those two</code></span>
+<span class="codeline" id="line-987"><code>		// and the max of the running sum.</code></span>
+<span class="codeline" id="line-988"><code>		if end+si &gt; max {</code></span>
+<span class="codeline" id="line-989"><code>			max = end + si</code></span>
+<span class="codeline" id="line-990"><code>		}</code></span>
+<span class="codeline" id="line-991"><code>		if mi &gt; max {</code></span>
+<span class="codeline" id="line-992"><code>			max = mi</code></span>
+<span class="codeline" id="line-993"><code>		}</code></span>
+<span class="codeline" id="line-994"><code></code></span>
+<span class="codeline" id="line-995"><code>		// Merge in end by checking if this new summary is totally</code></span>
+<span class="codeline" id="line-996"><code>		// free. If it is, then we want to extend the running sum's</code></span>
+<span class="codeline" id="line-997"><code>		// end by the new summary. If not, then we have some alloc'd</code></span>
+<span class="codeline" id="line-998"><code>		// pages in there and we just want to take the end value in</code></span>
+<span class="codeline" id="line-999"><code>		// sums[i].</code></span>
+<span class="codeline" id="line-1000"><code>		if ei == 1&lt;&lt;logMaxPagesPerSum {</code></span>
+<span class="codeline" id="line-1001"><code>			end += 1 &lt;&lt; logMaxPagesPerSum</code></span>
+<span class="codeline" id="line-1002"><code>		} else {</code></span>
+<span class="codeline" id="line-1003"><code>			end = ei</code></span>
+<span class="codeline" id="line-1004"><code>		}</code></span>
+<span class="codeline" id="line-1005"><code>	}</code></span>
+<span class="codeline" id="line-1006"><code>	return packPallocSum(start, max, end)</code></span>
+<span class="codeline" id="line-1007"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

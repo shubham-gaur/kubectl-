@@ -1,0 +1,1495 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: format.go in package time</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	format.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/time.html">time</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package time</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "errors"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// These are predefined layouts for use in Time.Format and time.Parse.</code></span>
+<span class="codeline" id="line-10"><code>// The reference time used in the layouts is the specific time:</code></span>
+<span class="codeline" id="line-11"><code>//	Mon Jan 2 15:04:05 MST 2006</code></span>
+<span class="codeline" id="line-12"><code>// which is Unix time 1136239445. Since MST is GMT-0700,</code></span>
+<span class="codeline" id="line-13"><code>// the reference time can be thought of as</code></span>
+<span class="codeline" id="line-14"><code>//	01/02 03:04:05PM '06 -0700</code></span>
+<span class="codeline" id="line-15"><code>// To define your own format, write down what the reference time would look</code></span>
+<span class="codeline" id="line-16"><code>// like formatted your way; see the values of constants like ANSIC,</code></span>
+<span class="codeline" id="line-17"><code>// StampMicro or Kitchen for examples. The model is to demonstrate what the</code></span>
+<span class="codeline" id="line-18"><code>// reference time looks like so that the Format and Parse methods can apply</code></span>
+<span class="codeline" id="line-19"><code>// the same transformation to a general time value.</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// Some valid layouts are invalid time values for time.Parse, due to formats</code></span>
+<span class="codeline" id="line-22"><code>// such as _ for space padding and Z for zone information.</code></span>
+<span class="codeline" id="line-23"><code>//</code></span>
+<span class="codeline" id="line-24"><code>// Within the format string, an underscore _ represents a space that may be</code></span>
+<span class="codeline" id="line-25"><code>// replaced by a digit if the following number (a day) has two digits; for</code></span>
+<span class="codeline" id="line-26"><code>// compatibility with fixed-width Unix time formats.</code></span>
+<span class="codeline" id="line-27"><code>//</code></span>
+<span class="codeline" id="line-28"><code>// A decimal point followed by one or more zeros represents a fractional</code></span>
+<span class="codeline" id="line-29"><code>// second, printed to the given number of decimal places. A decimal point</code></span>
+<span class="codeline" id="line-30"><code>// followed by one or more nines represents a fractional second, printed to</code></span>
+<span class="codeline" id="line-31"><code>// the given number of decimal places, with trailing zeros removed.</code></span>
+<span class="codeline" id="line-32"><code>// When parsing (only), the input may contain a fractional second</code></span>
+<span class="codeline" id="line-33"><code>// field immediately after the seconds field, even if the layout does not</code></span>
+<span class="codeline" id="line-34"><code>// signify its presence. In that case a decimal point followed by a maximal</code></span>
+<span class="codeline" id="line-35"><code>// series of digits is parsed as a fractional second.</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// Numeric time zone offsets format as follows:</code></span>
+<span class="codeline" id="line-38"><code>//	-0700  ±hhmm</code></span>
+<span class="codeline" id="line-39"><code>//	-07:00 ±hh:mm</code></span>
+<span class="codeline" id="line-40"><code>//	-07    ±hh</code></span>
+<span class="codeline" id="line-41"><code>// Replacing the sign in the format with a Z triggers</code></span>
+<span class="codeline" id="line-42"><code>// the ISO 8601 behavior of printing Z instead of an</code></span>
+<span class="codeline" id="line-43"><code>// offset for the UTC zone. Thus:</code></span>
+<span class="codeline" id="line-44"><code>//	Z0700  Z or ±hhmm</code></span>
+<span class="codeline" id="line-45"><code>//	Z07:00 Z or ±hh:mm</code></span>
+<span class="codeline" id="line-46"><code>//	Z07    Z or ±hh</code></span>
+<span class="codeline" id="line-47"><code>//</code></span>
+<span class="codeline" id="line-48"><code>// The recognized day of week formats are "Mon" and "Monday".</code></span>
+<span class="codeline" id="line-49"><code>// The recognized month formats are "Jan" and "January".</code></span>
+<span class="codeline" id="line-50"><code>//</code></span>
+<span class="codeline" id="line-51"><code>// The formats 2, _2, and 02 are unpadded, space-padded, and zero-padded</code></span>
+<span class="codeline" id="line-52"><code>// day of month. The formats __2 and 002 are space-padded and zero-padded</code></span>
+<span class="codeline" id="line-53"><code>// three-character day of year; there is no unpadded day of year format.</code></span>
+<span class="codeline" id="line-54"><code>//</code></span>
+<span class="codeline" id="line-55"><code>// Text in the format string that is not recognized as part of the reference</code></span>
+<span class="codeline" id="line-56"><code>// time is echoed verbatim during Format and expected to appear verbatim</code></span>
+<span class="codeline" id="line-57"><code>// in the input to Parse.</code></span>
+<span class="codeline" id="line-58"><code>//</code></span>
+<span class="codeline" id="line-59"><code>// The executable example for Time.Format demonstrates the working</code></span>
+<span class="codeline" id="line-60"><code>// of the layout string in detail and is a good reference.</code></span>
+<span class="codeline" id="line-61"><code>//</code></span>
+<span class="codeline" id="line-62"><code>// Note that the RFC822, RFC850, and RFC1123 formats should be applied</code></span>
+<span class="codeline" id="line-63"><code>// only to local times. Applying them to UTC times will use "UTC" as the</code></span>
+<span class="codeline" id="line-64"><code>// time zone abbreviation, while strictly speaking those RFCs require the</code></span>
+<span class="codeline" id="line-65"><code>// use of "GMT" in that case.</code></span>
+<span class="codeline" id="line-66"><code>// In general RFC1123Z should be used instead of RFC1123 for servers</code></span>
+<span class="codeline" id="line-67"><code>// that insist on that format, and RFC3339 should be preferred for new protocols.</code></span>
+<span class="codeline" id="line-68"><code>// RFC3339, RFC822, RFC822Z, RFC1123, and RFC1123Z are useful for formatting;</code></span>
+<span class="codeline" id="line-69"><code>// when used with time.Parse they do not accept all the time formats</code></span>
+<span class="codeline" id="line-70"><code>// permitted by the RFCs and they do accept time formats not formally defined.</code></span>
+<span class="codeline" id="line-71"><code>// The RFC3339Nano format removes trailing zeros from the seconds field</code></span>
+<span class="codeline" id="line-72"><code>// and thus may not sort correctly once formatted.</code></span>
+<span class="codeline" id="line-73"><code>const (</code></span>
+<span class="codeline" id="line-74"><code>	ANSIC       = "Mon Jan _2 15:04:05 2006"</code></span>
+<span class="codeline" id="line-75"><code>	UnixDate    = "Mon Jan _2 15:04:05 MST 2006"</code></span>
+<span class="codeline" id="line-76"><code>	RubyDate    = "Mon Jan 02 15:04:05 -0700 2006"</code></span>
+<span class="codeline" id="line-77"><code>	RFC822      = "02 Jan 06 15:04 MST"</code></span>
+<span class="codeline" id="line-78"><code>	RFC822Z     = "02 Jan 06 15:04 -0700" // RFC822 with numeric zone</code></span>
+<span class="codeline" id="line-79"><code>	RFC850      = "Monday, 02-Jan-06 15:04:05 MST"</code></span>
+<span class="codeline" id="line-80"><code>	RFC1123     = "Mon, 02 Jan 2006 15:04:05 MST"</code></span>
+<span class="codeline" id="line-81"><code>	RFC1123Z    = "Mon, 02 Jan 2006 15:04:05 -0700" // RFC1123 with numeric zone</code></span>
+<span class="codeline" id="line-82"><code>	RFC3339     = "2006-01-02T15:04:05Z07:00"</code></span>
+<span class="codeline" id="line-83"><code>	RFC3339Nano = "2006-01-02T15:04:05.999999999Z07:00"</code></span>
+<span class="codeline" id="line-84"><code>	Kitchen     = "3:04PM"</code></span>
+<span class="codeline" id="line-85"><code>	// Handy time stamps.</code></span>
+<span class="codeline" id="line-86"><code>	Stamp      = "Jan _2 15:04:05"</code></span>
+<span class="codeline" id="line-87"><code>	StampMilli = "Jan _2 15:04:05.000"</code></span>
+<span class="codeline" id="line-88"><code>	StampMicro = "Jan _2 15:04:05.000000"</code></span>
+<span class="codeline" id="line-89"><code>	StampNano  = "Jan _2 15:04:05.000000000"</code></span>
+<span class="codeline" id="line-90"><code>)</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>const (</code></span>
+<span class="codeline" id="line-93"><code>	_                        = iota</code></span>
+<span class="codeline" id="line-94"><code>	stdLongMonth             = iota + stdNeedDate  // "January"</code></span>
+<span class="codeline" id="line-95"><code>	stdMonth                                       // "Jan"</code></span>
+<span class="codeline" id="line-96"><code>	stdNumMonth                                    // "1"</code></span>
+<span class="codeline" id="line-97"><code>	stdZeroMonth                                   // "01"</code></span>
+<span class="codeline" id="line-98"><code>	stdLongWeekDay                                 // "Monday"</code></span>
+<span class="codeline" id="line-99"><code>	stdWeekDay                                     // "Mon"</code></span>
+<span class="codeline" id="line-100"><code>	stdDay                                         // "2"</code></span>
+<span class="codeline" id="line-101"><code>	stdUnderDay                                    // "_2"</code></span>
+<span class="codeline" id="line-102"><code>	stdZeroDay                                     // "02"</code></span>
+<span class="codeline" id="line-103"><code>	stdUnderYearDay                                // "__2"</code></span>
+<span class="codeline" id="line-104"><code>	stdZeroYearDay                                 // "002"</code></span>
+<span class="codeline" id="line-105"><code>	stdHour                  = iota + stdNeedClock // "15"</code></span>
+<span class="codeline" id="line-106"><code>	stdHour12                                      // "3"</code></span>
+<span class="codeline" id="line-107"><code>	stdZeroHour12                                  // "03"</code></span>
+<span class="codeline" id="line-108"><code>	stdMinute                                      // "4"</code></span>
+<span class="codeline" id="line-109"><code>	stdZeroMinute                                  // "04"</code></span>
+<span class="codeline" id="line-110"><code>	stdSecond                                      // "5"</code></span>
+<span class="codeline" id="line-111"><code>	stdZeroSecond                                  // "05"</code></span>
+<span class="codeline" id="line-112"><code>	stdLongYear              = iota + stdNeedDate  // "2006"</code></span>
+<span class="codeline" id="line-113"><code>	stdYear                                        // "06"</code></span>
+<span class="codeline" id="line-114"><code>	stdPM                    = iota + stdNeedClock // "PM"</code></span>
+<span class="codeline" id="line-115"><code>	stdpm                                          // "pm"</code></span>
+<span class="codeline" id="line-116"><code>	stdTZ                    = iota                // "MST"</code></span>
+<span class="codeline" id="line-117"><code>	stdISO8601TZ                                   // "Z0700"  // prints Z for UTC</code></span>
+<span class="codeline" id="line-118"><code>	stdISO8601SecondsTZ                            // "Z070000"</code></span>
+<span class="codeline" id="line-119"><code>	stdISO8601ShortTZ                              // "Z07"</code></span>
+<span class="codeline" id="line-120"><code>	stdISO8601ColonTZ                              // "Z07:00" // prints Z for UTC</code></span>
+<span class="codeline" id="line-121"><code>	stdISO8601ColonSecondsTZ                       // "Z07:00:00"</code></span>
+<span class="codeline" id="line-122"><code>	stdNumTZ                                       // "-0700"  // always numeric</code></span>
+<span class="codeline" id="line-123"><code>	stdNumSecondsTz                                // "-070000"</code></span>
+<span class="codeline" id="line-124"><code>	stdNumShortTZ                                  // "-07"    // always numeric</code></span>
+<span class="codeline" id="line-125"><code>	stdNumColonTZ                                  // "-07:00" // always numeric</code></span>
+<span class="codeline" id="line-126"><code>	stdNumColonSecondsTZ                           // "-07:00:00"</code></span>
+<span class="codeline" id="line-127"><code>	stdFracSecond0                                 // ".0", ".00", ... , trailing zeros included</code></span>
+<span class="codeline" id="line-128"><code>	stdFracSecond9                                 // ".9", ".99", ..., trailing zeros omitted</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	stdNeedDate  = 1 &lt;&lt; 8             // need month, day, year</code></span>
+<span class="codeline" id="line-131"><code>	stdNeedClock = 2 &lt;&lt; 8             // need hour, minute, second</code></span>
+<span class="codeline" id="line-132"><code>	stdArgShift  = 16                 // extra argument in high bits, above low stdArgShift</code></span>
+<span class="codeline" id="line-133"><code>	stdMask      = 1&lt;&lt;stdArgShift - 1 // mask out argument</code></span>
+<span class="codeline" id="line-134"><code>)</code></span>
+<span class="codeline" id="line-135"><code></code></span>
+<span class="codeline" id="line-136"><code>// std0x records the std values for "01", "02", ..., "06".</code></span>
+<span class="codeline" id="line-137"><code>var std0x = [...]int{stdZeroMonth, stdZeroDay, stdZeroHour12, stdZeroMinute, stdZeroSecond, stdYear}</code></span>
+<span class="codeline" id="line-138"><code></code></span>
+<span class="codeline" id="line-139"><code>// startsWithLowerCase reports whether the string has a lower-case letter at the beginning.</code></span>
+<span class="codeline" id="line-140"><code>// Its purpose is to prevent matching strings like "Month" when looking for "Mon".</code></span>
+<span class="codeline" id="line-141"><code>func startsWithLowerCase(str string) bool {</code></span>
+<span class="codeline" id="line-142"><code>	if len(str) == 0 {</code></span>
+<span class="codeline" id="line-143"><code>		return false</code></span>
+<span class="codeline" id="line-144"><code>	}</code></span>
+<span class="codeline" id="line-145"><code>	c := str[0]</code></span>
+<span class="codeline" id="line-146"><code>	return 'a' &lt;= c &amp;&amp; c &lt;= 'z'</code></span>
+<span class="codeline" id="line-147"><code>}</code></span>
+<span class="codeline" id="line-148"><code></code></span>
+<span class="codeline" id="line-149"><code>// nextStdChunk finds the first occurrence of a std string in</code></span>
+<span class="codeline" id="line-150"><code>// layout and returns the text before, the std string, and the text after.</code></span>
+<span class="codeline" id="line-151"><code>func nextStdChunk(layout string) (prefix string, std int, suffix string) {</code></span>
+<span class="codeline" id="line-152"><code>	for i := 0; i &lt; len(layout); i++ {</code></span>
+<span class="codeline" id="line-153"><code>		switch c := int(layout[i]); c {</code></span>
+<span class="codeline" id="line-154"><code>		case 'J': // January, Jan</code></span>
+<span class="codeline" id="line-155"><code>			if len(layout) &gt;= i+3 &amp;&amp; layout[i:i+3] == "Jan" {</code></span>
+<span class="codeline" id="line-156"><code>				if len(layout) &gt;= i+7 &amp;&amp; layout[i:i+7] == "January" {</code></span>
+<span class="codeline" id="line-157"><code>					return layout[0:i], stdLongMonth, layout[i+7:]</code></span>
+<span class="codeline" id="line-158"><code>				}</code></span>
+<span class="codeline" id="line-159"><code>				if !startsWithLowerCase(layout[i+3:]) {</code></span>
+<span class="codeline" id="line-160"><code>					return layout[0:i], stdMonth, layout[i+3:]</code></span>
+<span class="codeline" id="line-161"><code>				}</code></span>
+<span class="codeline" id="line-162"><code>			}</code></span>
+<span class="codeline" id="line-163"><code></code></span>
+<span class="codeline" id="line-164"><code>		case 'M': // Monday, Mon, MST</code></span>
+<span class="codeline" id="line-165"><code>			if len(layout) &gt;= i+3 {</code></span>
+<span class="codeline" id="line-166"><code>				if layout[i:i+3] == "Mon" {</code></span>
+<span class="codeline" id="line-167"><code>					if len(layout) &gt;= i+6 &amp;&amp; layout[i:i+6] == "Monday" {</code></span>
+<span class="codeline" id="line-168"><code>						return layout[0:i], stdLongWeekDay, layout[i+6:]</code></span>
+<span class="codeline" id="line-169"><code>					}</code></span>
+<span class="codeline" id="line-170"><code>					if !startsWithLowerCase(layout[i+3:]) {</code></span>
+<span class="codeline" id="line-171"><code>						return layout[0:i], stdWeekDay, layout[i+3:]</code></span>
+<span class="codeline" id="line-172"><code>					}</code></span>
+<span class="codeline" id="line-173"><code>				}</code></span>
+<span class="codeline" id="line-174"><code>				if layout[i:i+3] == "MST" {</code></span>
+<span class="codeline" id="line-175"><code>					return layout[0:i], stdTZ, layout[i+3:]</code></span>
+<span class="codeline" id="line-176"><code>				}</code></span>
+<span class="codeline" id="line-177"><code>			}</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>		case '0': // 01, 02, 03, 04, 05, 06, 002</code></span>
+<span class="codeline" id="line-180"><code>			if len(layout) &gt;= i+2 &amp;&amp; '1' &lt;= layout[i+1] &amp;&amp; layout[i+1] &lt;= '6' {</code></span>
+<span class="codeline" id="line-181"><code>				return layout[0:i], std0x[layout[i+1]-'1'], layout[i+2:]</code></span>
+<span class="codeline" id="line-182"><code>			}</code></span>
+<span class="codeline" id="line-183"><code>			if len(layout) &gt;= i+3 &amp;&amp; layout[i+1] == '0' &amp;&amp; layout[i+2] == '2' {</code></span>
+<span class="codeline" id="line-184"><code>				return layout[0:i], stdZeroYearDay, layout[i+3:]</code></span>
+<span class="codeline" id="line-185"><code>			}</code></span>
+<span class="codeline" id="line-186"><code></code></span>
+<span class="codeline" id="line-187"><code>		case '1': // 15, 1</code></span>
+<span class="codeline" id="line-188"><code>			if len(layout) &gt;= i+2 &amp;&amp; layout[i+1] == '5' {</code></span>
+<span class="codeline" id="line-189"><code>				return layout[0:i], stdHour, layout[i+2:]</code></span>
+<span class="codeline" id="line-190"><code>			}</code></span>
+<span class="codeline" id="line-191"><code>			return layout[0:i], stdNumMonth, layout[i+1:]</code></span>
+<span class="codeline" id="line-192"><code></code></span>
+<span class="codeline" id="line-193"><code>		case '2': // 2006, 2</code></span>
+<span class="codeline" id="line-194"><code>			if len(layout) &gt;= i+4 &amp;&amp; layout[i:i+4] == "2006" {</code></span>
+<span class="codeline" id="line-195"><code>				return layout[0:i], stdLongYear, layout[i+4:]</code></span>
+<span class="codeline" id="line-196"><code>			}</code></span>
+<span class="codeline" id="line-197"><code>			return layout[0:i], stdDay, layout[i+1:]</code></span>
+<span class="codeline" id="line-198"><code></code></span>
+<span class="codeline" id="line-199"><code>		case '_': // _2, _2006, __2</code></span>
+<span class="codeline" id="line-200"><code>			if len(layout) &gt;= i+2 &amp;&amp; layout[i+1] == '2' {</code></span>
+<span class="codeline" id="line-201"><code>				//_2006 is really a literal _, followed by stdLongYear</code></span>
+<span class="codeline" id="line-202"><code>				if len(layout) &gt;= i+5 &amp;&amp; layout[i+1:i+5] == "2006" {</code></span>
+<span class="codeline" id="line-203"><code>					return layout[0 : i+1], stdLongYear, layout[i+5:]</code></span>
+<span class="codeline" id="line-204"><code>				}</code></span>
+<span class="codeline" id="line-205"><code>				return layout[0:i], stdUnderDay, layout[i+2:]</code></span>
+<span class="codeline" id="line-206"><code>			}</code></span>
+<span class="codeline" id="line-207"><code>			if len(layout) &gt;= i+3 &amp;&amp; layout[i+1] == '_' &amp;&amp; layout[i+2] == '2' {</code></span>
+<span class="codeline" id="line-208"><code>				return layout[0:i], stdUnderYearDay, layout[i+3:]</code></span>
+<span class="codeline" id="line-209"><code>			}</code></span>
+<span class="codeline" id="line-210"><code></code></span>
+<span class="codeline" id="line-211"><code>		case '3':</code></span>
+<span class="codeline" id="line-212"><code>			return layout[0:i], stdHour12, layout[i+1:]</code></span>
+<span class="codeline" id="line-213"><code></code></span>
+<span class="codeline" id="line-214"><code>		case '4':</code></span>
+<span class="codeline" id="line-215"><code>			return layout[0:i], stdMinute, layout[i+1:]</code></span>
+<span class="codeline" id="line-216"><code></code></span>
+<span class="codeline" id="line-217"><code>		case '5':</code></span>
+<span class="codeline" id="line-218"><code>			return layout[0:i], stdSecond, layout[i+1:]</code></span>
+<span class="codeline" id="line-219"><code></code></span>
+<span class="codeline" id="line-220"><code>		case 'P': // PM</code></span>
+<span class="codeline" id="line-221"><code>			if len(layout) &gt;= i+2 &amp;&amp; layout[i+1] == 'M' {</code></span>
+<span class="codeline" id="line-222"><code>				return layout[0:i], stdPM, layout[i+2:]</code></span>
+<span class="codeline" id="line-223"><code>			}</code></span>
+<span class="codeline" id="line-224"><code></code></span>
+<span class="codeline" id="line-225"><code>		case 'p': // pm</code></span>
+<span class="codeline" id="line-226"><code>			if len(layout) &gt;= i+2 &amp;&amp; layout[i+1] == 'm' {</code></span>
+<span class="codeline" id="line-227"><code>				return layout[0:i], stdpm, layout[i+2:]</code></span>
+<span class="codeline" id="line-228"><code>			}</code></span>
+<span class="codeline" id="line-229"><code></code></span>
+<span class="codeline" id="line-230"><code>		case '-': // -070000, -07:00:00, -0700, -07:00, -07</code></span>
+<span class="codeline" id="line-231"><code>			if len(layout) &gt;= i+7 &amp;&amp; layout[i:i+7] == "-070000" {</code></span>
+<span class="codeline" id="line-232"><code>				return layout[0:i], stdNumSecondsTz, layout[i+7:]</code></span>
+<span class="codeline" id="line-233"><code>			}</code></span>
+<span class="codeline" id="line-234"><code>			if len(layout) &gt;= i+9 &amp;&amp; layout[i:i+9] == "-07:00:00" {</code></span>
+<span class="codeline" id="line-235"><code>				return layout[0:i], stdNumColonSecondsTZ, layout[i+9:]</code></span>
+<span class="codeline" id="line-236"><code>			}</code></span>
+<span class="codeline" id="line-237"><code>			if len(layout) &gt;= i+5 &amp;&amp; layout[i:i+5] == "-0700" {</code></span>
+<span class="codeline" id="line-238"><code>				return layout[0:i], stdNumTZ, layout[i+5:]</code></span>
+<span class="codeline" id="line-239"><code>			}</code></span>
+<span class="codeline" id="line-240"><code>			if len(layout) &gt;= i+6 &amp;&amp; layout[i:i+6] == "-07:00" {</code></span>
+<span class="codeline" id="line-241"><code>				return layout[0:i], stdNumColonTZ, layout[i+6:]</code></span>
+<span class="codeline" id="line-242"><code>			}</code></span>
+<span class="codeline" id="line-243"><code>			if len(layout) &gt;= i+3 &amp;&amp; layout[i:i+3] == "-07" {</code></span>
+<span class="codeline" id="line-244"><code>				return layout[0:i], stdNumShortTZ, layout[i+3:]</code></span>
+<span class="codeline" id="line-245"><code>			}</code></span>
+<span class="codeline" id="line-246"><code></code></span>
+<span class="codeline" id="line-247"><code>		case 'Z': // Z070000, Z07:00:00, Z0700, Z07:00,</code></span>
+<span class="codeline" id="line-248"><code>			if len(layout) &gt;= i+7 &amp;&amp; layout[i:i+7] == "Z070000" {</code></span>
+<span class="codeline" id="line-249"><code>				return layout[0:i], stdISO8601SecondsTZ, layout[i+7:]</code></span>
+<span class="codeline" id="line-250"><code>			}</code></span>
+<span class="codeline" id="line-251"><code>			if len(layout) &gt;= i+9 &amp;&amp; layout[i:i+9] == "Z07:00:00" {</code></span>
+<span class="codeline" id="line-252"><code>				return layout[0:i], stdISO8601ColonSecondsTZ, layout[i+9:]</code></span>
+<span class="codeline" id="line-253"><code>			}</code></span>
+<span class="codeline" id="line-254"><code>			if len(layout) &gt;= i+5 &amp;&amp; layout[i:i+5] == "Z0700" {</code></span>
+<span class="codeline" id="line-255"><code>				return layout[0:i], stdISO8601TZ, layout[i+5:]</code></span>
+<span class="codeline" id="line-256"><code>			}</code></span>
+<span class="codeline" id="line-257"><code>			if len(layout) &gt;= i+6 &amp;&amp; layout[i:i+6] == "Z07:00" {</code></span>
+<span class="codeline" id="line-258"><code>				return layout[0:i], stdISO8601ColonTZ, layout[i+6:]</code></span>
+<span class="codeline" id="line-259"><code>			}</code></span>
+<span class="codeline" id="line-260"><code>			if len(layout) &gt;= i+3 &amp;&amp; layout[i:i+3] == "Z07" {</code></span>
+<span class="codeline" id="line-261"><code>				return layout[0:i], stdISO8601ShortTZ, layout[i+3:]</code></span>
+<span class="codeline" id="line-262"><code>			}</code></span>
+<span class="codeline" id="line-263"><code></code></span>
+<span class="codeline" id="line-264"><code>		case '.': // .000 or .999 - repeated digits for fractional seconds.</code></span>
+<span class="codeline" id="line-265"><code>			if i+1 &lt; len(layout) &amp;&amp; (layout[i+1] == '0' || layout[i+1] == '9') {</code></span>
+<span class="codeline" id="line-266"><code>				ch := layout[i+1]</code></span>
+<span class="codeline" id="line-267"><code>				j := i + 1</code></span>
+<span class="codeline" id="line-268"><code>				for j &lt; len(layout) &amp;&amp; layout[j] == ch {</code></span>
+<span class="codeline" id="line-269"><code>					j++</code></span>
+<span class="codeline" id="line-270"><code>				}</code></span>
+<span class="codeline" id="line-271"><code>				// String of digits must end here - only fractional second is all digits.</code></span>
+<span class="codeline" id="line-272"><code>				if !isDigit(layout, j) {</code></span>
+<span class="codeline" id="line-273"><code>					std := stdFracSecond0</code></span>
+<span class="codeline" id="line-274"><code>					if layout[i+1] == '9' {</code></span>
+<span class="codeline" id="line-275"><code>						std = stdFracSecond9</code></span>
+<span class="codeline" id="line-276"><code>					}</code></span>
+<span class="codeline" id="line-277"><code>					std |= (j - (i + 1)) &lt;&lt; stdArgShift</code></span>
+<span class="codeline" id="line-278"><code>					return layout[0:i], std, layout[j:]</code></span>
+<span class="codeline" id="line-279"><code>				}</code></span>
+<span class="codeline" id="line-280"><code>			}</code></span>
+<span class="codeline" id="line-281"><code>		}</code></span>
+<span class="codeline" id="line-282"><code>	}</code></span>
+<span class="codeline" id="line-283"><code>	return layout, 0, ""</code></span>
+<span class="codeline" id="line-284"><code>}</code></span>
+<span class="codeline" id="line-285"><code></code></span>
+<span class="codeline" id="line-286"><code>var longDayNames = []string{</code></span>
+<span class="codeline" id="line-287"><code>	"Sunday",</code></span>
+<span class="codeline" id="line-288"><code>	"Monday",</code></span>
+<span class="codeline" id="line-289"><code>	"Tuesday",</code></span>
+<span class="codeline" id="line-290"><code>	"Wednesday",</code></span>
+<span class="codeline" id="line-291"><code>	"Thursday",</code></span>
+<span class="codeline" id="line-292"><code>	"Friday",</code></span>
+<span class="codeline" id="line-293"><code>	"Saturday",</code></span>
+<span class="codeline" id="line-294"><code>}</code></span>
+<span class="codeline" id="line-295"><code></code></span>
+<span class="codeline" id="line-296"><code>var shortDayNames = []string{</code></span>
+<span class="codeline" id="line-297"><code>	"Sun",</code></span>
+<span class="codeline" id="line-298"><code>	"Mon",</code></span>
+<span class="codeline" id="line-299"><code>	"Tue",</code></span>
+<span class="codeline" id="line-300"><code>	"Wed",</code></span>
+<span class="codeline" id="line-301"><code>	"Thu",</code></span>
+<span class="codeline" id="line-302"><code>	"Fri",</code></span>
+<span class="codeline" id="line-303"><code>	"Sat",</code></span>
+<span class="codeline" id="line-304"><code>}</code></span>
+<span class="codeline" id="line-305"><code></code></span>
+<span class="codeline" id="line-306"><code>var shortMonthNames = []string{</code></span>
+<span class="codeline" id="line-307"><code>	"Jan",</code></span>
+<span class="codeline" id="line-308"><code>	"Feb",</code></span>
+<span class="codeline" id="line-309"><code>	"Mar",</code></span>
+<span class="codeline" id="line-310"><code>	"Apr",</code></span>
+<span class="codeline" id="line-311"><code>	"May",</code></span>
+<span class="codeline" id="line-312"><code>	"Jun",</code></span>
+<span class="codeline" id="line-313"><code>	"Jul",</code></span>
+<span class="codeline" id="line-314"><code>	"Aug",</code></span>
+<span class="codeline" id="line-315"><code>	"Sep",</code></span>
+<span class="codeline" id="line-316"><code>	"Oct",</code></span>
+<span class="codeline" id="line-317"><code>	"Nov",</code></span>
+<span class="codeline" id="line-318"><code>	"Dec",</code></span>
+<span class="codeline" id="line-319"><code>}</code></span>
+<span class="codeline" id="line-320"><code></code></span>
+<span class="codeline" id="line-321"><code>var longMonthNames = []string{</code></span>
+<span class="codeline" id="line-322"><code>	"January",</code></span>
+<span class="codeline" id="line-323"><code>	"February",</code></span>
+<span class="codeline" id="line-324"><code>	"March",</code></span>
+<span class="codeline" id="line-325"><code>	"April",</code></span>
+<span class="codeline" id="line-326"><code>	"May",</code></span>
+<span class="codeline" id="line-327"><code>	"June",</code></span>
+<span class="codeline" id="line-328"><code>	"July",</code></span>
+<span class="codeline" id="line-329"><code>	"August",</code></span>
+<span class="codeline" id="line-330"><code>	"September",</code></span>
+<span class="codeline" id="line-331"><code>	"October",</code></span>
+<span class="codeline" id="line-332"><code>	"November",</code></span>
+<span class="codeline" id="line-333"><code>	"December",</code></span>
+<span class="codeline" id="line-334"><code>}</code></span>
+<span class="codeline" id="line-335"><code></code></span>
+<span class="codeline" id="line-336"><code>// match reports whether s1 and s2 match ignoring case.</code></span>
+<span class="codeline" id="line-337"><code>// It is assumed s1 and s2 are the same length.</code></span>
+<span class="codeline" id="line-338"><code>func match(s1, s2 string) bool {</code></span>
+<span class="codeline" id="line-339"><code>	for i := 0; i &lt; len(s1); i++ {</code></span>
+<span class="codeline" id="line-340"><code>		c1 := s1[i]</code></span>
+<span class="codeline" id="line-341"><code>		c2 := s2[i]</code></span>
+<span class="codeline" id="line-342"><code>		if c1 != c2 {</code></span>
+<span class="codeline" id="line-343"><code>			// Switch to lower-case; 'a'-'A' is known to be a single bit.</code></span>
+<span class="codeline" id="line-344"><code>			c1 |= 'a' - 'A'</code></span>
+<span class="codeline" id="line-345"><code>			c2 |= 'a' - 'A'</code></span>
+<span class="codeline" id="line-346"><code>			if c1 != c2 || c1 &lt; 'a' || c1 &gt; 'z' {</code></span>
+<span class="codeline" id="line-347"><code>				return false</code></span>
+<span class="codeline" id="line-348"><code>			}</code></span>
+<span class="codeline" id="line-349"><code>		}</code></span>
+<span class="codeline" id="line-350"><code>	}</code></span>
+<span class="codeline" id="line-351"><code>	return true</code></span>
+<span class="codeline" id="line-352"><code>}</code></span>
+<span class="codeline" id="line-353"><code></code></span>
+<span class="codeline" id="line-354"><code>func lookup(tab []string, val string) (int, string, error) {</code></span>
+<span class="codeline" id="line-355"><code>	for i, v := range tab {</code></span>
+<span class="codeline" id="line-356"><code>		if len(val) &gt;= len(v) &amp;&amp; match(val[0:len(v)], v) {</code></span>
+<span class="codeline" id="line-357"><code>			return i, val[len(v):], nil</code></span>
+<span class="codeline" id="line-358"><code>		}</code></span>
+<span class="codeline" id="line-359"><code>	}</code></span>
+<span class="codeline" id="line-360"><code>	return -1, val, errBad</code></span>
+<span class="codeline" id="line-361"><code>}</code></span>
+<span class="codeline" id="line-362"><code></code></span>
+<span class="codeline" id="line-363"><code>// appendInt appends the decimal form of x to b and returns the result.</code></span>
+<span class="codeline" id="line-364"><code>// If the decimal form (excluding sign) is shorter than width, the result is padded with leading 0's.</code></span>
+<span class="codeline" id="line-365"><code>// Duplicates functionality in strconv, but avoids dependency.</code></span>
+<span class="codeline" id="line-366"><code>func appendInt(b []byte, x int, width int) []byte {</code></span>
+<span class="codeline" id="line-367"><code>	u := uint(x)</code></span>
+<span class="codeline" id="line-368"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-369"><code>		b = append(b, '-')</code></span>
+<span class="codeline" id="line-370"><code>		u = uint(-x)</code></span>
+<span class="codeline" id="line-371"><code>	}</code></span>
+<span class="codeline" id="line-372"><code></code></span>
+<span class="codeline" id="line-373"><code>	// Assemble decimal in reverse order.</code></span>
+<span class="codeline" id="line-374"><code>	var buf [20]byte</code></span>
+<span class="codeline" id="line-375"><code>	i := len(buf)</code></span>
+<span class="codeline" id="line-376"><code>	for u &gt;= 10 {</code></span>
+<span class="codeline" id="line-377"><code>		i--</code></span>
+<span class="codeline" id="line-378"><code>		q := u / 10</code></span>
+<span class="codeline" id="line-379"><code>		buf[i] = byte('0' + u - q*10)</code></span>
+<span class="codeline" id="line-380"><code>		u = q</code></span>
+<span class="codeline" id="line-381"><code>	}</code></span>
+<span class="codeline" id="line-382"><code>	i--</code></span>
+<span class="codeline" id="line-383"><code>	buf[i] = byte('0' + u)</code></span>
+<span class="codeline" id="line-384"><code></code></span>
+<span class="codeline" id="line-385"><code>	// Add 0-padding.</code></span>
+<span class="codeline" id="line-386"><code>	for w := len(buf) - i; w &lt; width; w++ {</code></span>
+<span class="codeline" id="line-387"><code>		b = append(b, '0')</code></span>
+<span class="codeline" id="line-388"><code>	}</code></span>
+<span class="codeline" id="line-389"><code></code></span>
+<span class="codeline" id="line-390"><code>	return append(b, buf[i:]...)</code></span>
+<span class="codeline" id="line-391"><code>}</code></span>
+<span class="codeline" id="line-392"><code></code></span>
+<span class="codeline" id="line-393"><code>// Never printed, just needs to be non-nil for return by atoi.</code></span>
+<span class="codeline" id="line-394"><code>var atoiError = errors.New("time: invalid number")</code></span>
+<span class="codeline" id="line-395"><code></code></span>
+<span class="codeline" id="line-396"><code>// Duplicates functionality in strconv, but avoids dependency.</code></span>
+<span class="codeline" id="line-397"><code>func atoi(s string) (x int, err error) {</code></span>
+<span class="codeline" id="line-398"><code>	neg := false</code></span>
+<span class="codeline" id="line-399"><code>	if s != "" &amp;&amp; (s[0] == '-' || s[0] == '+') {</code></span>
+<span class="codeline" id="line-400"><code>		neg = s[0] == '-'</code></span>
+<span class="codeline" id="line-401"><code>		s = s[1:]</code></span>
+<span class="codeline" id="line-402"><code>	}</code></span>
+<span class="codeline" id="line-403"><code>	q, rem, err := leadingInt(s)</code></span>
+<span class="codeline" id="line-404"><code>	x = int(q)</code></span>
+<span class="codeline" id="line-405"><code>	if err != nil || rem != "" {</code></span>
+<span class="codeline" id="line-406"><code>		return 0, atoiError</code></span>
+<span class="codeline" id="line-407"><code>	}</code></span>
+<span class="codeline" id="line-408"><code>	if neg {</code></span>
+<span class="codeline" id="line-409"><code>		x = -x</code></span>
+<span class="codeline" id="line-410"><code>	}</code></span>
+<span class="codeline" id="line-411"><code>	return x, nil</code></span>
+<span class="codeline" id="line-412"><code>}</code></span>
+<span class="codeline" id="line-413"><code></code></span>
+<span class="codeline" id="line-414"><code>// formatNano appends a fractional second, as nanoseconds, to b</code></span>
+<span class="codeline" id="line-415"><code>// and returns the result.</code></span>
+<span class="codeline" id="line-416"><code>func formatNano(b []byte, nanosec uint, n int, trim bool) []byte {</code></span>
+<span class="codeline" id="line-417"><code>	u := nanosec</code></span>
+<span class="codeline" id="line-418"><code>	var buf [9]byte</code></span>
+<span class="codeline" id="line-419"><code>	for start := len(buf); start &gt; 0; {</code></span>
+<span class="codeline" id="line-420"><code>		start--</code></span>
+<span class="codeline" id="line-421"><code>		buf[start] = byte(u%10 + '0')</code></span>
+<span class="codeline" id="line-422"><code>		u /= 10</code></span>
+<span class="codeline" id="line-423"><code>	}</code></span>
+<span class="codeline" id="line-424"><code></code></span>
+<span class="codeline" id="line-425"><code>	if n &gt; 9 {</code></span>
+<span class="codeline" id="line-426"><code>		n = 9</code></span>
+<span class="codeline" id="line-427"><code>	}</code></span>
+<span class="codeline" id="line-428"><code>	if trim {</code></span>
+<span class="codeline" id="line-429"><code>		for n &gt; 0 &amp;&amp; buf[n-1] == '0' {</code></span>
+<span class="codeline" id="line-430"><code>			n--</code></span>
+<span class="codeline" id="line-431"><code>		}</code></span>
+<span class="codeline" id="line-432"><code>		if n == 0 {</code></span>
+<span class="codeline" id="line-433"><code>			return b</code></span>
+<span class="codeline" id="line-434"><code>		}</code></span>
+<span class="codeline" id="line-435"><code>	}</code></span>
+<span class="codeline" id="line-436"><code>	b = append(b, '.')</code></span>
+<span class="codeline" id="line-437"><code>	return append(b, buf[:n]...)</code></span>
+<span class="codeline" id="line-438"><code>}</code></span>
+<span class="codeline" id="line-439"><code></code></span>
+<span class="codeline" id="line-440"><code>// String returns the time formatted using the format string</code></span>
+<span class="codeline" id="line-441"><code>//	"2006-01-02 15:04:05.999999999 -0700 MST"</code></span>
+<span class="codeline" id="line-442"><code>//</code></span>
+<span class="codeline" id="line-443"><code>// If the time has a monotonic clock reading, the returned string</code></span>
+<span class="codeline" id="line-444"><code>// includes a final field "m=±&lt;value&gt;", where value is the monotonic</code></span>
+<span class="codeline" id="line-445"><code>// clock reading formatted as a decimal number of seconds.</code></span>
+<span class="codeline" id="line-446"><code>//</code></span>
+<span class="codeline" id="line-447"><code>// The returned string is meant for debugging; for a stable serialized</code></span>
+<span class="codeline" id="line-448"><code>// representation, use t.MarshalText, t.MarshalBinary, or t.Format</code></span>
+<span class="codeline" id="line-449"><code>// with an explicit format string.</code></span>
+<span class="codeline" id="line-450"><code>func (t Time) String() string {</code></span>
+<span class="codeline" id="line-451"><code>	s := t.Format("2006-01-02 15:04:05.999999999 -0700 MST")</code></span>
+<span class="codeline" id="line-452"><code></code></span>
+<span class="codeline" id="line-453"><code>	// Format monotonic clock reading as m=±ddd.nnnnnnnnn.</code></span>
+<span class="codeline" id="line-454"><code>	if t.wall&amp;hasMonotonic != 0 {</code></span>
+<span class="codeline" id="line-455"><code>		m2 := uint64(t.ext)</code></span>
+<span class="codeline" id="line-456"><code>		sign := byte('+')</code></span>
+<span class="codeline" id="line-457"><code>		if t.ext &lt; 0 {</code></span>
+<span class="codeline" id="line-458"><code>			sign = '-'</code></span>
+<span class="codeline" id="line-459"><code>			m2 = -m2</code></span>
+<span class="codeline" id="line-460"><code>		}</code></span>
+<span class="codeline" id="line-461"><code>		m1, m2 := m2/1e9, m2%1e9</code></span>
+<span class="codeline" id="line-462"><code>		m0, m1 := m1/1e9, m1%1e9</code></span>
+<span class="codeline" id="line-463"><code>		var buf []byte</code></span>
+<span class="codeline" id="line-464"><code>		buf = append(buf, " m="...)</code></span>
+<span class="codeline" id="line-465"><code>		buf = append(buf, sign)</code></span>
+<span class="codeline" id="line-466"><code>		wid := 0</code></span>
+<span class="codeline" id="line-467"><code>		if m0 != 0 {</code></span>
+<span class="codeline" id="line-468"><code>			buf = appendInt(buf, int(m0), 0)</code></span>
+<span class="codeline" id="line-469"><code>			wid = 9</code></span>
+<span class="codeline" id="line-470"><code>		}</code></span>
+<span class="codeline" id="line-471"><code>		buf = appendInt(buf, int(m1), wid)</code></span>
+<span class="codeline" id="line-472"><code>		buf = append(buf, '.')</code></span>
+<span class="codeline" id="line-473"><code>		buf = appendInt(buf, int(m2), 9)</code></span>
+<span class="codeline" id="line-474"><code>		s += string(buf)</code></span>
+<span class="codeline" id="line-475"><code>	}</code></span>
+<span class="codeline" id="line-476"><code>	return s</code></span>
+<span class="codeline" id="line-477"><code>}</code></span>
+<span class="codeline" id="line-478"><code></code></span>
+<span class="codeline" id="line-479"><code>// Format returns a textual representation of the time value formatted</code></span>
+<span class="codeline" id="line-480"><code>// according to layout, which defines the format by showing how the reference</code></span>
+<span class="codeline" id="line-481"><code>// time, defined to be</code></span>
+<span class="codeline" id="line-482"><code>//	Mon Jan 2 15:04:05 -0700 MST 2006</code></span>
+<span class="codeline" id="line-483"><code>// would be displayed if it were the value; it serves as an example of the</code></span>
+<span class="codeline" id="line-484"><code>// desired output. The same display rules will then be applied to the time</code></span>
+<span class="codeline" id="line-485"><code>// value.</code></span>
+<span class="codeline" id="line-486"><code>//</code></span>
+<span class="codeline" id="line-487"><code>// A fractional second is represented by adding a period and zeros</code></span>
+<span class="codeline" id="line-488"><code>// to the end of the seconds section of layout string, as in "15:04:05.000"</code></span>
+<span class="codeline" id="line-489"><code>// to format a time stamp with millisecond precision.</code></span>
+<span class="codeline" id="line-490"><code>//</code></span>
+<span class="codeline" id="line-491"><code>// Predefined layouts ANSIC, UnixDate, RFC3339 and others describe standard</code></span>
+<span class="codeline" id="line-492"><code>// and convenient representations of the reference time. For more information</code></span>
+<span class="codeline" id="line-493"><code>// about the formats and the definition of the reference time, see the</code></span>
+<span class="codeline" id="line-494"><code>// documentation for ANSIC and the other constants defined by this package.</code></span>
+<span class="codeline" id="line-495"><code>func (t Time) Format(layout string) string {</code></span>
+<span class="codeline" id="line-496"><code>	const bufSize = 64</code></span>
+<span class="codeline" id="line-497"><code>	var b []byte</code></span>
+<span class="codeline" id="line-498"><code>	max := len(layout) + 10</code></span>
+<span class="codeline" id="line-499"><code>	if max &lt; bufSize {</code></span>
+<span class="codeline" id="line-500"><code>		var buf [bufSize]byte</code></span>
+<span class="codeline" id="line-501"><code>		b = buf[:0]</code></span>
+<span class="codeline" id="line-502"><code>	} else {</code></span>
+<span class="codeline" id="line-503"><code>		b = make([]byte, 0, max)</code></span>
+<span class="codeline" id="line-504"><code>	}</code></span>
+<span class="codeline" id="line-505"><code>	b = t.AppendFormat(b, layout)</code></span>
+<span class="codeline" id="line-506"><code>	return string(b)</code></span>
+<span class="codeline" id="line-507"><code>}</code></span>
+<span class="codeline" id="line-508"><code></code></span>
+<span class="codeline" id="line-509"><code>// AppendFormat is like Format but appends the textual</code></span>
+<span class="codeline" id="line-510"><code>// representation to b and returns the extended buffer.</code></span>
+<span class="codeline" id="line-511"><code>func (t Time) AppendFormat(b []byte, layout string) []byte {</code></span>
+<span class="codeline" id="line-512"><code>	var (</code></span>
+<span class="codeline" id="line-513"><code>		name, offset, abs = t.locabs()</code></span>
+<span class="codeline" id="line-514"><code></code></span>
+<span class="codeline" id="line-515"><code>		year  int = -1</code></span>
+<span class="codeline" id="line-516"><code>		month Month</code></span>
+<span class="codeline" id="line-517"><code>		day   int</code></span>
+<span class="codeline" id="line-518"><code>		yday  int</code></span>
+<span class="codeline" id="line-519"><code>		hour  int = -1</code></span>
+<span class="codeline" id="line-520"><code>		min   int</code></span>
+<span class="codeline" id="line-521"><code>		sec   int</code></span>
+<span class="codeline" id="line-522"><code>	)</code></span>
+<span class="codeline" id="line-523"><code>	// Each iteration generates one std value.</code></span>
+<span class="codeline" id="line-524"><code>	for layout != "" {</code></span>
+<span class="codeline" id="line-525"><code>		prefix, std, suffix := nextStdChunk(layout)</code></span>
+<span class="codeline" id="line-526"><code>		if prefix != "" {</code></span>
+<span class="codeline" id="line-527"><code>			b = append(b, prefix...)</code></span>
+<span class="codeline" id="line-528"><code>		}</code></span>
+<span class="codeline" id="line-529"><code>		if std == 0 {</code></span>
+<span class="codeline" id="line-530"><code>			break</code></span>
+<span class="codeline" id="line-531"><code>		}</code></span>
+<span class="codeline" id="line-532"><code>		layout = suffix</code></span>
+<span class="codeline" id="line-533"><code></code></span>
+<span class="codeline" id="line-534"><code>		// Compute year, month, day if needed.</code></span>
+<span class="codeline" id="line-535"><code>		if year &lt; 0 &amp;&amp; std&amp;stdNeedDate != 0 {</code></span>
+<span class="codeline" id="line-536"><code>			year, month, day, yday = absDate(abs, true)</code></span>
+<span class="codeline" id="line-537"><code>			yday++</code></span>
+<span class="codeline" id="line-538"><code>		}</code></span>
+<span class="codeline" id="line-539"><code></code></span>
+<span class="codeline" id="line-540"><code>		// Compute hour, minute, second if needed.</code></span>
+<span class="codeline" id="line-541"><code>		if hour &lt; 0 &amp;&amp; std&amp;stdNeedClock != 0 {</code></span>
+<span class="codeline" id="line-542"><code>			hour, min, sec = absClock(abs)</code></span>
+<span class="codeline" id="line-543"><code>		}</code></span>
+<span class="codeline" id="line-544"><code></code></span>
+<span class="codeline" id="line-545"><code>		switch std &amp; stdMask {</code></span>
+<span class="codeline" id="line-546"><code>		case stdYear:</code></span>
+<span class="codeline" id="line-547"><code>			y := year</code></span>
+<span class="codeline" id="line-548"><code>			if y &lt; 0 {</code></span>
+<span class="codeline" id="line-549"><code>				y = -y</code></span>
+<span class="codeline" id="line-550"><code>			}</code></span>
+<span class="codeline" id="line-551"><code>			b = appendInt(b, y%100, 2)</code></span>
+<span class="codeline" id="line-552"><code>		case stdLongYear:</code></span>
+<span class="codeline" id="line-553"><code>			b = appendInt(b, year, 4)</code></span>
+<span class="codeline" id="line-554"><code>		case stdMonth:</code></span>
+<span class="codeline" id="line-555"><code>			b = append(b, month.String()[:3]...)</code></span>
+<span class="codeline" id="line-556"><code>		case stdLongMonth:</code></span>
+<span class="codeline" id="line-557"><code>			m := month.String()</code></span>
+<span class="codeline" id="line-558"><code>			b = append(b, m...)</code></span>
+<span class="codeline" id="line-559"><code>		case stdNumMonth:</code></span>
+<span class="codeline" id="line-560"><code>			b = appendInt(b, int(month), 0)</code></span>
+<span class="codeline" id="line-561"><code>		case stdZeroMonth:</code></span>
+<span class="codeline" id="line-562"><code>			b = appendInt(b, int(month), 2)</code></span>
+<span class="codeline" id="line-563"><code>		case stdWeekDay:</code></span>
+<span class="codeline" id="line-564"><code>			b = append(b, absWeekday(abs).String()[:3]...)</code></span>
+<span class="codeline" id="line-565"><code>		case stdLongWeekDay:</code></span>
+<span class="codeline" id="line-566"><code>			s := absWeekday(abs).String()</code></span>
+<span class="codeline" id="line-567"><code>			b = append(b, s...)</code></span>
+<span class="codeline" id="line-568"><code>		case stdDay:</code></span>
+<span class="codeline" id="line-569"><code>			b = appendInt(b, day, 0)</code></span>
+<span class="codeline" id="line-570"><code>		case stdUnderDay:</code></span>
+<span class="codeline" id="line-571"><code>			if day &lt; 10 {</code></span>
+<span class="codeline" id="line-572"><code>				b = append(b, ' ')</code></span>
+<span class="codeline" id="line-573"><code>			}</code></span>
+<span class="codeline" id="line-574"><code>			b = appendInt(b, day, 0)</code></span>
+<span class="codeline" id="line-575"><code>		case stdZeroDay:</code></span>
+<span class="codeline" id="line-576"><code>			b = appendInt(b, day, 2)</code></span>
+<span class="codeline" id="line-577"><code>		case stdUnderYearDay:</code></span>
+<span class="codeline" id="line-578"><code>			if yday &lt; 100 {</code></span>
+<span class="codeline" id="line-579"><code>				b = append(b, ' ')</code></span>
+<span class="codeline" id="line-580"><code>				if yday &lt; 10 {</code></span>
+<span class="codeline" id="line-581"><code>					b = append(b, ' ')</code></span>
+<span class="codeline" id="line-582"><code>				}</code></span>
+<span class="codeline" id="line-583"><code>			}</code></span>
+<span class="codeline" id="line-584"><code>			b = appendInt(b, yday, 0)</code></span>
+<span class="codeline" id="line-585"><code>		case stdZeroYearDay:</code></span>
+<span class="codeline" id="line-586"><code>			b = appendInt(b, yday, 3)</code></span>
+<span class="codeline" id="line-587"><code>		case stdHour:</code></span>
+<span class="codeline" id="line-588"><code>			b = appendInt(b, hour, 2)</code></span>
+<span class="codeline" id="line-589"><code>		case stdHour12:</code></span>
+<span class="codeline" id="line-590"><code>			// Noon is 12PM, midnight is 12AM.</code></span>
+<span class="codeline" id="line-591"><code>			hr := hour % 12</code></span>
+<span class="codeline" id="line-592"><code>			if hr == 0 {</code></span>
+<span class="codeline" id="line-593"><code>				hr = 12</code></span>
+<span class="codeline" id="line-594"><code>			}</code></span>
+<span class="codeline" id="line-595"><code>			b = appendInt(b, hr, 0)</code></span>
+<span class="codeline" id="line-596"><code>		case stdZeroHour12:</code></span>
+<span class="codeline" id="line-597"><code>			// Noon is 12PM, midnight is 12AM.</code></span>
+<span class="codeline" id="line-598"><code>			hr := hour % 12</code></span>
+<span class="codeline" id="line-599"><code>			if hr == 0 {</code></span>
+<span class="codeline" id="line-600"><code>				hr = 12</code></span>
+<span class="codeline" id="line-601"><code>			}</code></span>
+<span class="codeline" id="line-602"><code>			b = appendInt(b, hr, 2)</code></span>
+<span class="codeline" id="line-603"><code>		case stdMinute:</code></span>
+<span class="codeline" id="line-604"><code>			b = appendInt(b, min, 0)</code></span>
+<span class="codeline" id="line-605"><code>		case stdZeroMinute:</code></span>
+<span class="codeline" id="line-606"><code>			b = appendInt(b, min, 2)</code></span>
+<span class="codeline" id="line-607"><code>		case stdSecond:</code></span>
+<span class="codeline" id="line-608"><code>			b = appendInt(b, sec, 0)</code></span>
+<span class="codeline" id="line-609"><code>		case stdZeroSecond:</code></span>
+<span class="codeline" id="line-610"><code>			b = appendInt(b, sec, 2)</code></span>
+<span class="codeline" id="line-611"><code>		case stdPM:</code></span>
+<span class="codeline" id="line-612"><code>			if hour &gt;= 12 {</code></span>
+<span class="codeline" id="line-613"><code>				b = append(b, "PM"...)</code></span>
+<span class="codeline" id="line-614"><code>			} else {</code></span>
+<span class="codeline" id="line-615"><code>				b = append(b, "AM"...)</code></span>
+<span class="codeline" id="line-616"><code>			}</code></span>
+<span class="codeline" id="line-617"><code>		case stdpm:</code></span>
+<span class="codeline" id="line-618"><code>			if hour &gt;= 12 {</code></span>
+<span class="codeline" id="line-619"><code>				b = append(b, "pm"...)</code></span>
+<span class="codeline" id="line-620"><code>			} else {</code></span>
+<span class="codeline" id="line-621"><code>				b = append(b, "am"...)</code></span>
+<span class="codeline" id="line-622"><code>			}</code></span>
+<span class="codeline" id="line-623"><code>		case stdISO8601TZ, stdISO8601ColonTZ, stdISO8601SecondsTZ, stdISO8601ShortTZ, stdISO8601ColonSecondsTZ, stdNumTZ, stdNumColonTZ, stdNumSecondsTz, stdNumShortTZ, stdNumColonSecondsTZ:</code></span>
+<span class="codeline" id="line-624"><code>			// Ugly special case. We cheat and take the "Z" variants</code></span>
+<span class="codeline" id="line-625"><code>			// to mean "the time zone as formatted for ISO 8601".</code></span>
+<span class="codeline" id="line-626"><code>			if offset == 0 &amp;&amp; (std == stdISO8601TZ || std == stdISO8601ColonTZ || std == stdISO8601SecondsTZ || std == stdISO8601ShortTZ || std == stdISO8601ColonSecondsTZ) {</code></span>
+<span class="codeline" id="line-627"><code>				b = append(b, 'Z')</code></span>
+<span class="codeline" id="line-628"><code>				break</code></span>
+<span class="codeline" id="line-629"><code>			}</code></span>
+<span class="codeline" id="line-630"><code>			zone := offset / 60 // convert to minutes</code></span>
+<span class="codeline" id="line-631"><code>			absoffset := offset</code></span>
+<span class="codeline" id="line-632"><code>			if zone &lt; 0 {</code></span>
+<span class="codeline" id="line-633"><code>				b = append(b, '-')</code></span>
+<span class="codeline" id="line-634"><code>				zone = -zone</code></span>
+<span class="codeline" id="line-635"><code>				absoffset = -absoffset</code></span>
+<span class="codeline" id="line-636"><code>			} else {</code></span>
+<span class="codeline" id="line-637"><code>				b = append(b, '+')</code></span>
+<span class="codeline" id="line-638"><code>			}</code></span>
+<span class="codeline" id="line-639"><code>			b = appendInt(b, zone/60, 2)</code></span>
+<span class="codeline" id="line-640"><code>			if std == stdISO8601ColonTZ || std == stdNumColonTZ || std == stdISO8601ColonSecondsTZ || std == stdNumColonSecondsTZ {</code></span>
+<span class="codeline" id="line-641"><code>				b = append(b, ':')</code></span>
+<span class="codeline" id="line-642"><code>			}</code></span>
+<span class="codeline" id="line-643"><code>			if std != stdNumShortTZ &amp;&amp; std != stdISO8601ShortTZ {</code></span>
+<span class="codeline" id="line-644"><code>				b = appendInt(b, zone%60, 2)</code></span>
+<span class="codeline" id="line-645"><code>			}</code></span>
+<span class="codeline" id="line-646"><code></code></span>
+<span class="codeline" id="line-647"><code>			// append seconds if appropriate</code></span>
+<span class="codeline" id="line-648"><code>			if std == stdISO8601SecondsTZ || std == stdNumSecondsTz || std == stdNumColonSecondsTZ || std == stdISO8601ColonSecondsTZ {</code></span>
+<span class="codeline" id="line-649"><code>				if std == stdNumColonSecondsTZ || std == stdISO8601ColonSecondsTZ {</code></span>
+<span class="codeline" id="line-650"><code>					b = append(b, ':')</code></span>
+<span class="codeline" id="line-651"><code>				}</code></span>
+<span class="codeline" id="line-652"><code>				b = appendInt(b, absoffset%60, 2)</code></span>
+<span class="codeline" id="line-653"><code>			}</code></span>
+<span class="codeline" id="line-654"><code></code></span>
+<span class="codeline" id="line-655"><code>		case stdTZ:</code></span>
+<span class="codeline" id="line-656"><code>			if name != "" {</code></span>
+<span class="codeline" id="line-657"><code>				b = append(b, name...)</code></span>
+<span class="codeline" id="line-658"><code>				break</code></span>
+<span class="codeline" id="line-659"><code>			}</code></span>
+<span class="codeline" id="line-660"><code>			// No time zone known for this time, but we must print one.</code></span>
+<span class="codeline" id="line-661"><code>			// Use the -0700 format.</code></span>
+<span class="codeline" id="line-662"><code>			zone := offset / 60 // convert to minutes</code></span>
+<span class="codeline" id="line-663"><code>			if zone &lt; 0 {</code></span>
+<span class="codeline" id="line-664"><code>				b = append(b, '-')</code></span>
+<span class="codeline" id="line-665"><code>				zone = -zone</code></span>
+<span class="codeline" id="line-666"><code>			} else {</code></span>
+<span class="codeline" id="line-667"><code>				b = append(b, '+')</code></span>
+<span class="codeline" id="line-668"><code>			}</code></span>
+<span class="codeline" id="line-669"><code>			b = appendInt(b, zone/60, 2)</code></span>
+<span class="codeline" id="line-670"><code>			b = appendInt(b, zone%60, 2)</code></span>
+<span class="codeline" id="line-671"><code>		case stdFracSecond0, stdFracSecond9:</code></span>
+<span class="codeline" id="line-672"><code>			b = formatNano(b, uint(t.Nanosecond()), std&gt;&gt;stdArgShift, std&amp;stdMask == stdFracSecond9)</code></span>
+<span class="codeline" id="line-673"><code>		}</code></span>
+<span class="codeline" id="line-674"><code>	}</code></span>
+<span class="codeline" id="line-675"><code>	return b</code></span>
+<span class="codeline" id="line-676"><code>}</code></span>
+<span class="codeline" id="line-677"><code></code></span>
+<span class="codeline" id="line-678"><code>var errBad = errors.New("bad value for field") // placeholder not passed to user</code></span>
+<span class="codeline" id="line-679"><code></code></span>
+<span class="codeline" id="line-680"><code>// ParseError describes a problem parsing a time string.</code></span>
+<span class="codeline" id="line-681"><code>type ParseError struct {</code></span>
+<span class="codeline" id="line-682"><code>	Layout     string</code></span>
+<span class="codeline" id="line-683"><code>	Value      string</code></span>
+<span class="codeline" id="line-684"><code>	LayoutElem string</code></span>
+<span class="codeline" id="line-685"><code>	ValueElem  string</code></span>
+<span class="codeline" id="line-686"><code>	Message    string</code></span>
+<span class="codeline" id="line-687"><code>}</code></span>
+<span class="codeline" id="line-688"><code></code></span>
+<span class="codeline" id="line-689"><code>func quote(s string) string {</code></span>
+<span class="codeline" id="line-690"><code>	return "\"" + s + "\""</code></span>
+<span class="codeline" id="line-691"><code>}</code></span>
+<span class="codeline" id="line-692"><code></code></span>
+<span class="codeline" id="line-693"><code>// Error returns the string representation of a ParseError.</code></span>
+<span class="codeline" id="line-694"><code>func (e *ParseError) Error() string {</code></span>
+<span class="codeline" id="line-695"><code>	if e.Message == "" {</code></span>
+<span class="codeline" id="line-696"><code>		return "parsing time " +</code></span>
+<span class="codeline" id="line-697"><code>			quote(e.Value) + " as " +</code></span>
+<span class="codeline" id="line-698"><code>			quote(e.Layout) + ": cannot parse " +</code></span>
+<span class="codeline" id="line-699"><code>			quote(e.ValueElem) + " as " +</code></span>
+<span class="codeline" id="line-700"><code>			quote(e.LayoutElem)</code></span>
+<span class="codeline" id="line-701"><code>	}</code></span>
+<span class="codeline" id="line-702"><code>	return "parsing time " +</code></span>
+<span class="codeline" id="line-703"><code>		quote(e.Value) + e.Message</code></span>
+<span class="codeline" id="line-704"><code>}</code></span>
+<span class="codeline" id="line-705"><code></code></span>
+<span class="codeline" id="line-706"><code>// isDigit reports whether s[i] is in range and is a decimal digit.</code></span>
+<span class="codeline" id="line-707"><code>func isDigit(s string, i int) bool {</code></span>
+<span class="codeline" id="line-708"><code>	if len(s) &lt;= i {</code></span>
+<span class="codeline" id="line-709"><code>		return false</code></span>
+<span class="codeline" id="line-710"><code>	}</code></span>
+<span class="codeline" id="line-711"><code>	c := s[i]</code></span>
+<span class="codeline" id="line-712"><code>	return '0' &lt;= c &amp;&amp; c &lt;= '9'</code></span>
+<span class="codeline" id="line-713"><code>}</code></span>
+<span class="codeline" id="line-714"><code></code></span>
+<span class="codeline" id="line-715"><code>// getnum parses s[0:1] or s[0:2] (fixed forces s[0:2])</code></span>
+<span class="codeline" id="line-716"><code>// as a decimal integer and returns the integer and the</code></span>
+<span class="codeline" id="line-717"><code>// remainder of the string.</code></span>
+<span class="codeline" id="line-718"><code>func getnum(s string, fixed bool) (int, string, error) {</code></span>
+<span class="codeline" id="line-719"><code>	if !isDigit(s, 0) {</code></span>
+<span class="codeline" id="line-720"><code>		return 0, s, errBad</code></span>
+<span class="codeline" id="line-721"><code>	}</code></span>
+<span class="codeline" id="line-722"><code>	if !isDigit(s, 1) {</code></span>
+<span class="codeline" id="line-723"><code>		if fixed {</code></span>
+<span class="codeline" id="line-724"><code>			return 0, s, errBad</code></span>
+<span class="codeline" id="line-725"><code>		}</code></span>
+<span class="codeline" id="line-726"><code>		return int(s[0] - '0'), s[1:], nil</code></span>
+<span class="codeline" id="line-727"><code>	}</code></span>
+<span class="codeline" id="line-728"><code>	return int(s[0]-'0')*10 + int(s[1]-'0'), s[2:], nil</code></span>
+<span class="codeline" id="line-729"><code>}</code></span>
+<span class="codeline" id="line-730"><code></code></span>
+<span class="codeline" id="line-731"><code>// getnum3 parses s[0:1], s[0:2], or s[0:3] (fixed forces s[0:3])</code></span>
+<span class="codeline" id="line-732"><code>// as a decimal integer and returns the integer and the remainder</code></span>
+<span class="codeline" id="line-733"><code>// of the string.</code></span>
+<span class="codeline" id="line-734"><code>func getnum3(s string, fixed bool) (int, string, error) {</code></span>
+<span class="codeline" id="line-735"><code>	var n, i int</code></span>
+<span class="codeline" id="line-736"><code>	for i = 0; i &lt; 3 &amp;&amp; isDigit(s, i); i++ {</code></span>
+<span class="codeline" id="line-737"><code>		n = n*10 + int(s[i]-'0')</code></span>
+<span class="codeline" id="line-738"><code>	}</code></span>
+<span class="codeline" id="line-739"><code>	if i == 0 || fixed &amp;&amp; i != 3 {</code></span>
+<span class="codeline" id="line-740"><code>		return 0, s, errBad</code></span>
+<span class="codeline" id="line-741"><code>	}</code></span>
+<span class="codeline" id="line-742"><code>	return n, s[i:], nil</code></span>
+<span class="codeline" id="line-743"><code>}</code></span>
+<span class="codeline" id="line-744"><code></code></span>
+<span class="codeline" id="line-745"><code>func cutspace(s string) string {</code></span>
+<span class="codeline" id="line-746"><code>	for len(s) &gt; 0 &amp;&amp; s[0] == ' ' {</code></span>
+<span class="codeline" id="line-747"><code>		s = s[1:]</code></span>
+<span class="codeline" id="line-748"><code>	}</code></span>
+<span class="codeline" id="line-749"><code>	return s</code></span>
+<span class="codeline" id="line-750"><code>}</code></span>
+<span class="codeline" id="line-751"><code></code></span>
+<span class="codeline" id="line-752"><code>// skip removes the given prefix from value,</code></span>
+<span class="codeline" id="line-753"><code>// treating runs of space characters as equivalent.</code></span>
+<span class="codeline" id="line-754"><code>func skip(value, prefix string) (string, error) {</code></span>
+<span class="codeline" id="line-755"><code>	for len(prefix) &gt; 0 {</code></span>
+<span class="codeline" id="line-756"><code>		if prefix[0] == ' ' {</code></span>
+<span class="codeline" id="line-757"><code>			if len(value) &gt; 0 &amp;&amp; value[0] != ' ' {</code></span>
+<span class="codeline" id="line-758"><code>				return value, errBad</code></span>
+<span class="codeline" id="line-759"><code>			}</code></span>
+<span class="codeline" id="line-760"><code>			prefix = cutspace(prefix)</code></span>
+<span class="codeline" id="line-761"><code>			value = cutspace(value)</code></span>
+<span class="codeline" id="line-762"><code>			continue</code></span>
+<span class="codeline" id="line-763"><code>		}</code></span>
+<span class="codeline" id="line-764"><code>		if len(value) == 0 || value[0] != prefix[0] {</code></span>
+<span class="codeline" id="line-765"><code>			return value, errBad</code></span>
+<span class="codeline" id="line-766"><code>		}</code></span>
+<span class="codeline" id="line-767"><code>		prefix = prefix[1:]</code></span>
+<span class="codeline" id="line-768"><code>		value = value[1:]</code></span>
+<span class="codeline" id="line-769"><code>	}</code></span>
+<span class="codeline" id="line-770"><code>	return value, nil</code></span>
+<span class="codeline" id="line-771"><code>}</code></span>
+<span class="codeline" id="line-772"><code></code></span>
+<span class="codeline" id="line-773"><code>// Parse parses a formatted string and returns the time value it represents.</code></span>
+<span class="codeline" id="line-774"><code>// The layout defines the format by showing how the reference time,</code></span>
+<span class="codeline" id="line-775"><code>// defined to be</code></span>
+<span class="codeline" id="line-776"><code>//	Mon Jan 2 15:04:05 -0700 MST 2006</code></span>
+<span class="codeline" id="line-777"><code>// would be interpreted if it were the value; it serves as an example of</code></span>
+<span class="codeline" id="line-778"><code>// the input format. The same interpretation will then be made to the</code></span>
+<span class="codeline" id="line-779"><code>// input string.</code></span>
+<span class="codeline" id="line-780"><code>//</code></span>
+<span class="codeline" id="line-781"><code>// Predefined layouts ANSIC, UnixDate, RFC3339 and others describe standard</code></span>
+<span class="codeline" id="line-782"><code>// and convenient representations of the reference time. For more information</code></span>
+<span class="codeline" id="line-783"><code>// about the formats and the definition of the reference time, see the</code></span>
+<span class="codeline" id="line-784"><code>// documentation for ANSIC and the other constants defined by this package.</code></span>
+<span class="codeline" id="line-785"><code>// Also, the executable example for Time.Format demonstrates the working</code></span>
+<span class="codeline" id="line-786"><code>// of the layout string in detail and is a good reference.</code></span>
+<span class="codeline" id="line-787"><code>//</code></span>
+<span class="codeline" id="line-788"><code>// Elements omitted from the value are assumed to be zero or, when</code></span>
+<span class="codeline" id="line-789"><code>// zero is impossible, one, so parsing "3:04pm" returns the time</code></span>
+<span class="codeline" id="line-790"><code>// corresponding to Jan 1, year 0, 15:04:00 UTC (note that because the year is</code></span>
+<span class="codeline" id="line-791"><code>// 0, this time is before the zero Time).</code></span>
+<span class="codeline" id="line-792"><code>// Years must be in the range 0000..9999. The day of the week is checked</code></span>
+<span class="codeline" id="line-793"><code>// for syntax but it is otherwise ignored.</code></span>
+<span class="codeline" id="line-794"><code>//</code></span>
+<span class="codeline" id="line-795"><code>// For layouts specifying the two-digit year 06, a value NN &gt;= 69 will be treated</code></span>
+<span class="codeline" id="line-796"><code>// as 19NN and a value NN &lt; 69 will be treated as 20NN.</code></span>
+<span class="codeline" id="line-797"><code>//</code></span>
+<span class="codeline" id="line-798"><code>// In the absence of a time zone indicator, Parse returns a time in UTC.</code></span>
+<span class="codeline" id="line-799"><code>//</code></span>
+<span class="codeline" id="line-800"><code>// When parsing a time with a zone offset like -0700, if the offset corresponds</code></span>
+<span class="codeline" id="line-801"><code>// to a time zone used by the current location (Local), then Parse uses that</code></span>
+<span class="codeline" id="line-802"><code>// location and zone in the returned time. Otherwise it records the time as</code></span>
+<span class="codeline" id="line-803"><code>// being in a fabricated location with time fixed at the given zone offset.</code></span>
+<span class="codeline" id="line-804"><code>//</code></span>
+<span class="codeline" id="line-805"><code>// When parsing a time with a zone abbreviation like MST, if the zone abbreviation</code></span>
+<span class="codeline" id="line-806"><code>// has a defined offset in the current location, then that offset is used.</code></span>
+<span class="codeline" id="line-807"><code>// The zone abbreviation "UTC" is recognized as UTC regardless of location.</code></span>
+<span class="codeline" id="line-808"><code>// If the zone abbreviation is unknown, Parse records the time as being</code></span>
+<span class="codeline" id="line-809"><code>// in a fabricated location with the given zone abbreviation and a zero offset.</code></span>
+<span class="codeline" id="line-810"><code>// This choice means that such a time can be parsed and reformatted with the</code></span>
+<span class="codeline" id="line-811"><code>// same layout losslessly, but the exact instant used in the representation will</code></span>
+<span class="codeline" id="line-812"><code>// differ by the actual zone offset. To avoid such problems, prefer time layouts</code></span>
+<span class="codeline" id="line-813"><code>// that use a numeric zone offset, or use ParseInLocation.</code></span>
+<span class="codeline" id="line-814"><code>func Parse(layout, value string) (Time, error) {</code></span>
+<span class="codeline" id="line-815"><code>	return parse(layout, value, UTC, Local)</code></span>
+<span class="codeline" id="line-816"><code>}</code></span>
+<span class="codeline" id="line-817"><code></code></span>
+<span class="codeline" id="line-818"><code>// ParseInLocation is like Parse but differs in two important ways.</code></span>
+<span class="codeline" id="line-819"><code>// First, in the absence of time zone information, Parse interprets a time as UTC;</code></span>
+<span class="codeline" id="line-820"><code>// ParseInLocation interprets the time as in the given location.</code></span>
+<span class="codeline" id="line-821"><code>// Second, when given a zone offset or abbreviation, Parse tries to match it</code></span>
+<span class="codeline" id="line-822"><code>// against the Local location; ParseInLocation uses the given location.</code></span>
+<span class="codeline" id="line-823"><code>func ParseInLocation(layout, value string, loc *Location) (Time, error) {</code></span>
+<span class="codeline" id="line-824"><code>	return parse(layout, value, loc, loc)</code></span>
+<span class="codeline" id="line-825"><code>}</code></span>
+<span class="codeline" id="line-826"><code></code></span>
+<span class="codeline" id="line-827"><code>func parse(layout, value string, defaultLocation, local *Location) (Time, error) {</code></span>
+<span class="codeline" id="line-828"><code>	alayout, avalue := layout, value</code></span>
+<span class="codeline" id="line-829"><code>	rangeErrString := "" // set if a value is out of range</code></span>
+<span class="codeline" id="line-830"><code>	amSet := false       // do we need to subtract 12 from the hour for midnight?</code></span>
+<span class="codeline" id="line-831"><code>	pmSet := false       // do we need to add 12 to the hour?</code></span>
+<span class="codeline" id="line-832"><code></code></span>
+<span class="codeline" id="line-833"><code>	// Time being constructed.</code></span>
+<span class="codeline" id="line-834"><code>	var (</code></span>
+<span class="codeline" id="line-835"><code>		year       int</code></span>
+<span class="codeline" id="line-836"><code>		month      int = -1</code></span>
+<span class="codeline" id="line-837"><code>		day        int = -1</code></span>
+<span class="codeline" id="line-838"><code>		yday       int = -1</code></span>
+<span class="codeline" id="line-839"><code>		hour       int</code></span>
+<span class="codeline" id="line-840"><code>		min        int</code></span>
+<span class="codeline" id="line-841"><code>		sec        int</code></span>
+<span class="codeline" id="line-842"><code>		nsec       int</code></span>
+<span class="codeline" id="line-843"><code>		z          *Location</code></span>
+<span class="codeline" id="line-844"><code>		zoneOffset int = -1</code></span>
+<span class="codeline" id="line-845"><code>		zoneName   string</code></span>
+<span class="codeline" id="line-846"><code>	)</code></span>
+<span class="codeline" id="line-847"><code></code></span>
+<span class="codeline" id="line-848"><code>	// Each iteration processes one std value.</code></span>
+<span class="codeline" id="line-849"><code>	for {</code></span>
+<span class="codeline" id="line-850"><code>		var err error</code></span>
+<span class="codeline" id="line-851"><code>		prefix, std, suffix := nextStdChunk(layout)</code></span>
+<span class="codeline" id="line-852"><code>		stdstr := layout[len(prefix) : len(layout)-len(suffix)]</code></span>
+<span class="codeline" id="line-853"><code>		value, err = skip(value, prefix)</code></span>
+<span class="codeline" id="line-854"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-855"><code>			return Time{}, &amp;ParseError{alayout, avalue, prefix, value, ""}</code></span>
+<span class="codeline" id="line-856"><code>		}</code></span>
+<span class="codeline" id="line-857"><code>		if std == 0 {</code></span>
+<span class="codeline" id="line-858"><code>			if len(value) != 0 {</code></span>
+<span class="codeline" id="line-859"><code>				return Time{}, &amp;ParseError{alayout, avalue, "", value, ": extra text: " + quote(value)}</code></span>
+<span class="codeline" id="line-860"><code>			}</code></span>
+<span class="codeline" id="line-861"><code>			break</code></span>
+<span class="codeline" id="line-862"><code>		}</code></span>
+<span class="codeline" id="line-863"><code>		layout = suffix</code></span>
+<span class="codeline" id="line-864"><code>		var p string</code></span>
+<span class="codeline" id="line-865"><code>		switch std &amp; stdMask {</code></span>
+<span class="codeline" id="line-866"><code>		case stdYear:</code></span>
+<span class="codeline" id="line-867"><code>			if len(value) &lt; 2 {</code></span>
+<span class="codeline" id="line-868"><code>				err = errBad</code></span>
+<span class="codeline" id="line-869"><code>				break</code></span>
+<span class="codeline" id="line-870"><code>			}</code></span>
+<span class="codeline" id="line-871"><code>			hold := value</code></span>
+<span class="codeline" id="line-872"><code>			p, value = value[0:2], value[2:]</code></span>
+<span class="codeline" id="line-873"><code>			year, err = atoi(p)</code></span>
+<span class="codeline" id="line-874"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-875"><code>				value = hold</code></span>
+<span class="codeline" id="line-876"><code>			} else if year &gt;= 69 { // Unix time starts Dec 31 1969 in some time zones</code></span>
+<span class="codeline" id="line-877"><code>				year += 1900</code></span>
+<span class="codeline" id="line-878"><code>			} else {</code></span>
+<span class="codeline" id="line-879"><code>				year += 2000</code></span>
+<span class="codeline" id="line-880"><code>			}</code></span>
+<span class="codeline" id="line-881"><code>		case stdLongYear:</code></span>
+<span class="codeline" id="line-882"><code>			if len(value) &lt; 4 || !isDigit(value, 0) {</code></span>
+<span class="codeline" id="line-883"><code>				err = errBad</code></span>
+<span class="codeline" id="line-884"><code>				break</code></span>
+<span class="codeline" id="line-885"><code>			}</code></span>
+<span class="codeline" id="line-886"><code>			p, value = value[0:4], value[4:]</code></span>
+<span class="codeline" id="line-887"><code>			year, err = atoi(p)</code></span>
+<span class="codeline" id="line-888"><code>		case stdMonth:</code></span>
+<span class="codeline" id="line-889"><code>			month, value, err = lookup(shortMonthNames, value)</code></span>
+<span class="codeline" id="line-890"><code>			month++</code></span>
+<span class="codeline" id="line-891"><code>		case stdLongMonth:</code></span>
+<span class="codeline" id="line-892"><code>			month, value, err = lookup(longMonthNames, value)</code></span>
+<span class="codeline" id="line-893"><code>			month++</code></span>
+<span class="codeline" id="line-894"><code>		case stdNumMonth, stdZeroMonth:</code></span>
+<span class="codeline" id="line-895"><code>			month, value, err = getnum(value, std == stdZeroMonth)</code></span>
+<span class="codeline" id="line-896"><code>			if err == nil &amp;&amp; (month &lt;= 0 || 12 &lt; month) {</code></span>
+<span class="codeline" id="line-897"><code>				rangeErrString = "month"</code></span>
+<span class="codeline" id="line-898"><code>			}</code></span>
+<span class="codeline" id="line-899"><code>		case stdWeekDay:</code></span>
+<span class="codeline" id="line-900"><code>			// Ignore weekday except for error checking.</code></span>
+<span class="codeline" id="line-901"><code>			_, value, err = lookup(shortDayNames, value)</code></span>
+<span class="codeline" id="line-902"><code>		case stdLongWeekDay:</code></span>
+<span class="codeline" id="line-903"><code>			_, value, err = lookup(longDayNames, value)</code></span>
+<span class="codeline" id="line-904"><code>		case stdDay, stdUnderDay, stdZeroDay:</code></span>
+<span class="codeline" id="line-905"><code>			if std == stdUnderDay &amp;&amp; len(value) &gt; 0 &amp;&amp; value[0] == ' ' {</code></span>
+<span class="codeline" id="line-906"><code>				value = value[1:]</code></span>
+<span class="codeline" id="line-907"><code>			}</code></span>
+<span class="codeline" id="line-908"><code>			day, value, err = getnum(value, std == stdZeroDay)</code></span>
+<span class="codeline" id="line-909"><code>			// Note that we allow any one- or two-digit day here.</code></span>
+<span class="codeline" id="line-910"><code>			// The month, day, year combination is validated after we've completed parsing.</code></span>
+<span class="codeline" id="line-911"><code>		case stdUnderYearDay, stdZeroYearDay:</code></span>
+<span class="codeline" id="line-912"><code>			for i := 0; i &lt; 2; i++ {</code></span>
+<span class="codeline" id="line-913"><code>				if std == stdUnderYearDay &amp;&amp; len(value) &gt; 0 &amp;&amp; value[0] == ' ' {</code></span>
+<span class="codeline" id="line-914"><code>					value = value[1:]</code></span>
+<span class="codeline" id="line-915"><code>				}</code></span>
+<span class="codeline" id="line-916"><code>			}</code></span>
+<span class="codeline" id="line-917"><code>			yday, value, err = getnum3(value, std == stdZeroYearDay)</code></span>
+<span class="codeline" id="line-918"><code>			// Note that we allow any one-, two-, or three-digit year-day here.</code></span>
+<span class="codeline" id="line-919"><code>			// The year-day, year combination is validated after we've completed parsing.</code></span>
+<span class="codeline" id="line-920"><code>		case stdHour:</code></span>
+<span class="codeline" id="line-921"><code>			hour, value, err = getnum(value, false)</code></span>
+<span class="codeline" id="line-922"><code>			if hour &lt; 0 || 24 &lt;= hour {</code></span>
+<span class="codeline" id="line-923"><code>				rangeErrString = "hour"</code></span>
+<span class="codeline" id="line-924"><code>			}</code></span>
+<span class="codeline" id="line-925"><code>		case stdHour12, stdZeroHour12:</code></span>
+<span class="codeline" id="line-926"><code>			hour, value, err = getnum(value, std == stdZeroHour12)</code></span>
+<span class="codeline" id="line-927"><code>			if hour &lt; 0 || 12 &lt; hour {</code></span>
+<span class="codeline" id="line-928"><code>				rangeErrString = "hour"</code></span>
+<span class="codeline" id="line-929"><code>			}</code></span>
+<span class="codeline" id="line-930"><code>		case stdMinute, stdZeroMinute:</code></span>
+<span class="codeline" id="line-931"><code>			min, value, err = getnum(value, std == stdZeroMinute)</code></span>
+<span class="codeline" id="line-932"><code>			if min &lt; 0 || 60 &lt;= min {</code></span>
+<span class="codeline" id="line-933"><code>				rangeErrString = "minute"</code></span>
+<span class="codeline" id="line-934"><code>			}</code></span>
+<span class="codeline" id="line-935"><code>		case stdSecond, stdZeroSecond:</code></span>
+<span class="codeline" id="line-936"><code>			sec, value, err = getnum(value, std == stdZeroSecond)</code></span>
+<span class="codeline" id="line-937"><code>			if sec &lt; 0 || 60 &lt;= sec {</code></span>
+<span class="codeline" id="line-938"><code>				rangeErrString = "second"</code></span>
+<span class="codeline" id="line-939"><code>				break</code></span>
+<span class="codeline" id="line-940"><code>			}</code></span>
+<span class="codeline" id="line-941"><code>			// Special case: do we have a fractional second but no</code></span>
+<span class="codeline" id="line-942"><code>			// fractional second in the format?</code></span>
+<span class="codeline" id="line-943"><code>			if len(value) &gt;= 2 &amp;&amp; value[0] == '.' &amp;&amp; isDigit(value, 1) {</code></span>
+<span class="codeline" id="line-944"><code>				_, std, _ = nextStdChunk(layout)</code></span>
+<span class="codeline" id="line-945"><code>				std &amp;= stdMask</code></span>
+<span class="codeline" id="line-946"><code>				if std == stdFracSecond0 || std == stdFracSecond9 {</code></span>
+<span class="codeline" id="line-947"><code>					// Fractional second in the layout; proceed normally</code></span>
+<span class="codeline" id="line-948"><code>					break</code></span>
+<span class="codeline" id="line-949"><code>				}</code></span>
+<span class="codeline" id="line-950"><code>				// No fractional second in the layout but we have one in the input.</code></span>
+<span class="codeline" id="line-951"><code>				n := 2</code></span>
+<span class="codeline" id="line-952"><code>				for ; n &lt; len(value) &amp;&amp; isDigit(value, n); n++ {</code></span>
+<span class="codeline" id="line-953"><code>				}</code></span>
+<span class="codeline" id="line-954"><code>				nsec, rangeErrString, err = parseNanoseconds(value, n)</code></span>
+<span class="codeline" id="line-955"><code>				value = value[n:]</code></span>
+<span class="codeline" id="line-956"><code>			}</code></span>
+<span class="codeline" id="line-957"><code>		case stdPM:</code></span>
+<span class="codeline" id="line-958"><code>			if len(value) &lt; 2 {</code></span>
+<span class="codeline" id="line-959"><code>				err = errBad</code></span>
+<span class="codeline" id="line-960"><code>				break</code></span>
+<span class="codeline" id="line-961"><code>			}</code></span>
+<span class="codeline" id="line-962"><code>			p, value = value[0:2], value[2:]</code></span>
+<span class="codeline" id="line-963"><code>			switch p {</code></span>
+<span class="codeline" id="line-964"><code>			case "PM":</code></span>
+<span class="codeline" id="line-965"><code>				pmSet = true</code></span>
+<span class="codeline" id="line-966"><code>			case "AM":</code></span>
+<span class="codeline" id="line-967"><code>				amSet = true</code></span>
+<span class="codeline" id="line-968"><code>			default:</code></span>
+<span class="codeline" id="line-969"><code>				err = errBad</code></span>
+<span class="codeline" id="line-970"><code>			}</code></span>
+<span class="codeline" id="line-971"><code>		case stdpm:</code></span>
+<span class="codeline" id="line-972"><code>			if len(value) &lt; 2 {</code></span>
+<span class="codeline" id="line-973"><code>				err = errBad</code></span>
+<span class="codeline" id="line-974"><code>				break</code></span>
+<span class="codeline" id="line-975"><code>			}</code></span>
+<span class="codeline" id="line-976"><code>			p, value = value[0:2], value[2:]</code></span>
+<span class="codeline" id="line-977"><code>			switch p {</code></span>
+<span class="codeline" id="line-978"><code>			case "pm":</code></span>
+<span class="codeline" id="line-979"><code>				pmSet = true</code></span>
+<span class="codeline" id="line-980"><code>			case "am":</code></span>
+<span class="codeline" id="line-981"><code>				amSet = true</code></span>
+<span class="codeline" id="line-982"><code>			default:</code></span>
+<span class="codeline" id="line-983"><code>				err = errBad</code></span>
+<span class="codeline" id="line-984"><code>			}</code></span>
+<span class="codeline" id="line-985"><code>		case stdISO8601TZ, stdISO8601ColonTZ, stdISO8601SecondsTZ, stdISO8601ShortTZ, stdISO8601ColonSecondsTZ, stdNumTZ, stdNumShortTZ, stdNumColonTZ, stdNumSecondsTz, stdNumColonSecondsTZ:</code></span>
+<span class="codeline" id="line-986"><code>			if (std == stdISO8601TZ || std == stdISO8601ShortTZ || std == stdISO8601ColonTZ) &amp;&amp; len(value) &gt;= 1 &amp;&amp; value[0] == 'Z' {</code></span>
+<span class="codeline" id="line-987"><code>				value = value[1:]</code></span>
+<span class="codeline" id="line-988"><code>				z = UTC</code></span>
+<span class="codeline" id="line-989"><code>				break</code></span>
+<span class="codeline" id="line-990"><code>			}</code></span>
+<span class="codeline" id="line-991"><code>			var sign, hour, min, seconds string</code></span>
+<span class="codeline" id="line-992"><code>			if std == stdISO8601ColonTZ || std == stdNumColonTZ {</code></span>
+<span class="codeline" id="line-993"><code>				if len(value) &lt; 6 {</code></span>
+<span class="codeline" id="line-994"><code>					err = errBad</code></span>
+<span class="codeline" id="line-995"><code>					break</code></span>
+<span class="codeline" id="line-996"><code>				}</code></span>
+<span class="codeline" id="line-997"><code>				if value[3] != ':' {</code></span>
+<span class="codeline" id="line-998"><code>					err = errBad</code></span>
+<span class="codeline" id="line-999"><code>					break</code></span>
+<span class="codeline" id="line-1000"><code>				}</code></span>
+<span class="codeline" id="line-1001"><code>				sign, hour, min, seconds, value = value[0:1], value[1:3], value[4:6], "00", value[6:]</code></span>
+<span class="codeline" id="line-1002"><code>			} else if std == stdNumShortTZ || std == stdISO8601ShortTZ {</code></span>
+<span class="codeline" id="line-1003"><code>				if len(value) &lt; 3 {</code></span>
+<span class="codeline" id="line-1004"><code>					err = errBad</code></span>
+<span class="codeline" id="line-1005"><code>					break</code></span>
+<span class="codeline" id="line-1006"><code>				}</code></span>
+<span class="codeline" id="line-1007"><code>				sign, hour, min, seconds, value = value[0:1], value[1:3], "00", "00", value[3:]</code></span>
+<span class="codeline" id="line-1008"><code>			} else if std == stdISO8601ColonSecondsTZ || std == stdNumColonSecondsTZ {</code></span>
+<span class="codeline" id="line-1009"><code>				if len(value) &lt; 9 {</code></span>
+<span class="codeline" id="line-1010"><code>					err = errBad</code></span>
+<span class="codeline" id="line-1011"><code>					break</code></span>
+<span class="codeline" id="line-1012"><code>				}</code></span>
+<span class="codeline" id="line-1013"><code>				if value[3] != ':' || value[6] != ':' {</code></span>
+<span class="codeline" id="line-1014"><code>					err = errBad</code></span>
+<span class="codeline" id="line-1015"><code>					break</code></span>
+<span class="codeline" id="line-1016"><code>				}</code></span>
+<span class="codeline" id="line-1017"><code>				sign, hour, min, seconds, value = value[0:1], value[1:3], value[4:6], value[7:9], value[9:]</code></span>
+<span class="codeline" id="line-1018"><code>			} else if std == stdISO8601SecondsTZ || std == stdNumSecondsTz {</code></span>
+<span class="codeline" id="line-1019"><code>				if len(value) &lt; 7 {</code></span>
+<span class="codeline" id="line-1020"><code>					err = errBad</code></span>
+<span class="codeline" id="line-1021"><code>					break</code></span>
+<span class="codeline" id="line-1022"><code>				}</code></span>
+<span class="codeline" id="line-1023"><code>				sign, hour, min, seconds, value = value[0:1], value[1:3], value[3:5], value[5:7], value[7:]</code></span>
+<span class="codeline" id="line-1024"><code>			} else {</code></span>
+<span class="codeline" id="line-1025"><code>				if len(value) &lt; 5 {</code></span>
+<span class="codeline" id="line-1026"><code>					err = errBad</code></span>
+<span class="codeline" id="line-1027"><code>					break</code></span>
+<span class="codeline" id="line-1028"><code>				}</code></span>
+<span class="codeline" id="line-1029"><code>				sign, hour, min, seconds, value = value[0:1], value[1:3], value[3:5], "00", value[5:]</code></span>
+<span class="codeline" id="line-1030"><code>			}</code></span>
+<span class="codeline" id="line-1031"><code>			var hr, mm, ss int</code></span>
+<span class="codeline" id="line-1032"><code>			hr, err = atoi(hour)</code></span>
+<span class="codeline" id="line-1033"><code>			if err == nil {</code></span>
+<span class="codeline" id="line-1034"><code>				mm, err = atoi(min)</code></span>
+<span class="codeline" id="line-1035"><code>			}</code></span>
+<span class="codeline" id="line-1036"><code>			if err == nil {</code></span>
+<span class="codeline" id="line-1037"><code>				ss, err = atoi(seconds)</code></span>
+<span class="codeline" id="line-1038"><code>			}</code></span>
+<span class="codeline" id="line-1039"><code>			zoneOffset = (hr*60+mm)*60 + ss // offset is in seconds</code></span>
+<span class="codeline" id="line-1040"><code>			switch sign[0] {</code></span>
+<span class="codeline" id="line-1041"><code>			case '+':</code></span>
+<span class="codeline" id="line-1042"><code>			case '-':</code></span>
+<span class="codeline" id="line-1043"><code>				zoneOffset = -zoneOffset</code></span>
+<span class="codeline" id="line-1044"><code>			default:</code></span>
+<span class="codeline" id="line-1045"><code>				err = errBad</code></span>
+<span class="codeline" id="line-1046"><code>			}</code></span>
+<span class="codeline" id="line-1047"><code>		case stdTZ:</code></span>
+<span class="codeline" id="line-1048"><code>			// Does it look like a time zone?</code></span>
+<span class="codeline" id="line-1049"><code>			if len(value) &gt;= 3 &amp;&amp; value[0:3] == "UTC" {</code></span>
+<span class="codeline" id="line-1050"><code>				z = UTC</code></span>
+<span class="codeline" id="line-1051"><code>				value = value[3:]</code></span>
+<span class="codeline" id="line-1052"><code>				break</code></span>
+<span class="codeline" id="line-1053"><code>			}</code></span>
+<span class="codeline" id="line-1054"><code>			n, ok := parseTimeZone(value)</code></span>
+<span class="codeline" id="line-1055"><code>			if !ok {</code></span>
+<span class="codeline" id="line-1056"><code>				err = errBad</code></span>
+<span class="codeline" id="line-1057"><code>				break</code></span>
+<span class="codeline" id="line-1058"><code>			}</code></span>
+<span class="codeline" id="line-1059"><code>			zoneName, value = value[:n], value[n:]</code></span>
+<span class="codeline" id="line-1060"><code></code></span>
+<span class="codeline" id="line-1061"><code>		case stdFracSecond0:</code></span>
+<span class="codeline" id="line-1062"><code>			// stdFracSecond0 requires the exact number of digits as specified in</code></span>
+<span class="codeline" id="line-1063"><code>			// the layout.</code></span>
+<span class="codeline" id="line-1064"><code>			ndigit := 1 + (std &gt;&gt; stdArgShift)</code></span>
+<span class="codeline" id="line-1065"><code>			if len(value) &lt; ndigit {</code></span>
+<span class="codeline" id="line-1066"><code>				err = errBad</code></span>
+<span class="codeline" id="line-1067"><code>				break</code></span>
+<span class="codeline" id="line-1068"><code>			}</code></span>
+<span class="codeline" id="line-1069"><code>			nsec, rangeErrString, err = parseNanoseconds(value, ndigit)</code></span>
+<span class="codeline" id="line-1070"><code>			value = value[ndigit:]</code></span>
+<span class="codeline" id="line-1071"><code></code></span>
+<span class="codeline" id="line-1072"><code>		case stdFracSecond9:</code></span>
+<span class="codeline" id="line-1073"><code>			if len(value) &lt; 2 || value[0] != '.' || value[1] &lt; '0' || '9' &lt; value[1] {</code></span>
+<span class="codeline" id="line-1074"><code>				// Fractional second omitted.</code></span>
+<span class="codeline" id="line-1075"><code>				break</code></span>
+<span class="codeline" id="line-1076"><code>			}</code></span>
+<span class="codeline" id="line-1077"><code>			// Take any number of digits, even more than asked for,</code></span>
+<span class="codeline" id="line-1078"><code>			// because it is what the stdSecond case would do.</code></span>
+<span class="codeline" id="line-1079"><code>			i := 0</code></span>
+<span class="codeline" id="line-1080"><code>			for i &lt; 9 &amp;&amp; i+1 &lt; len(value) &amp;&amp; '0' &lt;= value[i+1] &amp;&amp; value[i+1] &lt;= '9' {</code></span>
+<span class="codeline" id="line-1081"><code>				i++</code></span>
+<span class="codeline" id="line-1082"><code>			}</code></span>
+<span class="codeline" id="line-1083"><code>			nsec, rangeErrString, err = parseNanoseconds(value, 1+i)</code></span>
+<span class="codeline" id="line-1084"><code>			value = value[1+i:]</code></span>
+<span class="codeline" id="line-1085"><code>		}</code></span>
+<span class="codeline" id="line-1086"><code>		if rangeErrString != "" {</code></span>
+<span class="codeline" id="line-1087"><code>			return Time{}, &amp;ParseError{alayout, avalue, stdstr, value, ": " + rangeErrString + " out of range"}</code></span>
+<span class="codeline" id="line-1088"><code>		}</code></span>
+<span class="codeline" id="line-1089"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-1090"><code>			return Time{}, &amp;ParseError{alayout, avalue, stdstr, value, ""}</code></span>
+<span class="codeline" id="line-1091"><code>		}</code></span>
+<span class="codeline" id="line-1092"><code>	}</code></span>
+<span class="codeline" id="line-1093"><code>	if pmSet &amp;&amp; hour &lt; 12 {</code></span>
+<span class="codeline" id="line-1094"><code>		hour += 12</code></span>
+<span class="codeline" id="line-1095"><code>	} else if amSet &amp;&amp; hour == 12 {</code></span>
+<span class="codeline" id="line-1096"><code>		hour = 0</code></span>
+<span class="codeline" id="line-1097"><code>	}</code></span>
+<span class="codeline" id="line-1098"><code></code></span>
+<span class="codeline" id="line-1099"><code>	// Convert yday to day, month.</code></span>
+<span class="codeline" id="line-1100"><code>	if yday &gt;= 0 {</code></span>
+<span class="codeline" id="line-1101"><code>		var d int</code></span>
+<span class="codeline" id="line-1102"><code>		var m int</code></span>
+<span class="codeline" id="line-1103"><code>		if isLeap(year) {</code></span>
+<span class="codeline" id="line-1104"><code>			if yday == 31+29 {</code></span>
+<span class="codeline" id="line-1105"><code>				m = int(February)</code></span>
+<span class="codeline" id="line-1106"><code>				d = 29</code></span>
+<span class="codeline" id="line-1107"><code>			} else if yday &gt; 31+29 {</code></span>
+<span class="codeline" id="line-1108"><code>				yday--</code></span>
+<span class="codeline" id="line-1109"><code>			}</code></span>
+<span class="codeline" id="line-1110"><code>		}</code></span>
+<span class="codeline" id="line-1111"><code>		if yday &lt; 1 || yday &gt; 365 {</code></span>
+<span class="codeline" id="line-1112"><code>			return Time{}, &amp;ParseError{alayout, avalue, "", value, ": day-of-year out of range"}</code></span>
+<span class="codeline" id="line-1113"><code>		}</code></span>
+<span class="codeline" id="line-1114"><code>		if m == 0 {</code></span>
+<span class="codeline" id="line-1115"><code>			m = (yday-1)/31 + 1</code></span>
+<span class="codeline" id="line-1116"><code>			if int(daysBefore[m]) &lt; yday {</code></span>
+<span class="codeline" id="line-1117"><code>				m++</code></span>
+<span class="codeline" id="line-1118"><code>			}</code></span>
+<span class="codeline" id="line-1119"><code>			d = yday - int(daysBefore[m-1])</code></span>
+<span class="codeline" id="line-1120"><code>		}</code></span>
+<span class="codeline" id="line-1121"><code>		// If month, day already seen, yday's m, d must match.</code></span>
+<span class="codeline" id="line-1122"><code>		// Otherwise, set them from m, d.</code></span>
+<span class="codeline" id="line-1123"><code>		if month &gt;= 0 &amp;&amp; month != m {</code></span>
+<span class="codeline" id="line-1124"><code>			return Time{}, &amp;ParseError{alayout, avalue, "", value, ": day-of-year does not match month"}</code></span>
+<span class="codeline" id="line-1125"><code>		}</code></span>
+<span class="codeline" id="line-1126"><code>		month = m</code></span>
+<span class="codeline" id="line-1127"><code>		if day &gt;= 0 &amp;&amp; day != d {</code></span>
+<span class="codeline" id="line-1128"><code>			return Time{}, &amp;ParseError{alayout, avalue, "", value, ": day-of-year does not match day"}</code></span>
+<span class="codeline" id="line-1129"><code>		}</code></span>
+<span class="codeline" id="line-1130"><code>		day = d</code></span>
+<span class="codeline" id="line-1131"><code>	} else {</code></span>
+<span class="codeline" id="line-1132"><code>		if month &lt; 0 {</code></span>
+<span class="codeline" id="line-1133"><code>			month = int(January)</code></span>
+<span class="codeline" id="line-1134"><code>		}</code></span>
+<span class="codeline" id="line-1135"><code>		if day &lt; 0 {</code></span>
+<span class="codeline" id="line-1136"><code>			day = 1</code></span>
+<span class="codeline" id="line-1137"><code>		}</code></span>
+<span class="codeline" id="line-1138"><code>	}</code></span>
+<span class="codeline" id="line-1139"><code></code></span>
+<span class="codeline" id="line-1140"><code>	// Validate the day of the month.</code></span>
+<span class="codeline" id="line-1141"><code>	if day &lt; 1 || day &gt; daysIn(Month(month), year) {</code></span>
+<span class="codeline" id="line-1142"><code>		return Time{}, &amp;ParseError{alayout, avalue, "", value, ": day out of range"}</code></span>
+<span class="codeline" id="line-1143"><code>	}</code></span>
+<span class="codeline" id="line-1144"><code></code></span>
+<span class="codeline" id="line-1145"><code>	if z != nil {</code></span>
+<span class="codeline" id="line-1146"><code>		return Date(year, Month(month), day, hour, min, sec, nsec, z), nil</code></span>
+<span class="codeline" id="line-1147"><code>	}</code></span>
+<span class="codeline" id="line-1148"><code></code></span>
+<span class="codeline" id="line-1149"><code>	if zoneOffset != -1 {</code></span>
+<span class="codeline" id="line-1150"><code>		t := Date(year, Month(month), day, hour, min, sec, nsec, UTC)</code></span>
+<span class="codeline" id="line-1151"><code>		t.addSec(-int64(zoneOffset))</code></span>
+<span class="codeline" id="line-1152"><code></code></span>
+<span class="codeline" id="line-1153"><code>		// Look for local zone with the given offset.</code></span>
+<span class="codeline" id="line-1154"><code>		// If that zone was in effect at the given time, use it.</code></span>
+<span class="codeline" id="line-1155"><code>		name, offset, _, _ := local.lookup(t.unixSec())</code></span>
+<span class="codeline" id="line-1156"><code>		if offset == zoneOffset &amp;&amp; (zoneName == "" || name == zoneName) {</code></span>
+<span class="codeline" id="line-1157"><code>			t.setLoc(local)</code></span>
+<span class="codeline" id="line-1158"><code>			return t, nil</code></span>
+<span class="codeline" id="line-1159"><code>		}</code></span>
+<span class="codeline" id="line-1160"><code></code></span>
+<span class="codeline" id="line-1161"><code>		// Otherwise create fake zone to record offset.</code></span>
+<span class="codeline" id="line-1162"><code>		t.setLoc(FixedZone(zoneName, zoneOffset))</code></span>
+<span class="codeline" id="line-1163"><code>		return t, nil</code></span>
+<span class="codeline" id="line-1164"><code>	}</code></span>
+<span class="codeline" id="line-1165"><code></code></span>
+<span class="codeline" id="line-1166"><code>	if zoneName != "" {</code></span>
+<span class="codeline" id="line-1167"><code>		t := Date(year, Month(month), day, hour, min, sec, nsec, UTC)</code></span>
+<span class="codeline" id="line-1168"><code>		// Look for local zone with the given offset.</code></span>
+<span class="codeline" id="line-1169"><code>		// If that zone was in effect at the given time, use it.</code></span>
+<span class="codeline" id="line-1170"><code>		offset, ok := local.lookupName(zoneName, t.unixSec())</code></span>
+<span class="codeline" id="line-1171"><code>		if ok {</code></span>
+<span class="codeline" id="line-1172"><code>			t.addSec(-int64(offset))</code></span>
+<span class="codeline" id="line-1173"><code>			t.setLoc(local)</code></span>
+<span class="codeline" id="line-1174"><code>			return t, nil</code></span>
+<span class="codeline" id="line-1175"><code>		}</code></span>
+<span class="codeline" id="line-1176"><code></code></span>
+<span class="codeline" id="line-1177"><code>		// Otherwise, create fake zone with unknown offset.</code></span>
+<span class="codeline" id="line-1178"><code>		if len(zoneName) &gt; 3 &amp;&amp; zoneName[:3] == "GMT" {</code></span>
+<span class="codeline" id="line-1179"><code>			offset, _ = atoi(zoneName[3:]) // Guaranteed OK by parseGMT.</code></span>
+<span class="codeline" id="line-1180"><code>			offset *= 3600</code></span>
+<span class="codeline" id="line-1181"><code>		}</code></span>
+<span class="codeline" id="line-1182"><code>		t.setLoc(FixedZone(zoneName, offset))</code></span>
+<span class="codeline" id="line-1183"><code>		return t, nil</code></span>
+<span class="codeline" id="line-1184"><code>	}</code></span>
+<span class="codeline" id="line-1185"><code></code></span>
+<span class="codeline" id="line-1186"><code>	// Otherwise, fall back to default.</code></span>
+<span class="codeline" id="line-1187"><code>	return Date(year, Month(month), day, hour, min, sec, nsec, defaultLocation), nil</code></span>
+<span class="codeline" id="line-1188"><code>}</code></span>
+<span class="codeline" id="line-1189"><code></code></span>
+<span class="codeline" id="line-1190"><code>// parseTimeZone parses a time zone string and returns its length. Time zones</code></span>
+<span class="codeline" id="line-1191"><code>// are human-generated and unpredictable. We can't do precise error checking.</code></span>
+<span class="codeline" id="line-1192"><code>// On the other hand, for a correct parse there must be a time zone at the</code></span>
+<span class="codeline" id="line-1193"><code>// beginning of the string, so it's almost always true that there's one</code></span>
+<span class="codeline" id="line-1194"><code>// there. We look at the beginning of the string for a run of upper-case letters.</code></span>
+<span class="codeline" id="line-1195"><code>// If there are more than 5, it's an error.</code></span>
+<span class="codeline" id="line-1196"><code>// If there are 4 or 5 and the last is a T, it's a time zone.</code></span>
+<span class="codeline" id="line-1197"><code>// If there are 3, it's a time zone.</code></span>
+<span class="codeline" id="line-1198"><code>// Otherwise, other than special cases, it's not a time zone.</code></span>
+<span class="codeline" id="line-1199"><code>// GMT is special because it can have an hour offset.</code></span>
+<span class="codeline" id="line-1200"><code>func parseTimeZone(value string) (length int, ok bool) {</code></span>
+<span class="codeline" id="line-1201"><code>	if len(value) &lt; 3 {</code></span>
+<span class="codeline" id="line-1202"><code>		return 0, false</code></span>
+<span class="codeline" id="line-1203"><code>	}</code></span>
+<span class="codeline" id="line-1204"><code>	// Special case 1: ChST and MeST are the only zones with a lower-case letter.</code></span>
+<span class="codeline" id="line-1205"><code>	if len(value) &gt;= 4 &amp;&amp; (value[:4] == "ChST" || value[:4] == "MeST") {</code></span>
+<span class="codeline" id="line-1206"><code>		return 4, true</code></span>
+<span class="codeline" id="line-1207"><code>	}</code></span>
+<span class="codeline" id="line-1208"><code>	// Special case 2: GMT may have an hour offset; treat it specially.</code></span>
+<span class="codeline" id="line-1209"><code>	if value[:3] == "GMT" {</code></span>
+<span class="codeline" id="line-1210"><code>		length = parseGMT(value)</code></span>
+<span class="codeline" id="line-1211"><code>		return length, true</code></span>
+<span class="codeline" id="line-1212"><code>	}</code></span>
+<span class="codeline" id="line-1213"><code>	// Special Case 3: Some time zones are not named, but have +/-00 format</code></span>
+<span class="codeline" id="line-1214"><code>	if value[0] == '+' || value[0] == '-' {</code></span>
+<span class="codeline" id="line-1215"><code>		length = parseSignedOffset(value)</code></span>
+<span class="codeline" id="line-1216"><code>		ok := length &gt; 0 // parseSignedOffset returns 0 in case of bad input</code></span>
+<span class="codeline" id="line-1217"><code>		return length, ok</code></span>
+<span class="codeline" id="line-1218"><code>	}</code></span>
+<span class="codeline" id="line-1219"><code>	// How many upper-case letters are there? Need at least three, at most five.</code></span>
+<span class="codeline" id="line-1220"><code>	var nUpper int</code></span>
+<span class="codeline" id="line-1221"><code>	for nUpper = 0; nUpper &lt; 6; nUpper++ {</code></span>
+<span class="codeline" id="line-1222"><code>		if nUpper &gt;= len(value) {</code></span>
+<span class="codeline" id="line-1223"><code>			break</code></span>
+<span class="codeline" id="line-1224"><code>		}</code></span>
+<span class="codeline" id="line-1225"><code>		if c := value[nUpper]; c &lt; 'A' || 'Z' &lt; c {</code></span>
+<span class="codeline" id="line-1226"><code>			break</code></span>
+<span class="codeline" id="line-1227"><code>		}</code></span>
+<span class="codeline" id="line-1228"><code>	}</code></span>
+<span class="codeline" id="line-1229"><code>	switch nUpper {</code></span>
+<span class="codeline" id="line-1230"><code>	case 0, 1, 2, 6:</code></span>
+<span class="codeline" id="line-1231"><code>		return 0, false</code></span>
+<span class="codeline" id="line-1232"><code>	case 5: // Must end in T to match.</code></span>
+<span class="codeline" id="line-1233"><code>		if value[4] == 'T' {</code></span>
+<span class="codeline" id="line-1234"><code>			return 5, true</code></span>
+<span class="codeline" id="line-1235"><code>		}</code></span>
+<span class="codeline" id="line-1236"><code>	case 4:</code></span>
+<span class="codeline" id="line-1237"><code>		// Must end in T, except one special case.</code></span>
+<span class="codeline" id="line-1238"><code>		if value[3] == 'T' || value[:4] == "WITA" {</code></span>
+<span class="codeline" id="line-1239"><code>			return 4, true</code></span>
+<span class="codeline" id="line-1240"><code>		}</code></span>
+<span class="codeline" id="line-1241"><code>	case 3:</code></span>
+<span class="codeline" id="line-1242"><code>		return 3, true</code></span>
+<span class="codeline" id="line-1243"><code>	}</code></span>
+<span class="codeline" id="line-1244"><code>	return 0, false</code></span>
+<span class="codeline" id="line-1245"><code>}</code></span>
+<span class="codeline" id="line-1246"><code></code></span>
+<span class="codeline" id="line-1247"><code>// parseGMT parses a GMT time zone. The input string is known to start "GMT".</code></span>
+<span class="codeline" id="line-1248"><code>// The function checks whether that is followed by a sign and a number in the</code></span>
+<span class="codeline" id="line-1249"><code>// range -23 through +23 excluding zero.</code></span>
+<span class="codeline" id="line-1250"><code>func parseGMT(value string) int {</code></span>
+<span class="codeline" id="line-1251"><code>	value = value[3:]</code></span>
+<span class="codeline" id="line-1252"><code>	if len(value) == 0 {</code></span>
+<span class="codeline" id="line-1253"><code>		return 3</code></span>
+<span class="codeline" id="line-1254"><code>	}</code></span>
+<span class="codeline" id="line-1255"><code></code></span>
+<span class="codeline" id="line-1256"><code>	return 3 + parseSignedOffset(value)</code></span>
+<span class="codeline" id="line-1257"><code>}</code></span>
+<span class="codeline" id="line-1258"><code></code></span>
+<span class="codeline" id="line-1259"><code>// parseSignedOffset parses a signed timezone offset (e.g. "+03" or "-04").</code></span>
+<span class="codeline" id="line-1260"><code>// The function checks for a signed number in the range -23 through +23 excluding zero.</code></span>
+<span class="codeline" id="line-1261"><code>// Returns length of the found offset string or 0 otherwise</code></span>
+<span class="codeline" id="line-1262"><code>func parseSignedOffset(value string) int {</code></span>
+<span class="codeline" id="line-1263"><code>	sign := value[0]</code></span>
+<span class="codeline" id="line-1264"><code>	if sign != '-' &amp;&amp; sign != '+' {</code></span>
+<span class="codeline" id="line-1265"><code>		return 0</code></span>
+<span class="codeline" id="line-1266"><code>	}</code></span>
+<span class="codeline" id="line-1267"><code>	x, rem, err := leadingInt(value[1:])</code></span>
+<span class="codeline" id="line-1268"><code></code></span>
+<span class="codeline" id="line-1269"><code>	// fail if nothing consumed by leadingInt</code></span>
+<span class="codeline" id="line-1270"><code>	if err != nil || value[1:] == rem {</code></span>
+<span class="codeline" id="line-1271"><code>		return 0</code></span>
+<span class="codeline" id="line-1272"><code>	}</code></span>
+<span class="codeline" id="line-1273"><code>	if sign == '-' {</code></span>
+<span class="codeline" id="line-1274"><code>		x = -x</code></span>
+<span class="codeline" id="line-1275"><code>	}</code></span>
+<span class="codeline" id="line-1276"><code>	if x &lt; -23 || 23 &lt; x {</code></span>
+<span class="codeline" id="line-1277"><code>		return 0</code></span>
+<span class="codeline" id="line-1278"><code>	}</code></span>
+<span class="codeline" id="line-1279"><code>	return len(value) - len(rem)</code></span>
+<span class="codeline" id="line-1280"><code>}</code></span>
+<span class="codeline" id="line-1281"><code></code></span>
+<span class="codeline" id="line-1282"><code>func parseNanoseconds(value string, nbytes int) (ns int, rangeErrString string, err error) {</code></span>
+<span class="codeline" id="line-1283"><code>	if value[0] != '.' {</code></span>
+<span class="codeline" id="line-1284"><code>		err = errBad</code></span>
+<span class="codeline" id="line-1285"><code>		return</code></span>
+<span class="codeline" id="line-1286"><code>	}</code></span>
+<span class="codeline" id="line-1287"><code>	if ns, err = atoi(value[1:nbytes]); err != nil {</code></span>
+<span class="codeline" id="line-1288"><code>		return</code></span>
+<span class="codeline" id="line-1289"><code>	}</code></span>
+<span class="codeline" id="line-1290"><code>	if ns &lt; 0 || 1e9 &lt;= ns {</code></span>
+<span class="codeline" id="line-1291"><code>		rangeErrString = "fractional second"</code></span>
+<span class="codeline" id="line-1292"><code>		return</code></span>
+<span class="codeline" id="line-1293"><code>	}</code></span>
+<span class="codeline" id="line-1294"><code>	// We need nanoseconds, which means scaling by the number</code></span>
+<span class="codeline" id="line-1295"><code>	// of missing digits in the format, maximum length 10. If it's</code></span>
+<span class="codeline" id="line-1296"><code>	// longer than 10, we won't scale.</code></span>
+<span class="codeline" id="line-1297"><code>	scaleDigits := 10 - nbytes</code></span>
+<span class="codeline" id="line-1298"><code>	for i := 0; i &lt; scaleDigits; i++ {</code></span>
+<span class="codeline" id="line-1299"><code>		ns *= 10</code></span>
+<span class="codeline" id="line-1300"><code>	}</code></span>
+<span class="codeline" id="line-1301"><code>	return</code></span>
+<span class="codeline" id="line-1302"><code>}</code></span>
+<span class="codeline" id="line-1303"><code></code></span>
+<span class="codeline" id="line-1304"><code>var errLeadingInt = errors.New("time: bad [0-9]*") // never printed</code></span>
+<span class="codeline" id="line-1305"><code></code></span>
+<span class="codeline" id="line-1306"><code>// leadingInt consumes the leading [0-9]* from s.</code></span>
+<span class="codeline" id="line-1307"><code>func leadingInt(s string) (x int64, rem string, err error) {</code></span>
+<span class="codeline" id="line-1308"><code>	i := 0</code></span>
+<span class="codeline" id="line-1309"><code>	for ; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-1310"><code>		c := s[i]</code></span>
+<span class="codeline" id="line-1311"><code>		if c &lt; '0' || c &gt; '9' {</code></span>
+<span class="codeline" id="line-1312"><code>			break</code></span>
+<span class="codeline" id="line-1313"><code>		}</code></span>
+<span class="codeline" id="line-1314"><code>		if x &gt; (1&lt;&lt;63-1)/10 {</code></span>
+<span class="codeline" id="line-1315"><code>			// overflow</code></span>
+<span class="codeline" id="line-1316"><code>			return 0, "", errLeadingInt</code></span>
+<span class="codeline" id="line-1317"><code>		}</code></span>
+<span class="codeline" id="line-1318"><code>		x = x*10 + int64(c) - '0'</code></span>
+<span class="codeline" id="line-1319"><code>		if x &lt; 0 {</code></span>
+<span class="codeline" id="line-1320"><code>			// overflow</code></span>
+<span class="codeline" id="line-1321"><code>			return 0, "", errLeadingInt</code></span>
+<span class="codeline" id="line-1322"><code>		}</code></span>
+<span class="codeline" id="line-1323"><code>	}</code></span>
+<span class="codeline" id="line-1324"><code>	return x, s[i:], nil</code></span>
+<span class="codeline" id="line-1325"><code>}</code></span>
+<span class="codeline" id="line-1326"><code></code></span>
+<span class="codeline" id="line-1327"><code>// leadingFraction consumes the leading [0-9]* from s.</code></span>
+<span class="codeline" id="line-1328"><code>// It is used only for fractions, so does not return an error on overflow,</code></span>
+<span class="codeline" id="line-1329"><code>// it just stops accumulating precision.</code></span>
+<span class="codeline" id="line-1330"><code>func leadingFraction(s string) (x int64, scale float64, rem string) {</code></span>
+<span class="codeline" id="line-1331"><code>	i := 0</code></span>
+<span class="codeline" id="line-1332"><code>	scale = 1</code></span>
+<span class="codeline" id="line-1333"><code>	overflow := false</code></span>
+<span class="codeline" id="line-1334"><code>	for ; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-1335"><code>		c := s[i]</code></span>
+<span class="codeline" id="line-1336"><code>		if c &lt; '0' || c &gt; '9' {</code></span>
+<span class="codeline" id="line-1337"><code>			break</code></span>
+<span class="codeline" id="line-1338"><code>		}</code></span>
+<span class="codeline" id="line-1339"><code>		if overflow {</code></span>
+<span class="codeline" id="line-1340"><code>			continue</code></span>
+<span class="codeline" id="line-1341"><code>		}</code></span>
+<span class="codeline" id="line-1342"><code>		if x &gt; (1&lt;&lt;63-1)/10 {</code></span>
+<span class="codeline" id="line-1343"><code>			// It's possible for overflow to give a positive number, so take care.</code></span>
+<span class="codeline" id="line-1344"><code>			overflow = true</code></span>
+<span class="codeline" id="line-1345"><code>			continue</code></span>
+<span class="codeline" id="line-1346"><code>		}</code></span>
+<span class="codeline" id="line-1347"><code>		y := x*10 + int64(c) - '0'</code></span>
+<span class="codeline" id="line-1348"><code>		if y &lt; 0 {</code></span>
+<span class="codeline" id="line-1349"><code>			overflow = true</code></span>
+<span class="codeline" id="line-1350"><code>			continue</code></span>
+<span class="codeline" id="line-1351"><code>		}</code></span>
+<span class="codeline" id="line-1352"><code>		x = y</code></span>
+<span class="codeline" id="line-1353"><code>		scale *= 10</code></span>
+<span class="codeline" id="line-1354"><code>	}</code></span>
+<span class="codeline" id="line-1355"><code>	return x, scale, s[i:]</code></span>
+<span class="codeline" id="line-1356"><code>}</code></span>
+<span class="codeline" id="line-1357"><code></code></span>
+<span class="codeline" id="line-1358"><code>var unitMap = map[string]int64{</code></span>
+<span class="codeline" id="line-1359"><code>	"ns": int64(Nanosecond),</code></span>
+<span class="codeline" id="line-1360"><code>	"us": int64(Microsecond),</code></span>
+<span class="codeline" id="line-1361"><code>	"µs": int64(Microsecond), // U+00B5 = micro symbol</code></span>
+<span class="codeline" id="line-1362"><code>	"μs": int64(Microsecond), // U+03BC = Greek letter mu</code></span>
+<span class="codeline" id="line-1363"><code>	"ms": int64(Millisecond),</code></span>
+<span class="codeline" id="line-1364"><code>	"s":  int64(Second),</code></span>
+<span class="codeline" id="line-1365"><code>	"m":  int64(Minute),</code></span>
+<span class="codeline" id="line-1366"><code>	"h":  int64(Hour),</code></span>
+<span class="codeline" id="line-1367"><code>}</code></span>
+<span class="codeline" id="line-1368"><code></code></span>
+<span class="codeline" id="line-1369"><code>// ParseDuration parses a duration string.</code></span>
+<span class="codeline" id="line-1370"><code>// A duration string is a possibly signed sequence of</code></span>
+<span class="codeline" id="line-1371"><code>// decimal numbers, each with optional fraction and a unit suffix,</code></span>
+<span class="codeline" id="line-1372"><code>// such as "300ms", "-1.5h" or "2h45m".</code></span>
+<span class="codeline" id="line-1373"><code>// Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".</code></span>
+<span class="codeline" id="line-1374"><code>func ParseDuration(s string) (Duration, error) {</code></span>
+<span class="codeline" id="line-1375"><code>	// [-+]?([0-9]*(\.[0-9]*)?[a-z]+)+</code></span>
+<span class="codeline" id="line-1376"><code>	orig := s</code></span>
+<span class="codeline" id="line-1377"><code>	var d int64</code></span>
+<span class="codeline" id="line-1378"><code>	neg := false</code></span>
+<span class="codeline" id="line-1379"><code></code></span>
+<span class="codeline" id="line-1380"><code>	// Consume [-+]?</code></span>
+<span class="codeline" id="line-1381"><code>	if s != "" {</code></span>
+<span class="codeline" id="line-1382"><code>		c := s[0]</code></span>
+<span class="codeline" id="line-1383"><code>		if c == '-' || c == '+' {</code></span>
+<span class="codeline" id="line-1384"><code>			neg = c == '-'</code></span>
+<span class="codeline" id="line-1385"><code>			s = s[1:]</code></span>
+<span class="codeline" id="line-1386"><code>		}</code></span>
+<span class="codeline" id="line-1387"><code>	}</code></span>
+<span class="codeline" id="line-1388"><code>	// Special case: if all that is left is "0", this is zero.</code></span>
+<span class="codeline" id="line-1389"><code>	if s == "0" {</code></span>
+<span class="codeline" id="line-1390"><code>		return 0, nil</code></span>
+<span class="codeline" id="line-1391"><code>	}</code></span>
+<span class="codeline" id="line-1392"><code>	if s == "" {</code></span>
+<span class="codeline" id="line-1393"><code>		return 0, errors.New("time: invalid duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1394"><code>	}</code></span>
+<span class="codeline" id="line-1395"><code>	for s != "" {</code></span>
+<span class="codeline" id="line-1396"><code>		var (</code></span>
+<span class="codeline" id="line-1397"><code>			v, f  int64       // integers before, after decimal point</code></span>
+<span class="codeline" id="line-1398"><code>			scale float64 = 1 // value = v + f/scale</code></span>
+<span class="codeline" id="line-1399"><code>		)</code></span>
+<span class="codeline" id="line-1400"><code></code></span>
+<span class="codeline" id="line-1401"><code>		var err error</code></span>
+<span class="codeline" id="line-1402"><code></code></span>
+<span class="codeline" id="line-1403"><code>		// The next character must be [0-9.]</code></span>
+<span class="codeline" id="line-1404"><code>		if !(s[0] == '.' || '0' &lt;= s[0] &amp;&amp; s[0] &lt;= '9') {</code></span>
+<span class="codeline" id="line-1405"><code>			return 0, errors.New("time: invalid duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1406"><code>		}</code></span>
+<span class="codeline" id="line-1407"><code>		// Consume [0-9]*</code></span>
+<span class="codeline" id="line-1408"><code>		pl := len(s)</code></span>
+<span class="codeline" id="line-1409"><code>		v, s, err = leadingInt(s)</code></span>
+<span class="codeline" id="line-1410"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-1411"><code>			return 0, errors.New("time: invalid duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1412"><code>		}</code></span>
+<span class="codeline" id="line-1413"><code>		pre := pl != len(s) // whether we consumed anything before a period</code></span>
+<span class="codeline" id="line-1414"><code></code></span>
+<span class="codeline" id="line-1415"><code>		// Consume (\.[0-9]*)?</code></span>
+<span class="codeline" id="line-1416"><code>		post := false</code></span>
+<span class="codeline" id="line-1417"><code>		if s != "" &amp;&amp; s[0] == '.' {</code></span>
+<span class="codeline" id="line-1418"><code>			s = s[1:]</code></span>
+<span class="codeline" id="line-1419"><code>			pl := len(s)</code></span>
+<span class="codeline" id="line-1420"><code>			f, scale, s = leadingFraction(s)</code></span>
+<span class="codeline" id="line-1421"><code>			post = pl != len(s)</code></span>
+<span class="codeline" id="line-1422"><code>		}</code></span>
+<span class="codeline" id="line-1423"><code>		if !pre &amp;&amp; !post {</code></span>
+<span class="codeline" id="line-1424"><code>			// no digits (e.g. ".s" or "-.s")</code></span>
+<span class="codeline" id="line-1425"><code>			return 0, errors.New("time: invalid duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1426"><code>		}</code></span>
+<span class="codeline" id="line-1427"><code></code></span>
+<span class="codeline" id="line-1428"><code>		// Consume unit.</code></span>
+<span class="codeline" id="line-1429"><code>		i := 0</code></span>
+<span class="codeline" id="line-1430"><code>		for ; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-1431"><code>			c := s[i]</code></span>
+<span class="codeline" id="line-1432"><code>			if c == '.' || '0' &lt;= c &amp;&amp; c &lt;= '9' {</code></span>
+<span class="codeline" id="line-1433"><code>				break</code></span>
+<span class="codeline" id="line-1434"><code>			}</code></span>
+<span class="codeline" id="line-1435"><code>		}</code></span>
+<span class="codeline" id="line-1436"><code>		if i == 0 {</code></span>
+<span class="codeline" id="line-1437"><code>			return 0, errors.New("time: missing unit in duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1438"><code>		}</code></span>
+<span class="codeline" id="line-1439"><code>		u := s[:i]</code></span>
+<span class="codeline" id="line-1440"><code>		s = s[i:]</code></span>
+<span class="codeline" id="line-1441"><code>		unit, ok := unitMap[u]</code></span>
+<span class="codeline" id="line-1442"><code>		if !ok {</code></span>
+<span class="codeline" id="line-1443"><code>			return 0, errors.New("time: unknown unit " + quote(u) + " in duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1444"><code>		}</code></span>
+<span class="codeline" id="line-1445"><code>		if v &gt; (1&lt;&lt;63-1)/unit {</code></span>
+<span class="codeline" id="line-1446"><code>			// overflow</code></span>
+<span class="codeline" id="line-1447"><code>			return 0, errors.New("time: invalid duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1448"><code>		}</code></span>
+<span class="codeline" id="line-1449"><code>		v *= unit</code></span>
+<span class="codeline" id="line-1450"><code>		if f &gt; 0 {</code></span>
+<span class="codeline" id="line-1451"><code>			// float64 is needed to be nanosecond accurate for fractions of hours.</code></span>
+<span class="codeline" id="line-1452"><code>			// v &gt;= 0 &amp;&amp; (f*unit/scale) &lt;= 3.6e+12 (ns/h, h is the largest unit)</code></span>
+<span class="codeline" id="line-1453"><code>			v += int64(float64(f) * (float64(unit) / scale))</code></span>
+<span class="codeline" id="line-1454"><code>			if v &lt; 0 {</code></span>
+<span class="codeline" id="line-1455"><code>				// overflow</code></span>
+<span class="codeline" id="line-1456"><code>				return 0, errors.New("time: invalid duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1457"><code>			}</code></span>
+<span class="codeline" id="line-1458"><code>		}</code></span>
+<span class="codeline" id="line-1459"><code>		d += v</code></span>
+<span class="codeline" id="line-1460"><code>		if d &lt; 0 {</code></span>
+<span class="codeline" id="line-1461"><code>			// overflow</code></span>
+<span class="codeline" id="line-1462"><code>			return 0, errors.New("time: invalid duration " + quote(orig))</code></span>
+<span class="codeline" id="line-1463"><code>		}</code></span>
+<span class="codeline" id="line-1464"><code>	}</code></span>
+<span class="codeline" id="line-1465"><code></code></span>
+<span class="codeline" id="line-1466"><code>	if neg {</code></span>
+<span class="codeline" id="line-1467"><code>		d = -d</code></span>
+<span class="codeline" id="line-1468"><code>	}</code></span>
+<span class="codeline" id="line-1469"><code>	return Duration(d), nil</code></span>
+<span class="codeline" id="line-1470"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

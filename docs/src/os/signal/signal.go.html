@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: signal.go in package os/signal</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	signal.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/os/signal.html">os/signal</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2012 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package signal</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"context"</code></span>
+<span class="codeline" id="line-9"><code>	"os"</code></span>
+<span class="codeline" id="line-10"><code>	"sync"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>var handlers struct {</code></span>
+<span class="codeline" id="line-14"><code>	sync.Mutex</code></span>
+<span class="codeline" id="line-15"><code>	// Map a channel to the signals that should be sent to it.</code></span>
+<span class="codeline" id="line-16"><code>	m map[chan&lt;- os.Signal]*handler</code></span>
+<span class="codeline" id="line-17"><code>	// Map a signal to the number of channels receiving it.</code></span>
+<span class="codeline" id="line-18"><code>	ref [numSig]int64</code></span>
+<span class="codeline" id="line-19"><code>	// Map channels to signals while the channel is being stopped.</code></span>
+<span class="codeline" id="line-20"><code>	// Not a map because entries live here only very briefly.</code></span>
+<span class="codeline" id="line-21"><code>	// We need a separate container because we need m to correspond to ref</code></span>
+<span class="codeline" id="line-22"><code>	// at all times, and we also need to keep track of the *handler</code></span>
+<span class="codeline" id="line-23"><code>	// value for a channel being stopped. See the Stop function.</code></span>
+<span class="codeline" id="line-24"><code>	stopping []stopping</code></span>
+<span class="codeline" id="line-25"><code>}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>type stopping struct {</code></span>
+<span class="codeline" id="line-28"><code>	c chan&lt;- os.Signal</code></span>
+<span class="codeline" id="line-29"><code>	h *handler</code></span>
+<span class="codeline" id="line-30"><code>}</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>type handler struct {</code></span>
+<span class="codeline" id="line-33"><code>	mask [(numSig + 31) / 32]uint32</code></span>
+<span class="codeline" id="line-34"><code>}</code></span>
+<span class="codeline" id="line-35"><code></code></span>
+<span class="codeline" id="line-36"><code>func (h *handler) want(sig int) bool {</code></span>
+<span class="codeline" id="line-37"><code>	return (h.mask[sig/32]&gt;&gt;uint(sig&amp;31))&amp;1 != 0</code></span>
+<span class="codeline" id="line-38"><code>}</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>func (h *handler) set(sig int) {</code></span>
+<span class="codeline" id="line-41"><code>	h.mask[sig/32] |= 1 &lt;&lt; uint(sig&amp;31)</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>func (h *handler) clear(sig int) {</code></span>
+<span class="codeline" id="line-45"><code>	h.mask[sig/32] &amp;^= 1 &lt;&lt; uint(sig&amp;31)</code></span>
+<span class="codeline" id="line-46"><code>}</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>// Stop relaying the signals, sigs, to any channels previously registered to</code></span>
+<span class="codeline" id="line-49"><code>// receive them and either reset the signal handlers to their original values</code></span>
+<span class="codeline" id="line-50"><code>// (action=disableSignal) or ignore the signals (action=ignoreSignal).</code></span>
+<span class="codeline" id="line-51"><code>func cancel(sigs []os.Signal, action func(int)) {</code></span>
+<span class="codeline" id="line-52"><code>	handlers.Lock()</code></span>
+<span class="codeline" id="line-53"><code>	defer handlers.Unlock()</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>	remove := func(n int) {</code></span>
+<span class="codeline" id="line-56"><code>		var zerohandler handler</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>		for c, h := range handlers.m {</code></span>
+<span class="codeline" id="line-59"><code>			if h.want(n) {</code></span>
+<span class="codeline" id="line-60"><code>				handlers.ref[n]--</code></span>
+<span class="codeline" id="line-61"><code>				h.clear(n)</code></span>
+<span class="codeline" id="line-62"><code>				if h.mask == zerohandler.mask {</code></span>
+<span class="codeline" id="line-63"><code>					delete(handlers.m, c)</code></span>
+<span class="codeline" id="line-64"><code>				}</code></span>
+<span class="codeline" id="line-65"><code>			}</code></span>
+<span class="codeline" id="line-66"><code>		}</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>		action(n)</code></span>
+<span class="codeline" id="line-69"><code>	}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>	if len(sigs) == 0 {</code></span>
+<span class="codeline" id="line-72"><code>		for n := 0; n &lt; numSig; n++ {</code></span>
+<span class="codeline" id="line-73"><code>			remove(n)</code></span>
+<span class="codeline" id="line-74"><code>		}</code></span>
+<span class="codeline" id="line-75"><code>	} else {</code></span>
+<span class="codeline" id="line-76"><code>		for _, s := range sigs {</code></span>
+<span class="codeline" id="line-77"><code>			remove(signum(s))</code></span>
+<span class="codeline" id="line-78"><code>		}</code></span>
+<span class="codeline" id="line-79"><code>	}</code></span>
+<span class="codeline" id="line-80"><code>}</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>// Ignore causes the provided signals to be ignored. If they are received by</code></span>
+<span class="codeline" id="line-83"><code>// the program, nothing will happen. Ignore undoes the effect of any prior</code></span>
+<span class="codeline" id="line-84"><code>// calls to Notify for the provided signals.</code></span>
+<span class="codeline" id="line-85"><code>// If no signals are provided, all incoming signals will be ignored.</code></span>
+<span class="codeline" id="line-86"><code>func Ignore(sig ...os.Signal) {</code></span>
+<span class="codeline" id="line-87"><code>	cancel(sig, ignoreSignal)</code></span>
+<span class="codeline" id="line-88"><code>}</code></span>
+<span class="codeline" id="line-89"><code></code></span>
+<span class="codeline" id="line-90"><code>// Ignored reports whether sig is currently ignored.</code></span>
+<span class="codeline" id="line-91"><code>func Ignored(sig os.Signal) bool {</code></span>
+<span class="codeline" id="line-92"><code>	sn := signum(sig)</code></span>
+<span class="codeline" id="line-93"><code>	return sn &gt;= 0 &amp;&amp; signalIgnored(sn)</code></span>
+<span class="codeline" id="line-94"><code>}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>var (</code></span>
+<span class="codeline" id="line-97"><code>	// watchSignalLoopOnce guards calling the conditionally</code></span>
+<span class="codeline" id="line-98"><code>	// initialized watchSignalLoop. If watchSignalLoop is non-nil,</code></span>
+<span class="codeline" id="line-99"><code>	// it will be run in a goroutine lazily once Notify is invoked.</code></span>
+<span class="codeline" id="line-100"><code>	// See Issue 21576.</code></span>
+<span class="codeline" id="line-101"><code>	watchSignalLoopOnce sync.Once</code></span>
+<span class="codeline" id="line-102"><code>	watchSignalLoop     func()</code></span>
+<span class="codeline" id="line-103"><code>)</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>// Notify causes package signal to relay incoming signals to c.</code></span>
+<span class="codeline" id="line-106"><code>// If no signals are provided, all incoming signals will be relayed to c.</code></span>
+<span class="codeline" id="line-107"><code>// Otherwise, just the provided signals will.</code></span>
+<span class="codeline" id="line-108"><code>//</code></span>
+<span class="codeline" id="line-109"><code>// Package signal will not block sending to c: the caller must ensure</code></span>
+<span class="codeline" id="line-110"><code>// that c has sufficient buffer space to keep up with the expected</code></span>
+<span class="codeline" id="line-111"><code>// signal rate. For a channel used for notification of just one signal value,</code></span>
+<span class="codeline" id="line-112"><code>// a buffer of size 1 is sufficient.</code></span>
+<span class="codeline" id="line-113"><code>//</code></span>
+<span class="codeline" id="line-114"><code>// It is allowed to call Notify multiple times with the same channel:</code></span>
+<span class="codeline" id="line-115"><code>// each call expands the set of signals sent to that channel.</code></span>
+<span class="codeline" id="line-116"><code>// The only way to remove signals from the set is to call Stop.</code></span>
+<span class="codeline" id="line-117"><code>//</code></span>
+<span class="codeline" id="line-118"><code>// It is allowed to call Notify multiple times with different channels</code></span>
+<span class="codeline" id="line-119"><code>// and the same signals: each channel receives copies of incoming</code></span>
+<span class="codeline" id="line-120"><code>// signals independently.</code></span>
+<span class="codeline" id="line-121"><code>func Notify(c chan&lt;- os.Signal, sig ...os.Signal) {</code></span>
+<span class="codeline" id="line-122"><code>	if c == nil {</code></span>
+<span class="codeline" id="line-123"><code>		panic("os/signal: Notify using nil channel")</code></span>
+<span class="codeline" id="line-124"><code>	}</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>	handlers.Lock()</code></span>
+<span class="codeline" id="line-127"><code>	defer handlers.Unlock()</code></span>
+<span class="codeline" id="line-128"><code></code></span>
+<span class="codeline" id="line-129"><code>	h := handlers.m[c]</code></span>
+<span class="codeline" id="line-130"><code>	if h == nil {</code></span>
+<span class="codeline" id="line-131"><code>		if handlers.m == nil {</code></span>
+<span class="codeline" id="line-132"><code>			handlers.m = make(map[chan&lt;- os.Signal]*handler)</code></span>
+<span class="codeline" id="line-133"><code>		}</code></span>
+<span class="codeline" id="line-134"><code>		h = new(handler)</code></span>
+<span class="codeline" id="line-135"><code>		handlers.m[c] = h</code></span>
+<span class="codeline" id="line-136"><code>	}</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>	add := func(n int) {</code></span>
+<span class="codeline" id="line-139"><code>		if n &lt; 0 {</code></span>
+<span class="codeline" id="line-140"><code>			return</code></span>
+<span class="codeline" id="line-141"><code>		}</code></span>
+<span class="codeline" id="line-142"><code>		if !h.want(n) {</code></span>
+<span class="codeline" id="line-143"><code>			h.set(n)</code></span>
+<span class="codeline" id="line-144"><code>			if handlers.ref[n] == 0 {</code></span>
+<span class="codeline" id="line-145"><code>				enableSignal(n)</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>				// The runtime requires that we enable a</code></span>
+<span class="codeline" id="line-148"><code>				// signal before starting the watcher.</code></span>
+<span class="codeline" id="line-149"><code>				watchSignalLoopOnce.Do(func() {</code></span>
+<span class="codeline" id="line-150"><code>					if watchSignalLoop != nil {</code></span>
+<span class="codeline" id="line-151"><code>						go watchSignalLoop()</code></span>
+<span class="codeline" id="line-152"><code>					}</code></span>
+<span class="codeline" id="line-153"><code>				})</code></span>
+<span class="codeline" id="line-154"><code>			}</code></span>
+<span class="codeline" id="line-155"><code>			handlers.ref[n]++</code></span>
+<span class="codeline" id="line-156"><code>		}</code></span>
+<span class="codeline" id="line-157"><code>	}</code></span>
+<span class="codeline" id="line-158"><code></code></span>
+<span class="codeline" id="line-159"><code>	if len(sig) == 0 {</code></span>
+<span class="codeline" id="line-160"><code>		for n := 0; n &lt; numSig; n++ {</code></span>
+<span class="codeline" id="line-161"><code>			add(n)</code></span>
+<span class="codeline" id="line-162"><code>		}</code></span>
+<span class="codeline" id="line-163"><code>	} else {</code></span>
+<span class="codeline" id="line-164"><code>		for _, s := range sig {</code></span>
+<span class="codeline" id="line-165"><code>			add(signum(s))</code></span>
+<span class="codeline" id="line-166"><code>		}</code></span>
+<span class="codeline" id="line-167"><code>	}</code></span>
+<span class="codeline" id="line-168"><code>}</code></span>
+<span class="codeline" id="line-169"><code></code></span>
+<span class="codeline" id="line-170"><code>// Reset undoes the effect of any prior calls to Notify for the provided</code></span>
+<span class="codeline" id="line-171"><code>// signals.</code></span>
+<span class="codeline" id="line-172"><code>// If no signals are provided, all signal handlers will be reset.</code></span>
+<span class="codeline" id="line-173"><code>func Reset(sig ...os.Signal) {</code></span>
+<span class="codeline" id="line-174"><code>	cancel(sig, disableSignal)</code></span>
+<span class="codeline" id="line-175"><code>}</code></span>
+<span class="codeline" id="line-176"><code></code></span>
+<span class="codeline" id="line-177"><code>// Stop causes package signal to stop relaying incoming signals to c.</code></span>
+<span class="codeline" id="line-178"><code>// It undoes the effect of all prior calls to Notify using c.</code></span>
+<span class="codeline" id="line-179"><code>// When Stop returns, it is guaranteed that c will receive no more signals.</code></span>
+<span class="codeline" id="line-180"><code>func Stop(c chan&lt;- os.Signal) {</code></span>
+<span class="codeline" id="line-181"><code>	handlers.Lock()</code></span>
+<span class="codeline" id="line-182"><code></code></span>
+<span class="codeline" id="line-183"><code>	h := handlers.m[c]</code></span>
+<span class="codeline" id="line-184"><code>	if h == nil {</code></span>
+<span class="codeline" id="line-185"><code>		handlers.Unlock()</code></span>
+<span class="codeline" id="line-186"><code>		return</code></span>
+<span class="codeline" id="line-187"><code>	}</code></span>
+<span class="codeline" id="line-188"><code>	delete(handlers.m, c)</code></span>
+<span class="codeline" id="line-189"><code></code></span>
+<span class="codeline" id="line-190"><code>	for n := 0; n &lt; numSig; n++ {</code></span>
+<span class="codeline" id="line-191"><code>		if h.want(n) {</code></span>
+<span class="codeline" id="line-192"><code>			handlers.ref[n]--</code></span>
+<span class="codeline" id="line-193"><code>			if handlers.ref[n] == 0 {</code></span>
+<span class="codeline" id="line-194"><code>				disableSignal(n)</code></span>
+<span class="codeline" id="line-195"><code>			}</code></span>
+<span class="codeline" id="line-196"><code>		}</code></span>
+<span class="codeline" id="line-197"><code>	}</code></span>
+<span class="codeline" id="line-198"><code></code></span>
+<span class="codeline" id="line-199"><code>	// Signals will no longer be delivered to the channel.</code></span>
+<span class="codeline" id="line-200"><code>	// We want to avoid a race for a signal such as SIGINT:</code></span>
+<span class="codeline" id="line-201"><code>	// it should be either delivered to the channel,</code></span>
+<span class="codeline" id="line-202"><code>	// or the program should take the default action (that is, exit).</code></span>
+<span class="codeline" id="line-203"><code>	// To avoid the possibility that the signal is delivered,</code></span>
+<span class="codeline" id="line-204"><code>	// and the signal handler invoked, and then Stop deregisters</code></span>
+<span class="codeline" id="line-205"><code>	// the channel before the process function below has a chance</code></span>
+<span class="codeline" id="line-206"><code>	// to send it on the channel, put the channel on a list of</code></span>
+<span class="codeline" id="line-207"><code>	// channels being stopped and wait for signal delivery to</code></span>
+<span class="codeline" id="line-208"><code>	// quiesce before fully removing it.</code></span>
+<span class="codeline" id="line-209"><code></code></span>
+<span class="codeline" id="line-210"><code>	handlers.stopping = append(handlers.stopping, stopping{c, h})</code></span>
+<span class="codeline" id="line-211"><code></code></span>
+<span class="codeline" id="line-212"><code>	handlers.Unlock()</code></span>
+<span class="codeline" id="line-213"><code></code></span>
+<span class="codeline" id="line-214"><code>	signalWaitUntilIdle()</code></span>
+<span class="codeline" id="line-215"><code></code></span>
+<span class="codeline" id="line-216"><code>	handlers.Lock()</code></span>
+<span class="codeline" id="line-217"><code></code></span>
+<span class="codeline" id="line-218"><code>	for i, s := range handlers.stopping {</code></span>
+<span class="codeline" id="line-219"><code>		if s.c == c {</code></span>
+<span class="codeline" id="line-220"><code>			handlers.stopping = append(handlers.stopping[:i], handlers.stopping[i+1:]...)</code></span>
+<span class="codeline" id="line-221"><code>			break</code></span>
+<span class="codeline" id="line-222"><code>		}</code></span>
+<span class="codeline" id="line-223"><code>	}</code></span>
+<span class="codeline" id="line-224"><code></code></span>
+<span class="codeline" id="line-225"><code>	handlers.Unlock()</code></span>
+<span class="codeline" id="line-226"><code>}</code></span>
+<span class="codeline" id="line-227"><code></code></span>
+<span class="codeline" id="line-228"><code>// Wait until there are no more signals waiting to be delivered.</code></span>
+<span class="codeline" id="line-229"><code>// Defined by the runtime package.</code></span>
+<span class="codeline" id="line-230"><code>func signalWaitUntilIdle()</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>func process(sig os.Signal) {</code></span>
+<span class="codeline" id="line-233"><code>	n := signum(sig)</code></span>
+<span class="codeline" id="line-234"><code>	if n &lt; 0 {</code></span>
+<span class="codeline" id="line-235"><code>		return</code></span>
+<span class="codeline" id="line-236"><code>	}</code></span>
+<span class="codeline" id="line-237"><code></code></span>
+<span class="codeline" id="line-238"><code>	handlers.Lock()</code></span>
+<span class="codeline" id="line-239"><code>	defer handlers.Unlock()</code></span>
+<span class="codeline" id="line-240"><code></code></span>
+<span class="codeline" id="line-241"><code>	for c, h := range handlers.m {</code></span>
+<span class="codeline" id="line-242"><code>		if h.want(n) {</code></span>
+<span class="codeline" id="line-243"><code>			// send but do not block for it</code></span>
+<span class="codeline" id="line-244"><code>			select {</code></span>
+<span class="codeline" id="line-245"><code>			case c &lt;- sig:</code></span>
+<span class="codeline" id="line-246"><code>			default:</code></span>
+<span class="codeline" id="line-247"><code>			}</code></span>
+<span class="codeline" id="line-248"><code>		}</code></span>
+<span class="codeline" id="line-249"><code>	}</code></span>
+<span class="codeline" id="line-250"><code></code></span>
+<span class="codeline" id="line-251"><code>	// Avoid the race mentioned in Stop.</code></span>
+<span class="codeline" id="line-252"><code>	for _, d := range handlers.stopping {</code></span>
+<span class="codeline" id="line-253"><code>		if d.h.want(n) {</code></span>
+<span class="codeline" id="line-254"><code>			select {</code></span>
+<span class="codeline" id="line-255"><code>			case d.c &lt;- sig:</code></span>
+<span class="codeline" id="line-256"><code>			default:</code></span>
+<span class="codeline" id="line-257"><code>			}</code></span>
+<span class="codeline" id="line-258"><code>		}</code></span>
+<span class="codeline" id="line-259"><code>	}</code></span>
+<span class="codeline" id="line-260"><code>}</code></span>
+<span class="codeline" id="line-261"><code></code></span>
+<span class="codeline" id="line-262"><code>// NotifyContext returns a copy of the parent context that is marked done</code></span>
+<span class="codeline" id="line-263"><code>// (its Done channel is closed) when one of the listed signals arrives,</code></span>
+<span class="codeline" id="line-264"><code>// when the returned stop function is called, or when the parent context's</code></span>
+<span class="codeline" id="line-265"><code>// Done channel is closed, whichever happens first.</code></span>
+<span class="codeline" id="line-266"><code>//</code></span>
+<span class="codeline" id="line-267"><code>// The stop function unregisters the signal behavior, which, like signal.Reset,</code></span>
+<span class="codeline" id="line-268"><code>// may restore the default behavior for a given signal. For example, the default</code></span>
+<span class="codeline" id="line-269"><code>// behavior of a Go program receiving os.Interrupt is to exit. Calling</code></span>
+<span class="codeline" id="line-270"><code>// NotifyContext(parent, os.Interrupt) will change the behavior to cancel</code></span>
+<span class="codeline" id="line-271"><code>// the returned context. Future interrupts received will not trigger the default</code></span>
+<span class="codeline" id="line-272"><code>// (exit) behavior until the returned stop function is called.</code></span>
+<span class="codeline" id="line-273"><code>//</code></span>
+<span class="codeline" id="line-274"><code>// The stop function releases resources associated with it, so code should</code></span>
+<span class="codeline" id="line-275"><code>// call stop as soon as the operations running in this Context complete and</code></span>
+<span class="codeline" id="line-276"><code>// signals no longer need to be diverted to the context.</code></span>
+<span class="codeline" id="line-277"><code>func NotifyContext(parent context.Context, signals ...os.Signal) (ctx context.Context, stop context.CancelFunc) {</code></span>
+<span class="codeline" id="line-278"><code>	ctx, cancel := context.WithCancel(parent)</code></span>
+<span class="codeline" id="line-279"><code>	c := &amp;signalCtx{</code></span>
+<span class="codeline" id="line-280"><code>		Context: ctx,</code></span>
+<span class="codeline" id="line-281"><code>		cancel:  cancel,</code></span>
+<span class="codeline" id="line-282"><code>		signals: signals,</code></span>
+<span class="codeline" id="line-283"><code>	}</code></span>
+<span class="codeline" id="line-284"><code>	c.ch = make(chan os.Signal, 1)</code></span>
+<span class="codeline" id="line-285"><code>	Notify(c.ch, c.signals...)</code></span>
+<span class="codeline" id="line-286"><code>	if ctx.Err() == nil {</code></span>
+<span class="codeline" id="line-287"><code>		go func() {</code></span>
+<span class="codeline" id="line-288"><code>			select {</code></span>
+<span class="codeline" id="line-289"><code>			case &lt;-c.ch:</code></span>
+<span class="codeline" id="line-290"><code>				c.cancel()</code></span>
+<span class="codeline" id="line-291"><code>			case &lt;-c.Done():</code></span>
+<span class="codeline" id="line-292"><code>			}</code></span>
+<span class="codeline" id="line-293"><code>		}()</code></span>
+<span class="codeline" id="line-294"><code>	}</code></span>
+<span class="codeline" id="line-295"><code>	return c, c.stop</code></span>
+<span class="codeline" id="line-296"><code>}</code></span>
+<span class="codeline" id="line-297"><code></code></span>
+<span class="codeline" id="line-298"><code>type signalCtx struct {</code></span>
+<span class="codeline" id="line-299"><code>	context.Context</code></span>
+<span class="codeline" id="line-300"><code></code></span>
+<span class="codeline" id="line-301"><code>	cancel  context.CancelFunc</code></span>
+<span class="codeline" id="line-302"><code>	signals []os.Signal</code></span>
+<span class="codeline" id="line-303"><code>	ch      chan os.Signal</code></span>
+<span class="codeline" id="line-304"><code>}</code></span>
+<span class="codeline" id="line-305"><code></code></span>
+<span class="codeline" id="line-306"><code>func (c *signalCtx) stop() {</code></span>
+<span class="codeline" id="line-307"><code>	c.cancel()</code></span>
+<span class="codeline" id="line-308"><code>	Stop(c.ch)</code></span>
+<span class="codeline" id="line-309"><code>}</code></span>
+<span class="codeline" id="line-310"><code></code></span>
+<span class="codeline" id="line-311"><code>type stringer interface {</code></span>
+<span class="codeline" id="line-312"><code>	String() string</code></span>
+<span class="codeline" id="line-313"><code>}</code></span>
+<span class="codeline" id="line-314"><code></code></span>
+<span class="codeline" id="line-315"><code>func (c *signalCtx) String() string {</code></span>
+<span class="codeline" id="line-316"><code>	var buf []byte</code></span>
+<span class="codeline" id="line-317"><code>	// We know that the type of c.Context is context.cancelCtx, and we know that the</code></span>
+<span class="codeline" id="line-318"><code>	// String method of cancelCtx returns a string that ends with ".WithCancel".</code></span>
+<span class="codeline" id="line-319"><code>	name := c.Context.(stringer).String()</code></span>
+<span class="codeline" id="line-320"><code>	name = name[:len(name)-len(".WithCancel")]</code></span>
+<span class="codeline" id="line-321"><code>	buf = append(buf, "signal.NotifyContext("+name...)</code></span>
+<span class="codeline" id="line-322"><code>	if len(c.signals) != 0 {</code></span>
+<span class="codeline" id="line-323"><code>		buf = append(buf, ", ["...)</code></span>
+<span class="codeline" id="line-324"><code>		for i, s := range c.signals {</code></span>
+<span class="codeline" id="line-325"><code>			buf = append(buf, s.String()...)</code></span>
+<span class="codeline" id="line-326"><code>			if i != len(c.signals)-1 {</code></span>
+<span class="codeline" id="line-327"><code>				buf = append(buf, ' ')</code></span>
+<span class="codeline" id="line-328"><code>			}</code></span>
+<span class="codeline" id="line-329"><code>		}</code></span>
+<span class="codeline" id="line-330"><code>		buf = append(buf, ']')</code></span>
+<span class="codeline" id="line-331"><code>	}</code></span>
+<span class="codeline" id="line-332"><code>	buf = append(buf, ')')</code></span>
+<span class="codeline" id="line-333"><code>	return string(buf)</code></span>
+<span class="codeline" id="line-334"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

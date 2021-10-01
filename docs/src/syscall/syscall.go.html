@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: syscall.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	syscall.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package syscall contains an interface to the low-level operating system</code></span>
+<span class="codeline" id="line-6"><code>// primitives. The details vary depending on the underlying system, and</code></span>
+<span class="codeline" id="line-7"><code>// by default, godoc will display the syscall documentation for the current</code></span>
+<span class="codeline" id="line-8"><code>// system. If you want godoc to display syscall documentation for another</code></span>
+<span class="codeline" id="line-9"><code>// system, set $GOOS and $GOARCH to the desired system. For example, if</code></span>
+<span class="codeline" id="line-10"><code>// you want to view documentation for freebsd/arm on linux/amd64, set $GOOS</code></span>
+<span class="codeline" id="line-11"><code>// to freebsd and $GOARCH to arm.</code></span>
+<span class="codeline" id="line-12"><code>// The primary use of syscall is inside other packages that provide a more</code></span>
+<span class="codeline" id="line-13"><code>// portable interface to the system, such as "os", "time" and "net".  Use</code></span>
+<span class="codeline" id="line-14"><code>// those packages rather than this one if you can.</code></span>
+<span class="codeline" id="line-15"><code>// For details of the functions and data types in this package consult</code></span>
+<span class="codeline" id="line-16"><code>// the manuals for the appropriate operating system.</code></span>
+<span class="codeline" id="line-17"><code>// These calls return err == nil to indicate success; otherwise</code></span>
+<span class="codeline" id="line-18"><code>// err is an operating system error describing the failure.</code></span>
+<span class="codeline" id="line-19"><code>// On most systems, that error has type syscall.Errno.</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// Deprecated: this package is locked down. Callers should use the</code></span>
+<span class="codeline" id="line-22"><code>// corresponding package in the golang.org/x/sys repository instead.</code></span>
+<span class="codeline" id="line-23"><code>// That is also where updates required by new systems or versions</code></span>
+<span class="codeline" id="line-24"><code>// should be applied. See https://golang.org/s/go1.4-syscall for more</code></span>
+<span class="codeline" id="line-25"><code>// information.</code></span>
+<span class="codeline" id="line-26"><code>//</code></span></div><span class="codeline" id="line-27"><code>package syscall</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>//go:generate go run ./mksyscall_windows.go -systemdll -output zsyscall_windows.go syscall_windows.go security_windows.go</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>// StringByteSlice converts a string to a NUL-terminated []byte,</code></span>
+<span class="codeline" id="line-32"><code>// If s contains a NUL byte this function panics instead of</code></span>
+<span class="codeline" id="line-33"><code>// returning an error.</code></span>
+<span class="codeline" id="line-34"><code>//</code></span>
+<span class="codeline" id="line-35"><code>// Deprecated: Use ByteSliceFromString instead.</code></span>
+<span class="codeline" id="line-36"><code>func StringByteSlice(s string) []byte {</code></span>
+<span class="codeline" id="line-37"><code>	a, err := ByteSliceFromString(s)</code></span>
+<span class="codeline" id="line-38"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-39"><code>		panic("syscall: string with NUL passed to StringByteSlice")</code></span>
+<span class="codeline" id="line-40"><code>	}</code></span>
+<span class="codeline" id="line-41"><code>	return a</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>// ByteSliceFromString returns a NUL-terminated slice of bytes</code></span>
+<span class="codeline" id="line-45"><code>// containing the text of s. If s contains a NUL byte at any</code></span>
+<span class="codeline" id="line-46"><code>// location, it returns (nil, EINVAL).</code></span>
+<span class="codeline" id="line-47"><code>func ByteSliceFromString(s string) ([]byte, error) {</code></span>
+<span class="codeline" id="line-48"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-49"><code>		if s[i] == 0 {</code></span>
+<span class="codeline" id="line-50"><code>			return nil, EINVAL</code></span>
+<span class="codeline" id="line-51"><code>		}</code></span>
+<span class="codeline" id="line-52"><code>	}</code></span>
+<span class="codeline" id="line-53"><code>	a := make([]byte, len(s)+1)</code></span>
+<span class="codeline" id="line-54"><code>	copy(a, s)</code></span>
+<span class="codeline" id="line-55"><code>	return a, nil</code></span>
+<span class="codeline" id="line-56"><code>}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>// StringBytePtr returns a pointer to a NUL-terminated array of bytes.</code></span>
+<span class="codeline" id="line-59"><code>// If s contains a NUL byte this function panics instead of returning</code></span>
+<span class="codeline" id="line-60"><code>// an error.</code></span>
+<span class="codeline" id="line-61"><code>//</code></span>
+<span class="codeline" id="line-62"><code>// Deprecated: Use BytePtrFromString instead.</code></span>
+<span class="codeline" id="line-63"><code>func StringBytePtr(s string) *byte { return &amp;StringByteSlice(s)[0] }</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>// BytePtrFromString returns a pointer to a NUL-terminated array of</code></span>
+<span class="codeline" id="line-66"><code>// bytes containing the text of s. If s contains a NUL byte at any</code></span>
+<span class="codeline" id="line-67"><code>// location, it returns (nil, EINVAL).</code></span>
+<span class="codeline" id="line-68"><code>func BytePtrFromString(s string) (*byte, error) {</code></span>
+<span class="codeline" id="line-69"><code>	a, err := ByteSliceFromString(s)</code></span>
+<span class="codeline" id="line-70"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-71"><code>		return nil, err</code></span>
+<span class="codeline" id="line-72"><code>	}</code></span>
+<span class="codeline" id="line-73"><code>	return &amp;a[0], nil</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>// Single-word zero for use when we need a valid pointer to 0 bytes.</code></span>
+<span class="codeline" id="line-77"><code>// See mksyscall.pl.</code></span>
+<span class="codeline" id="line-78"><code>var _zero uintptr</code></span>
+<span class="codeline" id="line-79"><code></code></span>
+<span class="codeline" id="line-80"><code>// Unix returns the time stored in ts as seconds plus nanoseconds.</code></span>
+<span class="codeline" id="line-81"><code>func (ts *Timespec) Unix() (sec int64, nsec int64) {</code></span>
+<span class="codeline" id="line-82"><code>	return int64(ts.Sec), int64(ts.Nsec)</code></span>
+<span class="codeline" id="line-83"><code>}</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>// Unix returns the time stored in tv as seconds plus nanoseconds.</code></span>
+<span class="codeline" id="line-86"><code>func (tv *Timeval) Unix() (sec int64, nsec int64) {</code></span>
+<span class="codeline" id="line-87"><code>	return int64(tv.Sec), int64(tv.Usec) * 1000</code></span>
+<span class="codeline" id="line-88"><code>}</code></span>
+<span class="codeline" id="line-89"><code></code></span>
+<span class="codeline" id="line-90"><code>// Nano returns the time stored in ts as nanoseconds.</code></span>
+<span class="codeline" id="line-91"><code>func (ts *Timespec) Nano() int64 {</code></span>
+<span class="codeline" id="line-92"><code>	return int64(ts.Sec)*1e9 + int64(ts.Nsec)</code></span>
+<span class="codeline" id="line-93"><code>}</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>// Nano returns the time stored in tv as nanoseconds.</code></span>
+<span class="codeline" id="line-96"><code>func (tv *Timeval) Nano() int64 {</code></span>
+<span class="codeline" id="line-97"><code>	return int64(tv.Sec)*1e9 + int64(tv.Usec)*1000</code></span>
+<span class="codeline" id="line-98"><code>}</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>// Getpagesize and Exit are provided by the runtime.</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>func Getpagesize() int</code></span>
+<span class="codeline" id="line-103"><code>func Exit(code int)</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

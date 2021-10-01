@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: exec_unix.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	exec_unix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Fork, exec, wait, etc.</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>package syscall</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>import (</code></span>
+<span class="codeline" id="line-12"><code>	errorspkg "errors"</code></span>
+<span class="codeline" id="line-13"><code>	"internal/bytealg"</code></span>
+<span class="codeline" id="line-14"><code>	"runtime"</code></span>
+<span class="codeline" id="line-15"><code>	"sync"</code></span>
+<span class="codeline" id="line-16"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-17"><code>)</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>// Lock synchronizing creation of new file descriptors with fork.</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// We want the child in a fork/exec sequence to inherit only the</code></span>
+<span class="codeline" id="line-22"><code>// file descriptors we intend. To do that, we mark all file</code></span>
+<span class="codeline" id="line-23"><code>// descriptors close-on-exec and then, in the child, explicitly</code></span>
+<span class="codeline" id="line-24"><code>// unmark the ones we want the exec'ed program to keep.</code></span>
+<span class="codeline" id="line-25"><code>// Unix doesn't make this easy: there is, in general, no way to</code></span>
+<span class="codeline" id="line-26"><code>// allocate a new file descriptor close-on-exec. Instead you</code></span>
+<span class="codeline" id="line-27"><code>// have to allocate the descriptor and then mark it close-on-exec.</code></span>
+<span class="codeline" id="line-28"><code>// If a fork happens between those two events, the child's exec</code></span>
+<span class="codeline" id="line-29"><code>// will inherit an unwanted file descriptor.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// This lock solves that race: the create new fd/mark close-on-exec</code></span>
+<span class="codeline" id="line-32"><code>// operation is done holding ForkLock for reading, and the fork itself</code></span>
+<span class="codeline" id="line-33"><code>// is done holding ForkLock for writing. At least, that's the idea.</code></span>
+<span class="codeline" id="line-34"><code>// There are some complications.</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>// Some system calls that create new file descriptors can block</code></span>
+<span class="codeline" id="line-37"><code>// for arbitrarily long times: open on a hung NFS server or named</code></span>
+<span class="codeline" id="line-38"><code>// pipe, accept on a socket, and so on. We can't reasonably grab</code></span>
+<span class="codeline" id="line-39"><code>// the lock across those operations.</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>// It is worse to inherit some file descriptors than others.</code></span>
+<span class="codeline" id="line-42"><code>// If a non-malicious child accidentally inherits an open ordinary file,</code></span>
+<span class="codeline" id="line-43"><code>// that's not a big deal. On the other hand, if a long-lived child</code></span>
+<span class="codeline" id="line-44"><code>// accidentally inherits the write end of a pipe, then the reader</code></span>
+<span class="codeline" id="line-45"><code>// of that pipe will not see EOF until that child exits, potentially</code></span>
+<span class="codeline" id="line-46"><code>// causing the parent program to hang. This is a common problem</code></span>
+<span class="codeline" id="line-47"><code>// in threaded C programs that use popen.</code></span>
+<span class="codeline" id="line-48"><code>//</code></span>
+<span class="codeline" id="line-49"><code>// Luckily, the file descriptors that are most important not to</code></span>
+<span class="codeline" id="line-50"><code>// inherit are not the ones that can take an arbitrarily long time</code></span>
+<span class="codeline" id="line-51"><code>// to create: pipe returns instantly, and the net package uses</code></span>
+<span class="codeline" id="line-52"><code>// non-blocking I/O to accept on a listening socket.</code></span>
+<span class="codeline" id="line-53"><code>// The rules for which file descriptor-creating operations use the</code></span>
+<span class="codeline" id="line-54"><code>// ForkLock are as follows:</code></span>
+<span class="codeline" id="line-55"><code>//</code></span>
+<span class="codeline" id="line-56"><code>// 1) Pipe. Does not block. Use the ForkLock.</code></span>
+<span class="codeline" id="line-57"><code>// 2) Socket. Does not block. Use the ForkLock.</code></span>
+<span class="codeline" id="line-58"><code>// 3) Accept. If using non-blocking mode, use the ForkLock.</code></span>
+<span class="codeline" id="line-59"><code>//             Otherwise, live with the race.</code></span>
+<span class="codeline" id="line-60"><code>// 4) Open. Can block. Use O_CLOEXEC if available (Linux).</code></span>
+<span class="codeline" id="line-61"><code>//             Otherwise, live with the race.</code></span>
+<span class="codeline" id="line-62"><code>// 5) Dup. Does not block. Use the ForkLock.</code></span>
+<span class="codeline" id="line-63"><code>//             On Linux, could use fcntl F_DUPFD_CLOEXEC</code></span>
+<span class="codeline" id="line-64"><code>//             instead of the ForkLock, but only for dup(fd, -1).</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>var ForkLock sync.RWMutex</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>// StringSlicePtr converts a slice of strings to a slice of pointers</code></span>
+<span class="codeline" id="line-69"><code>// to NUL-terminated byte arrays. If any string contains a NUL byte</code></span>
+<span class="codeline" id="line-70"><code>// this function panics instead of returning an error.</code></span>
+<span class="codeline" id="line-71"><code>//</code></span>
+<span class="codeline" id="line-72"><code>// Deprecated: Use SlicePtrFromStrings instead.</code></span>
+<span class="codeline" id="line-73"><code>func StringSlicePtr(ss []string) []*byte {</code></span>
+<span class="codeline" id="line-74"><code>	bb := make([]*byte, len(ss)+1)</code></span>
+<span class="codeline" id="line-75"><code>	for i := 0; i &lt; len(ss); i++ {</code></span>
+<span class="codeline" id="line-76"><code>		bb[i] = StringBytePtr(ss[i])</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>	bb[len(ss)] = nil</code></span>
+<span class="codeline" id="line-79"><code>	return bb</code></span>
+<span class="codeline" id="line-80"><code>}</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>// SlicePtrFromStrings converts a slice of strings to a slice of</code></span>
+<span class="codeline" id="line-83"><code>// pointers to NUL-terminated byte arrays. If any string contains</code></span>
+<span class="codeline" id="line-84"><code>// a NUL byte, it returns (nil, EINVAL).</code></span>
+<span class="codeline" id="line-85"><code>func SlicePtrFromStrings(ss []string) ([]*byte, error) {</code></span>
+<span class="codeline" id="line-86"><code>	n := 0</code></span>
+<span class="codeline" id="line-87"><code>	for _, s := range ss {</code></span>
+<span class="codeline" id="line-88"><code>		if bytealg.IndexByteString(s, 0) != -1 {</code></span>
+<span class="codeline" id="line-89"><code>			return nil, EINVAL</code></span>
+<span class="codeline" id="line-90"><code>		}</code></span>
+<span class="codeline" id="line-91"><code>		n += len(s) + 1 // +1 for NUL</code></span>
+<span class="codeline" id="line-92"><code>	}</code></span>
+<span class="codeline" id="line-93"><code>	bb := make([]*byte, len(ss)+1)</code></span>
+<span class="codeline" id="line-94"><code>	b := make([]byte, n)</code></span>
+<span class="codeline" id="line-95"><code>	n = 0</code></span>
+<span class="codeline" id="line-96"><code>	for i, s := range ss {</code></span>
+<span class="codeline" id="line-97"><code>		bb[i] = &amp;b[n]</code></span>
+<span class="codeline" id="line-98"><code>		copy(b[n:], s)</code></span>
+<span class="codeline" id="line-99"><code>		n += len(s) + 1</code></span>
+<span class="codeline" id="line-100"><code>	}</code></span>
+<span class="codeline" id="line-101"><code>	return bb, nil</code></span>
+<span class="codeline" id="line-102"><code>}</code></span>
+<span class="codeline" id="line-103"><code></code></span>
+<span class="codeline" id="line-104"><code>func CloseOnExec(fd int) { fcntl(fd, F_SETFD, FD_CLOEXEC) }</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>func SetNonblock(fd int, nonblocking bool) (err error) {</code></span>
+<span class="codeline" id="line-107"><code>	flag, err := fcntl(fd, F_GETFL, 0)</code></span>
+<span class="codeline" id="line-108"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-109"><code>		return err</code></span>
+<span class="codeline" id="line-110"><code>	}</code></span>
+<span class="codeline" id="line-111"><code>	if nonblocking {</code></span>
+<span class="codeline" id="line-112"><code>		flag |= O_NONBLOCK</code></span>
+<span class="codeline" id="line-113"><code>	} else {</code></span>
+<span class="codeline" id="line-114"><code>		flag &amp;^= O_NONBLOCK</code></span>
+<span class="codeline" id="line-115"><code>	}</code></span>
+<span class="codeline" id="line-116"><code>	_, err = fcntl(fd, F_SETFL, flag)</code></span>
+<span class="codeline" id="line-117"><code>	return err</code></span>
+<span class="codeline" id="line-118"><code>}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>// Credential holds user and group identities to be assumed</code></span>
+<span class="codeline" id="line-121"><code>// by a child process started by StartProcess.</code></span>
+<span class="codeline" id="line-122"><code>type Credential struct {</code></span>
+<span class="codeline" id="line-123"><code>	Uid         uint32   // User ID.</code></span>
+<span class="codeline" id="line-124"><code>	Gid         uint32   // Group ID.</code></span>
+<span class="codeline" id="line-125"><code>	Groups      []uint32 // Supplementary group IDs.</code></span>
+<span class="codeline" id="line-126"><code>	NoSetGroups bool     // If true, don't set supplementary groups</code></span>
+<span class="codeline" id="line-127"><code>}</code></span>
+<span class="codeline" id="line-128"><code></code></span>
+<span class="codeline" id="line-129"><code>// ProcAttr holds attributes that will be applied to a new process started</code></span>
+<span class="codeline" id="line-130"><code>// by StartProcess.</code></span>
+<span class="codeline" id="line-131"><code>type ProcAttr struct {</code></span>
+<span class="codeline" id="line-132"><code>	Dir   string    // Current working directory.</code></span>
+<span class="codeline" id="line-133"><code>	Env   []string  // Environment.</code></span>
+<span class="codeline" id="line-134"><code>	Files []uintptr // File descriptors.</code></span>
+<span class="codeline" id="line-135"><code>	Sys   *SysProcAttr</code></span>
+<span class="codeline" id="line-136"><code>}</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>var zeroProcAttr ProcAttr</code></span>
+<span class="codeline" id="line-139"><code>var zeroSysProcAttr SysProcAttr</code></span>
+<span class="codeline" id="line-140"><code></code></span>
+<span class="codeline" id="line-141"><code>func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) {</code></span>
+<span class="codeline" id="line-142"><code>	var p [2]int</code></span>
+<span class="codeline" id="line-143"><code>	var n int</code></span>
+<span class="codeline" id="line-144"><code>	var err1 Errno</code></span>
+<span class="codeline" id="line-145"><code>	var wstatus WaitStatus</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>	if attr == nil {</code></span>
+<span class="codeline" id="line-148"><code>		attr = &amp;zeroProcAttr</code></span>
+<span class="codeline" id="line-149"><code>	}</code></span>
+<span class="codeline" id="line-150"><code>	sys := attr.Sys</code></span>
+<span class="codeline" id="line-151"><code>	if sys == nil {</code></span>
+<span class="codeline" id="line-152"><code>		sys = &amp;zeroSysProcAttr</code></span>
+<span class="codeline" id="line-153"><code>	}</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>	p[0] = -1</code></span>
+<span class="codeline" id="line-156"><code>	p[1] = -1</code></span>
+<span class="codeline" id="line-157"><code></code></span>
+<span class="codeline" id="line-158"><code>	// Convert args to C form.</code></span>
+<span class="codeline" id="line-159"><code>	argv0p, err := BytePtrFromString(argv0)</code></span>
+<span class="codeline" id="line-160"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-161"><code>		return 0, err</code></span>
+<span class="codeline" id="line-162"><code>	}</code></span>
+<span class="codeline" id="line-163"><code>	argvp, err := SlicePtrFromStrings(argv)</code></span>
+<span class="codeline" id="line-164"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-165"><code>		return 0, err</code></span>
+<span class="codeline" id="line-166"><code>	}</code></span>
+<span class="codeline" id="line-167"><code>	envvp, err := SlicePtrFromStrings(attr.Env)</code></span>
+<span class="codeline" id="line-168"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-169"><code>		return 0, err</code></span>
+<span class="codeline" id="line-170"><code>	}</code></span>
+<span class="codeline" id="line-171"><code></code></span>
+<span class="codeline" id="line-172"><code>	if (runtime.GOOS == "freebsd" || runtime.GOOS == "dragonfly") &amp;&amp; len(argv[0]) &gt; len(argv0) {</code></span>
+<span class="codeline" id="line-173"><code>		argvp[0] = argv0p</code></span>
+<span class="codeline" id="line-174"><code>	}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>	var chroot *byte</code></span>
+<span class="codeline" id="line-177"><code>	if sys.Chroot != "" {</code></span>
+<span class="codeline" id="line-178"><code>		chroot, err = BytePtrFromString(sys.Chroot)</code></span>
+<span class="codeline" id="line-179"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-180"><code>			return 0, err</code></span>
+<span class="codeline" id="line-181"><code>		}</code></span>
+<span class="codeline" id="line-182"><code>	}</code></span>
+<span class="codeline" id="line-183"><code>	var dir *byte</code></span>
+<span class="codeline" id="line-184"><code>	if attr.Dir != "" {</code></span>
+<span class="codeline" id="line-185"><code>		dir, err = BytePtrFromString(attr.Dir)</code></span>
+<span class="codeline" id="line-186"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-187"><code>			return 0, err</code></span>
+<span class="codeline" id="line-188"><code>		}</code></span>
+<span class="codeline" id="line-189"><code>	}</code></span>
+<span class="codeline" id="line-190"><code></code></span>
+<span class="codeline" id="line-191"><code>	// Both Setctty and Foreground use the Ctty field,</code></span>
+<span class="codeline" id="line-192"><code>	// but they give it slightly different meanings.</code></span>
+<span class="codeline" id="line-193"><code>	if sys.Setctty &amp;&amp; sys.Foreground {</code></span>
+<span class="codeline" id="line-194"><code>		return 0, errorspkg.New("both Setctty and Foreground set in SysProcAttr")</code></span>
+<span class="codeline" id="line-195"><code>	}</code></span>
+<span class="codeline" id="line-196"><code>	if sys.Setctty &amp;&amp; sys.Ctty &gt;= len(attr.Files) {</code></span>
+<span class="codeline" id="line-197"><code>		return 0, errorspkg.New("Setctty set but Ctty not valid in child")</code></span>
+<span class="codeline" id="line-198"><code>	}</code></span>
+<span class="codeline" id="line-199"><code></code></span>
+<span class="codeline" id="line-200"><code>	// Acquire the fork lock so that no other threads</code></span>
+<span class="codeline" id="line-201"><code>	// create new fds that are not yet close-on-exec</code></span>
+<span class="codeline" id="line-202"><code>	// before we fork.</code></span>
+<span class="codeline" id="line-203"><code>	ForkLock.Lock()</code></span>
+<span class="codeline" id="line-204"><code></code></span>
+<span class="codeline" id="line-205"><code>	// Allocate child status pipe close on exec.</code></span>
+<span class="codeline" id="line-206"><code>	if err = forkExecPipe(p[:]); err != nil {</code></span>
+<span class="codeline" id="line-207"><code>		goto error</code></span>
+<span class="codeline" id="line-208"><code>	}</code></span>
+<span class="codeline" id="line-209"><code></code></span>
+<span class="codeline" id="line-210"><code>	// Kick off child.</code></span>
+<span class="codeline" id="line-211"><code>	pid, err1 = forkAndExecInChild(argv0p, argvp, envvp, chroot, dir, attr, sys, p[1])</code></span>
+<span class="codeline" id="line-212"><code>	if err1 != 0 {</code></span>
+<span class="codeline" id="line-213"><code>		err = Errno(err1)</code></span>
+<span class="codeline" id="line-214"><code>		goto error</code></span>
+<span class="codeline" id="line-215"><code>	}</code></span>
+<span class="codeline" id="line-216"><code>	ForkLock.Unlock()</code></span>
+<span class="codeline" id="line-217"><code></code></span>
+<span class="codeline" id="line-218"><code>	// Read child error status from pipe.</code></span>
+<span class="codeline" id="line-219"><code>	Close(p[1])</code></span>
+<span class="codeline" id="line-220"><code>	for {</code></span>
+<span class="codeline" id="line-221"><code>		n, err = readlen(p[0], (*byte)(unsafe.Pointer(&amp;err1)), int(unsafe.Sizeof(err1)))</code></span>
+<span class="codeline" id="line-222"><code>		if err != EINTR {</code></span>
+<span class="codeline" id="line-223"><code>			break</code></span>
+<span class="codeline" id="line-224"><code>		}</code></span>
+<span class="codeline" id="line-225"><code>	}</code></span>
+<span class="codeline" id="line-226"><code>	Close(p[0])</code></span>
+<span class="codeline" id="line-227"><code>	if err != nil || n != 0 {</code></span>
+<span class="codeline" id="line-228"><code>		if n == int(unsafe.Sizeof(err1)) {</code></span>
+<span class="codeline" id="line-229"><code>			err = Errno(err1)</code></span>
+<span class="codeline" id="line-230"><code>		}</code></span>
+<span class="codeline" id="line-231"><code>		if err == nil {</code></span>
+<span class="codeline" id="line-232"><code>			err = EPIPE</code></span>
+<span class="codeline" id="line-233"><code>		}</code></span>
+<span class="codeline" id="line-234"><code></code></span>
+<span class="codeline" id="line-235"><code>		// Child failed; wait for it to exit, to make sure</code></span>
+<span class="codeline" id="line-236"><code>		// the zombies don't accumulate.</code></span>
+<span class="codeline" id="line-237"><code>		_, err1 := Wait4(pid, &amp;wstatus, 0, nil)</code></span>
+<span class="codeline" id="line-238"><code>		for err1 == EINTR {</code></span>
+<span class="codeline" id="line-239"><code>			_, err1 = Wait4(pid, &amp;wstatus, 0, nil)</code></span>
+<span class="codeline" id="line-240"><code>		}</code></span>
+<span class="codeline" id="line-241"><code>		return 0, err</code></span>
+<span class="codeline" id="line-242"><code>	}</code></span>
+<span class="codeline" id="line-243"><code></code></span>
+<span class="codeline" id="line-244"><code>	// Read got EOF, so pipe closed on exec, so exec succeeded.</code></span>
+<span class="codeline" id="line-245"><code>	return pid, nil</code></span>
+<span class="codeline" id="line-246"><code></code></span>
+<span class="codeline" id="line-247"><code>error:</code></span>
+<span class="codeline" id="line-248"><code>	if p[0] &gt;= 0 {</code></span>
+<span class="codeline" id="line-249"><code>		Close(p[0])</code></span>
+<span class="codeline" id="line-250"><code>		Close(p[1])</code></span>
+<span class="codeline" id="line-251"><code>	}</code></span>
+<span class="codeline" id="line-252"><code>	ForkLock.Unlock()</code></span>
+<span class="codeline" id="line-253"><code>	return 0, err</code></span>
+<span class="codeline" id="line-254"><code>}</code></span>
+<span class="codeline" id="line-255"><code></code></span>
+<span class="codeline" id="line-256"><code>// Combination of fork and exec, careful to be thread safe.</code></span>
+<span class="codeline" id="line-257"><code>func ForkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) {</code></span>
+<span class="codeline" id="line-258"><code>	return forkExec(argv0, argv, attr)</code></span>
+<span class="codeline" id="line-259"><code>}</code></span>
+<span class="codeline" id="line-260"><code></code></span>
+<span class="codeline" id="line-261"><code>// StartProcess wraps ForkExec for package os.</code></span>
+<span class="codeline" id="line-262"><code>func StartProcess(argv0 string, argv []string, attr *ProcAttr) (pid int, handle uintptr, err error) {</code></span>
+<span class="codeline" id="line-263"><code>	pid, err = forkExec(argv0, argv, attr)</code></span>
+<span class="codeline" id="line-264"><code>	return pid, 0, err</code></span>
+<span class="codeline" id="line-265"><code>}</code></span>
+<span class="codeline" id="line-266"><code></code></span>
+<span class="codeline" id="line-267"><code>// Implemented in runtime package.</code></span>
+<span class="codeline" id="line-268"><code>func runtime_BeforeExec()</code></span>
+<span class="codeline" id="line-269"><code>func runtime_AfterExec()</code></span>
+<span class="codeline" id="line-270"><code></code></span>
+<span class="codeline" id="line-271"><code>// execveLibc is non-nil on OS using libc syscall, set to execve in exec_libc.go; this</code></span>
+<span class="codeline" id="line-272"><code>// avoids a build dependency for other platforms.</code></span>
+<span class="codeline" id="line-273"><code>var execveLibc func(path uintptr, argv uintptr, envp uintptr) Errno</code></span>
+<span class="codeline" id="line-274"><code>var execveDarwin func(path *byte, argv **byte, envp **byte) error</code></span>
+<span class="codeline" id="line-275"><code>var execveOpenBSD func(path *byte, argv **byte, envp **byte) error</code></span>
+<span class="codeline" id="line-276"><code></code></span>
+<span class="codeline" id="line-277"><code>// Exec invokes the execve(2) system call.</code></span>
+<span class="codeline" id="line-278"><code>func Exec(argv0 string, argv []string, envv []string) (err error) {</code></span>
+<span class="codeline" id="line-279"><code>	argv0p, err := BytePtrFromString(argv0)</code></span>
+<span class="codeline" id="line-280"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-281"><code>		return err</code></span>
+<span class="codeline" id="line-282"><code>	}</code></span>
+<span class="codeline" id="line-283"><code>	argvp, err := SlicePtrFromStrings(argv)</code></span>
+<span class="codeline" id="line-284"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-285"><code>		return err</code></span>
+<span class="codeline" id="line-286"><code>	}</code></span>
+<span class="codeline" id="line-287"><code>	envvp, err := SlicePtrFromStrings(envv)</code></span>
+<span class="codeline" id="line-288"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-289"><code>		return err</code></span>
+<span class="codeline" id="line-290"><code>	}</code></span>
+<span class="codeline" id="line-291"><code>	runtime_BeforeExec()</code></span>
+<span class="codeline" id="line-292"><code></code></span>
+<span class="codeline" id="line-293"><code>	var err1 error</code></span>
+<span class="codeline" id="line-294"><code>	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" || runtime.GOOS == "aix" {</code></span>
+<span class="codeline" id="line-295"><code>		// RawSyscall should never be used on Solaris, illumos, or AIX.</code></span>
+<span class="codeline" id="line-296"><code>		err1 = execveLibc(</code></span>
+<span class="codeline" id="line-297"><code>			uintptr(unsafe.Pointer(argv0p)),</code></span>
+<span class="codeline" id="line-298"><code>			uintptr(unsafe.Pointer(&amp;argvp[0])),</code></span>
+<span class="codeline" id="line-299"><code>			uintptr(unsafe.Pointer(&amp;envvp[0])))</code></span>
+<span class="codeline" id="line-300"><code>	} else if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {</code></span>
+<span class="codeline" id="line-301"><code>		// Similarly on Darwin.</code></span>
+<span class="codeline" id="line-302"><code>		err1 = execveDarwin(argv0p, &amp;argvp[0], &amp;envvp[0])</code></span>
+<span class="codeline" id="line-303"><code>	} else if runtime.GOOS == "openbsd" &amp;&amp; runtime.GOARCH == "amd64" {</code></span>
+<span class="codeline" id="line-304"><code>		// Similarly on OpenBSD.</code></span>
+<span class="codeline" id="line-305"><code>		err1 = execveOpenBSD(argv0p, &amp;argvp[0], &amp;envvp[0])</code></span>
+<span class="codeline" id="line-306"><code>	} else {</code></span>
+<span class="codeline" id="line-307"><code>		_, _, err1 = RawSyscall(SYS_EXECVE,</code></span>
+<span class="codeline" id="line-308"><code>			uintptr(unsafe.Pointer(argv0p)),</code></span>
+<span class="codeline" id="line-309"><code>			uintptr(unsafe.Pointer(&amp;argvp[0])),</code></span>
+<span class="codeline" id="line-310"><code>			uintptr(unsafe.Pointer(&amp;envvp[0])))</code></span>
+<span class="codeline" id="line-311"><code>	}</code></span>
+<span class="codeline" id="line-312"><code>	runtime_AfterExec()</code></span>
+<span class="codeline" id="line-313"><code>	return err1</code></span>
+<span class="codeline" id="line-314"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

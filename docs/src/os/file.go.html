@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: file.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	file.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package os provides a platform-independent interface to operating system</code></span>
+<span class="codeline" id="line-6"><code>// functionality. The design is Unix-like, although the error handling is</code></span>
+<span class="codeline" id="line-7"><code>// Go-like; failing calls return values of type error rather than error numbers.</code></span>
+<span class="codeline" id="line-8"><code>// Often, more information is available within the error. For example,</code></span>
+<span class="codeline" id="line-9"><code>// if a call that takes a file name fails, such as Open or Stat, the error</code></span>
+<span class="codeline" id="line-10"><code>// will include the failing file name when printed and will be of type</code></span>
+<span class="codeline" id="line-11"><code>// *PathError, which may be unpacked for more information.</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>// The os interface is intended to be uniform across all operating systems.</code></span>
+<span class="codeline" id="line-14"><code>// Features not generally available appear in the system-specific package syscall.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>// Here is a simple example, opening a file and reading some of it.</code></span>
+<span class="codeline" id="line-17"><code>//</code></span>
+<span class="codeline" id="line-18"><code>//	file, err := os.Open("file.go") // For read access.</code></span>
+<span class="codeline" id="line-19"><code>//	if err != nil {</code></span>
+<span class="codeline" id="line-20"><code>//		log.Fatal(err)</code></span>
+<span class="codeline" id="line-21"><code>//	}</code></span>
+<span class="codeline" id="line-22"><code>//</code></span>
+<span class="codeline" id="line-23"><code>// If the open fails, the error string will be self-explanatory, like</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>//	open file.go: no such file or directory</code></span>
+<span class="codeline" id="line-26"><code>//</code></span>
+<span class="codeline" id="line-27"><code>// The file's data can then be read into a slice of bytes. Read and</code></span>
+<span class="codeline" id="line-28"><code>// Write take their byte counts from the length of the argument slice.</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>//	data := make([]byte, 100)</code></span>
+<span class="codeline" id="line-31"><code>//	count, err := file.Read(data)</code></span>
+<span class="codeline" id="line-32"><code>//	if err != nil {</code></span>
+<span class="codeline" id="line-33"><code>//		log.Fatal(err)</code></span>
+<span class="codeline" id="line-34"><code>//	}</code></span>
+<span class="codeline" id="line-35"><code>//	fmt.Printf("read %d bytes: %q\n", count, data[:count])</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// Note: The maximum number of concurrent operations on a File may be limited by</code></span>
+<span class="codeline" id="line-38"><code>// the OS or the system. The number should be high, but exceeding it may degrade</code></span>
+<span class="codeline" id="line-39"><code>// performance or cause other issues.</code></span>
+<span class="codeline" id="line-40"><code>//</code></span></div><span class="codeline" id="line-41"><code>package os</code></span>
+<span class="codeline" id="line-42"><code></code></span>
+<span class="codeline" id="line-43"><code>import (</code></span>
+<span class="codeline" id="line-44"><code>	"errors"</code></span>
+<span class="codeline" id="line-45"><code>	"internal/poll"</code></span>
+<span class="codeline" id="line-46"><code>	"internal/testlog"</code></span>
+<span class="codeline" id="line-47"><code>	"io"</code></span>
+<span class="codeline" id="line-48"><code>	"io/fs"</code></span>
+<span class="codeline" id="line-49"><code>	"runtime"</code></span>
+<span class="codeline" id="line-50"><code>	"syscall"</code></span>
+<span class="codeline" id="line-51"><code>	"time"</code></span>
+<span class="codeline" id="line-52"><code>)</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>// Name returns the name of the file as presented to Open.</code></span>
+<span class="codeline" id="line-55"><code>func (f *File) Name() string { return f.name }</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>// Stdin, Stdout, and Stderr are open Files pointing to the standard input,</code></span>
+<span class="codeline" id="line-58"><code>// standard output, and standard error file descriptors.</code></span>
+<span class="codeline" id="line-59"><code>//</code></span>
+<span class="codeline" id="line-60"><code>// Note that the Go runtime writes to standard error for panics and crashes;</code></span>
+<span class="codeline" id="line-61"><code>// closing Stderr may cause those messages to go elsewhere, perhaps</code></span>
+<span class="codeline" id="line-62"><code>// to a file opened later.</code></span>
+<span class="codeline" id="line-63"><code>var (</code></span>
+<span class="codeline" id="line-64"><code>	Stdin  = NewFile(uintptr(syscall.Stdin), "/dev/stdin")</code></span>
+<span class="codeline" id="line-65"><code>	Stdout = NewFile(uintptr(syscall.Stdout), "/dev/stdout")</code></span>
+<span class="codeline" id="line-66"><code>	Stderr = NewFile(uintptr(syscall.Stderr), "/dev/stderr")</code></span>
+<span class="codeline" id="line-67"><code>)</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>// Flags to OpenFile wrapping those of the underlying system. Not all</code></span>
+<span class="codeline" id="line-70"><code>// flags may be implemented on a given system.</code></span>
+<span class="codeline" id="line-71"><code>const (</code></span>
+<span class="codeline" id="line-72"><code>	// Exactly one of O_RDONLY, O_WRONLY, or O_RDWR must be specified.</code></span>
+<span class="codeline" id="line-73"><code>	O_RDONLY int = syscall.O_RDONLY // open the file read-only.</code></span>
+<span class="codeline" id="line-74"><code>	O_WRONLY int = syscall.O_WRONLY // open the file write-only.</code></span>
+<span class="codeline" id="line-75"><code>	O_RDWR   int = syscall.O_RDWR   // open the file read-write.</code></span>
+<span class="codeline" id="line-76"><code>	// The remaining values may be or'ed in to control behavior.</code></span>
+<span class="codeline" id="line-77"><code>	O_APPEND int = syscall.O_APPEND // append data to the file when writing.</code></span>
+<span class="codeline" id="line-78"><code>	O_CREATE int = syscall.O_CREAT  // create a new file if none exists.</code></span>
+<span class="codeline" id="line-79"><code>	O_EXCL   int = syscall.O_EXCL   // used with O_CREATE, file must not exist.</code></span>
+<span class="codeline" id="line-80"><code>	O_SYNC   int = syscall.O_SYNC   // open for synchronous I/O.</code></span>
+<span class="codeline" id="line-81"><code>	O_TRUNC  int = syscall.O_TRUNC  // truncate regular writable file when opened.</code></span>
+<span class="codeline" id="line-82"><code>)</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>// Seek whence values.</code></span>
+<span class="codeline" id="line-85"><code>//</code></span>
+<span class="codeline" id="line-86"><code>// Deprecated: Use io.SeekStart, io.SeekCurrent, and io.SeekEnd.</code></span>
+<span class="codeline" id="line-87"><code>const (</code></span>
+<span class="codeline" id="line-88"><code>	SEEK_SET int = 0 // seek relative to the origin of the file</code></span>
+<span class="codeline" id="line-89"><code>	SEEK_CUR int = 1 // seek relative to the current offset</code></span>
+<span class="codeline" id="line-90"><code>	SEEK_END int = 2 // seek relative to the end</code></span>
+<span class="codeline" id="line-91"><code>)</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>// LinkError records an error during a link or symlink or rename</code></span>
+<span class="codeline" id="line-94"><code>// system call and the paths that caused it.</code></span>
+<span class="codeline" id="line-95"><code>type LinkError struct {</code></span>
+<span class="codeline" id="line-96"><code>	Op  string</code></span>
+<span class="codeline" id="line-97"><code>	Old string</code></span>
+<span class="codeline" id="line-98"><code>	New string</code></span>
+<span class="codeline" id="line-99"><code>	Err error</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>func (e *LinkError) Error() string {</code></span>
+<span class="codeline" id="line-103"><code>	return e.Op + " " + e.Old + " " + e.New + ": " + e.Err.Error()</code></span>
+<span class="codeline" id="line-104"><code>}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>func (e *LinkError) Unwrap() error {</code></span>
+<span class="codeline" id="line-107"><code>	return e.Err</code></span>
+<span class="codeline" id="line-108"><code>}</code></span>
+<span class="codeline" id="line-109"><code></code></span>
+<span class="codeline" id="line-110"><code>// Read reads up to len(b) bytes from the File.</code></span>
+<span class="codeline" id="line-111"><code>// It returns the number of bytes read and any error encountered.</code></span>
+<span class="codeline" id="line-112"><code>// At end of file, Read returns 0, io.EOF.</code></span>
+<span class="codeline" id="line-113"><code>func (f *File) Read(b []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-114"><code>	if err := f.checkValid("read"); err != nil {</code></span>
+<span class="codeline" id="line-115"><code>		return 0, err</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code>	n, e := f.read(b)</code></span>
+<span class="codeline" id="line-118"><code>	return n, f.wrapErr("read", e)</code></span>
+<span class="codeline" id="line-119"><code>}</code></span>
+<span class="codeline" id="line-120"><code></code></span>
+<span class="codeline" id="line-121"><code>// ReadAt reads len(b) bytes from the File starting at byte offset off.</code></span>
+<span class="codeline" id="line-122"><code>// It returns the number of bytes read and the error, if any.</code></span>
+<span class="codeline" id="line-123"><code>// ReadAt always returns a non-nil error when n &lt; len(b).</code></span>
+<span class="codeline" id="line-124"><code>// At end of file, that error is io.EOF.</code></span>
+<span class="codeline" id="line-125"><code>func (f *File) ReadAt(b []byte, off int64) (n int, err error) {</code></span>
+<span class="codeline" id="line-126"><code>	if err := f.checkValid("read"); err != nil {</code></span>
+<span class="codeline" id="line-127"><code>		return 0, err</code></span>
+<span class="codeline" id="line-128"><code>	}</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	if off &lt; 0 {</code></span>
+<span class="codeline" id="line-131"><code>		return 0, &amp;PathError{Op: "readat", Path: f.name, Err: errors.New("negative offset")}</code></span>
+<span class="codeline" id="line-132"><code>	}</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>	for len(b) &gt; 0 {</code></span>
+<span class="codeline" id="line-135"><code>		m, e := f.pread(b, off)</code></span>
+<span class="codeline" id="line-136"><code>		if e != nil {</code></span>
+<span class="codeline" id="line-137"><code>			err = f.wrapErr("read", e)</code></span>
+<span class="codeline" id="line-138"><code>			break</code></span>
+<span class="codeline" id="line-139"><code>		}</code></span>
+<span class="codeline" id="line-140"><code>		n += m</code></span>
+<span class="codeline" id="line-141"><code>		b = b[m:]</code></span>
+<span class="codeline" id="line-142"><code>		off += int64(m)</code></span>
+<span class="codeline" id="line-143"><code>	}</code></span>
+<span class="codeline" id="line-144"><code>	return</code></span>
+<span class="codeline" id="line-145"><code>}</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>// ReadFrom implements io.ReaderFrom.</code></span>
+<span class="codeline" id="line-148"><code>func (f *File) ReadFrom(r io.Reader) (n int64, err error) {</code></span>
+<span class="codeline" id="line-149"><code>	if err := f.checkValid("write"); err != nil {</code></span>
+<span class="codeline" id="line-150"><code>		return 0, err</code></span>
+<span class="codeline" id="line-151"><code>	}</code></span>
+<span class="codeline" id="line-152"><code>	n, handled, e := f.readFrom(r)</code></span>
+<span class="codeline" id="line-153"><code>	if !handled {</code></span>
+<span class="codeline" id="line-154"><code>		return genericReadFrom(f, r) // without wrapping</code></span>
+<span class="codeline" id="line-155"><code>	}</code></span>
+<span class="codeline" id="line-156"><code>	return n, f.wrapErr("write", e)</code></span>
+<span class="codeline" id="line-157"><code>}</code></span>
+<span class="codeline" id="line-158"><code></code></span>
+<span class="codeline" id="line-159"><code>func genericReadFrom(f *File, r io.Reader) (int64, error) {</code></span>
+<span class="codeline" id="line-160"><code>	return io.Copy(onlyWriter{f}, r)</code></span>
+<span class="codeline" id="line-161"><code>}</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>type onlyWriter struct {</code></span>
+<span class="codeline" id="line-164"><code>	io.Writer</code></span>
+<span class="codeline" id="line-165"><code>}</code></span>
+<span class="codeline" id="line-166"><code></code></span>
+<span class="codeline" id="line-167"><code>// Write writes len(b) bytes to the File.</code></span>
+<span class="codeline" id="line-168"><code>// It returns the number of bytes written and an error, if any.</code></span>
+<span class="codeline" id="line-169"><code>// Write returns a non-nil error when n != len(b).</code></span>
+<span class="codeline" id="line-170"><code>func (f *File) Write(b []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-171"><code>	if err := f.checkValid("write"); err != nil {</code></span>
+<span class="codeline" id="line-172"><code>		return 0, err</code></span>
+<span class="codeline" id="line-173"><code>	}</code></span>
+<span class="codeline" id="line-174"><code>	n, e := f.write(b)</code></span>
+<span class="codeline" id="line-175"><code>	if n &lt; 0 {</code></span>
+<span class="codeline" id="line-176"><code>		n = 0</code></span>
+<span class="codeline" id="line-177"><code>	}</code></span>
+<span class="codeline" id="line-178"><code>	if n != len(b) {</code></span>
+<span class="codeline" id="line-179"><code>		err = io.ErrShortWrite</code></span>
+<span class="codeline" id="line-180"><code>	}</code></span>
+<span class="codeline" id="line-181"><code></code></span>
+<span class="codeline" id="line-182"><code>	epipecheck(f, e)</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-185"><code>		err = f.wrapErr("write", e)</code></span>
+<span class="codeline" id="line-186"><code>	}</code></span>
+<span class="codeline" id="line-187"><code></code></span>
+<span class="codeline" id="line-188"><code>	return n, err</code></span>
+<span class="codeline" id="line-189"><code>}</code></span>
+<span class="codeline" id="line-190"><code></code></span>
+<span class="codeline" id="line-191"><code>var errWriteAtInAppendMode = errors.New("os: invalid use of WriteAt on file opened with O_APPEND")</code></span>
+<span class="codeline" id="line-192"><code></code></span>
+<span class="codeline" id="line-193"><code>// WriteAt writes len(b) bytes to the File starting at byte offset off.</code></span>
+<span class="codeline" id="line-194"><code>// It returns the number of bytes written and an error, if any.</code></span>
+<span class="codeline" id="line-195"><code>// WriteAt returns a non-nil error when n != len(b).</code></span>
+<span class="codeline" id="line-196"><code>//</code></span>
+<span class="codeline" id="line-197"><code>// If file was opened with the O_APPEND flag, WriteAt returns an error.</code></span>
+<span class="codeline" id="line-198"><code>func (f *File) WriteAt(b []byte, off int64) (n int, err error) {</code></span>
+<span class="codeline" id="line-199"><code>	if err := f.checkValid("write"); err != nil {</code></span>
+<span class="codeline" id="line-200"><code>		return 0, err</code></span>
+<span class="codeline" id="line-201"><code>	}</code></span>
+<span class="codeline" id="line-202"><code>	if f.appendMode {</code></span>
+<span class="codeline" id="line-203"><code>		return 0, errWriteAtInAppendMode</code></span>
+<span class="codeline" id="line-204"><code>	}</code></span>
+<span class="codeline" id="line-205"><code></code></span>
+<span class="codeline" id="line-206"><code>	if off &lt; 0 {</code></span>
+<span class="codeline" id="line-207"><code>		return 0, &amp;PathError{Op: "writeat", Path: f.name, Err: errors.New("negative offset")}</code></span>
+<span class="codeline" id="line-208"><code>	}</code></span>
+<span class="codeline" id="line-209"><code></code></span>
+<span class="codeline" id="line-210"><code>	for len(b) &gt; 0 {</code></span>
+<span class="codeline" id="line-211"><code>		m, e := f.pwrite(b, off)</code></span>
+<span class="codeline" id="line-212"><code>		if e != nil {</code></span>
+<span class="codeline" id="line-213"><code>			err = f.wrapErr("write", e)</code></span>
+<span class="codeline" id="line-214"><code>			break</code></span>
+<span class="codeline" id="line-215"><code>		}</code></span>
+<span class="codeline" id="line-216"><code>		n += m</code></span>
+<span class="codeline" id="line-217"><code>		b = b[m:]</code></span>
+<span class="codeline" id="line-218"><code>		off += int64(m)</code></span>
+<span class="codeline" id="line-219"><code>	}</code></span>
+<span class="codeline" id="line-220"><code>	return</code></span>
+<span class="codeline" id="line-221"><code>}</code></span>
+<span class="codeline" id="line-222"><code></code></span>
+<span class="codeline" id="line-223"><code>// Seek sets the offset for the next Read or Write on file to offset, interpreted</code></span>
+<span class="codeline" id="line-224"><code>// according to whence: 0 means relative to the origin of the file, 1 means</code></span>
+<span class="codeline" id="line-225"><code>// relative to the current offset, and 2 means relative to the end.</code></span>
+<span class="codeline" id="line-226"><code>// It returns the new offset and an error, if any.</code></span>
+<span class="codeline" id="line-227"><code>// The behavior of Seek on a file opened with O_APPEND is not specified.</code></span>
+<span class="codeline" id="line-228"><code>//</code></span>
+<span class="codeline" id="line-229"><code>// If f is a directory, the behavior of Seek varies by operating</code></span>
+<span class="codeline" id="line-230"><code>// system; you can seek to the beginning of the directory on Unix-like</code></span>
+<span class="codeline" id="line-231"><code>// operating systems, but not on Windows.</code></span>
+<span class="codeline" id="line-232"><code>func (f *File) Seek(offset int64, whence int) (ret int64, err error) {</code></span>
+<span class="codeline" id="line-233"><code>	if err := f.checkValid("seek"); err != nil {</code></span>
+<span class="codeline" id="line-234"><code>		return 0, err</code></span>
+<span class="codeline" id="line-235"><code>	}</code></span>
+<span class="codeline" id="line-236"><code>	r, e := f.seek(offset, whence)</code></span>
+<span class="codeline" id="line-237"><code>	if e == nil &amp;&amp; f.dirinfo != nil &amp;&amp; r != 0 {</code></span>
+<span class="codeline" id="line-238"><code>		e = syscall.EISDIR</code></span>
+<span class="codeline" id="line-239"><code>	}</code></span>
+<span class="codeline" id="line-240"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-241"><code>		return 0, f.wrapErr("seek", e)</code></span>
+<span class="codeline" id="line-242"><code>	}</code></span>
+<span class="codeline" id="line-243"><code>	return r, nil</code></span>
+<span class="codeline" id="line-244"><code>}</code></span>
+<span class="codeline" id="line-245"><code></code></span>
+<span class="codeline" id="line-246"><code>// WriteString is like Write, but writes the contents of string s rather than</code></span>
+<span class="codeline" id="line-247"><code>// a slice of bytes.</code></span>
+<span class="codeline" id="line-248"><code>func (f *File) WriteString(s string) (n int, err error) {</code></span>
+<span class="codeline" id="line-249"><code>	return f.Write([]byte(s))</code></span>
+<span class="codeline" id="line-250"><code>}</code></span>
+<span class="codeline" id="line-251"><code></code></span>
+<span class="codeline" id="line-252"><code>// Mkdir creates a new directory with the specified name and permission</code></span>
+<span class="codeline" id="line-253"><code>// bits (before umask).</code></span>
+<span class="codeline" id="line-254"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-255"><code>func Mkdir(name string, perm FileMode) error {</code></span>
+<span class="codeline" id="line-256"><code>	if runtime.GOOS == "windows" &amp;&amp; isWindowsNulName(name) {</code></span>
+<span class="codeline" id="line-257"><code>		return &amp;PathError{Op: "mkdir", Path: name, Err: syscall.ENOTDIR}</code></span>
+<span class="codeline" id="line-258"><code>	}</code></span>
+<span class="codeline" id="line-259"><code>	longName := fixLongPath(name)</code></span>
+<span class="codeline" id="line-260"><code>	e := ignoringEINTR(func() error {</code></span>
+<span class="codeline" id="line-261"><code>		return syscall.Mkdir(longName, syscallMode(perm))</code></span>
+<span class="codeline" id="line-262"><code>	})</code></span>
+<span class="codeline" id="line-263"><code></code></span>
+<span class="codeline" id="line-264"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-265"><code>		return &amp;PathError{Op: "mkdir", Path: name, Err: e}</code></span>
+<span class="codeline" id="line-266"><code>	}</code></span>
+<span class="codeline" id="line-267"><code></code></span>
+<span class="codeline" id="line-268"><code>	// mkdir(2) itself won't handle the sticky bit on *BSD and Solaris</code></span>
+<span class="codeline" id="line-269"><code>	if !supportsCreateWithStickyBit &amp;&amp; perm&amp;ModeSticky != 0 {</code></span>
+<span class="codeline" id="line-270"><code>		e = setStickyBit(name)</code></span>
+<span class="codeline" id="line-271"><code></code></span>
+<span class="codeline" id="line-272"><code>		if e != nil {</code></span>
+<span class="codeline" id="line-273"><code>			Remove(name)</code></span>
+<span class="codeline" id="line-274"><code>			return e</code></span>
+<span class="codeline" id="line-275"><code>		}</code></span>
+<span class="codeline" id="line-276"><code>	}</code></span>
+<span class="codeline" id="line-277"><code></code></span>
+<span class="codeline" id="line-278"><code>	return nil</code></span>
+<span class="codeline" id="line-279"><code>}</code></span>
+<span class="codeline" id="line-280"><code></code></span>
+<span class="codeline" id="line-281"><code>// setStickyBit adds ModeSticky to the permission bits of path, non atomic.</code></span>
+<span class="codeline" id="line-282"><code>func setStickyBit(name string) error {</code></span>
+<span class="codeline" id="line-283"><code>	fi, err := Stat(name)</code></span>
+<span class="codeline" id="line-284"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-285"><code>		return err</code></span>
+<span class="codeline" id="line-286"><code>	}</code></span>
+<span class="codeline" id="line-287"><code>	return Chmod(name, fi.Mode()|ModeSticky)</code></span>
+<span class="codeline" id="line-288"><code>}</code></span>
+<span class="codeline" id="line-289"><code></code></span>
+<span class="codeline" id="line-290"><code>// Chdir changes the current working directory to the named directory.</code></span>
+<span class="codeline" id="line-291"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-292"><code>func Chdir(dir string) error {</code></span>
+<span class="codeline" id="line-293"><code>	if e := syscall.Chdir(dir); e != nil {</code></span>
+<span class="codeline" id="line-294"><code>		testlog.Open(dir) // observe likely non-existent directory</code></span>
+<span class="codeline" id="line-295"><code>		return &amp;PathError{Op: "chdir", Path: dir, Err: e}</code></span>
+<span class="codeline" id="line-296"><code>	}</code></span>
+<span class="codeline" id="line-297"><code>	if log := testlog.Logger(); log != nil {</code></span>
+<span class="codeline" id="line-298"><code>		wd, err := Getwd()</code></span>
+<span class="codeline" id="line-299"><code>		if err == nil {</code></span>
+<span class="codeline" id="line-300"><code>			log.Chdir(wd)</code></span>
+<span class="codeline" id="line-301"><code>		}</code></span>
+<span class="codeline" id="line-302"><code>	}</code></span>
+<span class="codeline" id="line-303"><code>	return nil</code></span>
+<span class="codeline" id="line-304"><code>}</code></span>
+<span class="codeline" id="line-305"><code></code></span>
+<span class="codeline" id="line-306"><code>// Open opens the named file for reading. If successful, methods on</code></span>
+<span class="codeline" id="line-307"><code>// the returned file can be used for reading; the associated file</code></span>
+<span class="codeline" id="line-308"><code>// descriptor has mode O_RDONLY.</code></span>
+<span class="codeline" id="line-309"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-310"><code>func Open(name string) (*File, error) {</code></span>
+<span class="codeline" id="line-311"><code>	return OpenFile(name, O_RDONLY, 0)</code></span>
+<span class="codeline" id="line-312"><code>}</code></span>
+<span class="codeline" id="line-313"><code></code></span>
+<span class="codeline" id="line-314"><code>// Create creates or truncates the named file. If the file already exists,</code></span>
+<span class="codeline" id="line-315"><code>// it is truncated. If the file does not exist, it is created with mode 0666</code></span>
+<span class="codeline" id="line-316"><code>// (before umask). If successful, methods on the returned File can</code></span>
+<span class="codeline" id="line-317"><code>// be used for I/O; the associated file descriptor has mode O_RDWR.</code></span>
+<span class="codeline" id="line-318"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-319"><code>func Create(name string) (*File, error) {</code></span>
+<span class="codeline" id="line-320"><code>	return OpenFile(name, O_RDWR|O_CREATE|O_TRUNC, 0666)</code></span>
+<span class="codeline" id="line-321"><code>}</code></span>
+<span class="codeline" id="line-322"><code></code></span>
+<span class="codeline" id="line-323"><code>// OpenFile is the generalized open call; most users will use Open</code></span>
+<span class="codeline" id="line-324"><code>// or Create instead. It opens the named file with specified flag</code></span>
+<span class="codeline" id="line-325"><code>// (O_RDONLY etc.). If the file does not exist, and the O_CREATE flag</code></span>
+<span class="codeline" id="line-326"><code>// is passed, it is created with mode perm (before umask). If successful,</code></span>
+<span class="codeline" id="line-327"><code>// methods on the returned File can be used for I/O.</code></span>
+<span class="codeline" id="line-328"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-329"><code>func OpenFile(name string, flag int, perm FileMode) (*File, error) {</code></span>
+<span class="codeline" id="line-330"><code>	testlog.Open(name)</code></span>
+<span class="codeline" id="line-331"><code>	f, err := openFileNolog(name, flag, perm)</code></span>
+<span class="codeline" id="line-332"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-333"><code>		return nil, err</code></span>
+<span class="codeline" id="line-334"><code>	}</code></span>
+<span class="codeline" id="line-335"><code>	f.appendMode = flag&amp;O_APPEND != 0</code></span>
+<span class="codeline" id="line-336"><code></code></span>
+<span class="codeline" id="line-337"><code>	return f, nil</code></span>
+<span class="codeline" id="line-338"><code>}</code></span>
+<span class="codeline" id="line-339"><code></code></span>
+<span class="codeline" id="line-340"><code>// lstat is overridden in tests.</code></span>
+<span class="codeline" id="line-341"><code>var lstat = Lstat</code></span>
+<span class="codeline" id="line-342"><code></code></span>
+<span class="codeline" id="line-343"><code>// Rename renames (moves) oldpath to newpath.</code></span>
+<span class="codeline" id="line-344"><code>// If newpath already exists and is not a directory, Rename replaces it.</code></span>
+<span class="codeline" id="line-345"><code>// OS-specific restrictions may apply when oldpath and newpath are in different directories.</code></span>
+<span class="codeline" id="line-346"><code>// If there is an error, it will be of type *LinkError.</code></span>
+<span class="codeline" id="line-347"><code>func Rename(oldpath, newpath string) error {</code></span>
+<span class="codeline" id="line-348"><code>	return rename(oldpath, newpath)</code></span>
+<span class="codeline" id="line-349"><code>}</code></span>
+<span class="codeline" id="line-350"><code></code></span>
+<span class="codeline" id="line-351"><code>// Many functions in package syscall return a count of -1 instead of 0.</code></span>
+<span class="codeline" id="line-352"><code>// Using fixCount(call()) instead of call() corrects the count.</code></span>
+<span class="codeline" id="line-353"><code>func fixCount(n int, err error) (int, error) {</code></span>
+<span class="codeline" id="line-354"><code>	if n &lt; 0 {</code></span>
+<span class="codeline" id="line-355"><code>		n = 0</code></span>
+<span class="codeline" id="line-356"><code>	}</code></span>
+<span class="codeline" id="line-357"><code>	return n, err</code></span>
+<span class="codeline" id="line-358"><code>}</code></span>
+<span class="codeline" id="line-359"><code></code></span>
+<span class="codeline" id="line-360"><code>// wrapErr wraps an error that occurred during an operation on an open file.</code></span>
+<span class="codeline" id="line-361"><code>// It passes io.EOF through unchanged, otherwise converts</code></span>
+<span class="codeline" id="line-362"><code>// poll.ErrFileClosing to ErrClosed and wraps the error in a PathError.</code></span>
+<span class="codeline" id="line-363"><code>func (f *File) wrapErr(op string, err error) error {</code></span>
+<span class="codeline" id="line-364"><code>	if err == nil || err == io.EOF {</code></span>
+<span class="codeline" id="line-365"><code>		return err</code></span>
+<span class="codeline" id="line-366"><code>	}</code></span>
+<span class="codeline" id="line-367"><code>	if err == poll.ErrFileClosing {</code></span>
+<span class="codeline" id="line-368"><code>		err = ErrClosed</code></span>
+<span class="codeline" id="line-369"><code>	}</code></span>
+<span class="codeline" id="line-370"><code>	return &amp;PathError{Op: op, Path: f.name, Err: err}</code></span>
+<span class="codeline" id="line-371"><code>}</code></span>
+<span class="codeline" id="line-372"><code></code></span>
+<span class="codeline" id="line-373"><code>// TempDir returns the default directory to use for temporary files.</code></span>
+<span class="codeline" id="line-374"><code>//</code></span>
+<span class="codeline" id="line-375"><code>// On Unix systems, it returns $TMPDIR if non-empty, else /tmp.</code></span>
+<span class="codeline" id="line-376"><code>// On Windows, it uses GetTempPath, returning the first non-empty</code></span>
+<span class="codeline" id="line-377"><code>// value from %TMP%, %TEMP%, %USERPROFILE%, or the Windows directory.</code></span>
+<span class="codeline" id="line-378"><code>// On Plan 9, it returns /tmp.</code></span>
+<span class="codeline" id="line-379"><code>//</code></span>
+<span class="codeline" id="line-380"><code>// The directory is neither guaranteed to exist nor have accessible</code></span>
+<span class="codeline" id="line-381"><code>// permissions.</code></span>
+<span class="codeline" id="line-382"><code>func TempDir() string {</code></span>
+<span class="codeline" id="line-383"><code>	return tempDir()</code></span>
+<span class="codeline" id="line-384"><code>}</code></span>
+<span class="codeline" id="line-385"><code></code></span>
+<span class="codeline" id="line-386"><code>// UserCacheDir returns the default root directory to use for user-specific</code></span>
+<span class="codeline" id="line-387"><code>// cached data. Users should create their own application-specific subdirectory</code></span>
+<span class="codeline" id="line-388"><code>// within this one and use that.</code></span>
+<span class="codeline" id="line-389"><code>//</code></span>
+<span class="codeline" id="line-390"><code>// On Unix systems, it returns $XDG_CACHE_HOME as specified by</code></span>
+<span class="codeline" id="line-391"><code>// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html if</code></span>
+<span class="codeline" id="line-392"><code>// non-empty, else $HOME/.cache.</code></span>
+<span class="codeline" id="line-393"><code>// On Darwin, it returns $HOME/Library/Caches.</code></span>
+<span class="codeline" id="line-394"><code>// On Windows, it returns %LocalAppData%.</code></span>
+<span class="codeline" id="line-395"><code>// On Plan 9, it returns $home/lib/cache.</code></span>
+<span class="codeline" id="line-396"><code>//</code></span>
+<span class="codeline" id="line-397"><code>// If the location cannot be determined (for example, $HOME is not defined),</code></span>
+<span class="codeline" id="line-398"><code>// then it will return an error.</code></span>
+<span class="codeline" id="line-399"><code>func UserCacheDir() (string, error) {</code></span>
+<span class="codeline" id="line-400"><code>	var dir string</code></span>
+<span class="codeline" id="line-401"><code></code></span>
+<span class="codeline" id="line-402"><code>	switch runtime.GOOS {</code></span>
+<span class="codeline" id="line-403"><code>	case "windows":</code></span>
+<span class="codeline" id="line-404"><code>		dir = Getenv("LocalAppData")</code></span>
+<span class="codeline" id="line-405"><code>		if dir == "" {</code></span>
+<span class="codeline" id="line-406"><code>			return "", errors.New("%LocalAppData% is not defined")</code></span>
+<span class="codeline" id="line-407"><code>		}</code></span>
+<span class="codeline" id="line-408"><code></code></span>
+<span class="codeline" id="line-409"><code>	case "darwin", "ios":</code></span>
+<span class="codeline" id="line-410"><code>		dir = Getenv("HOME")</code></span>
+<span class="codeline" id="line-411"><code>		if dir == "" {</code></span>
+<span class="codeline" id="line-412"><code>			return "", errors.New("$HOME is not defined")</code></span>
+<span class="codeline" id="line-413"><code>		}</code></span>
+<span class="codeline" id="line-414"><code>		dir += "/Library/Caches"</code></span>
+<span class="codeline" id="line-415"><code></code></span>
+<span class="codeline" id="line-416"><code>	case "plan9":</code></span>
+<span class="codeline" id="line-417"><code>		dir = Getenv("home")</code></span>
+<span class="codeline" id="line-418"><code>		if dir == "" {</code></span>
+<span class="codeline" id="line-419"><code>			return "", errors.New("$home is not defined")</code></span>
+<span class="codeline" id="line-420"><code>		}</code></span>
+<span class="codeline" id="line-421"><code>		dir += "/lib/cache"</code></span>
+<span class="codeline" id="line-422"><code></code></span>
+<span class="codeline" id="line-423"><code>	default: // Unix</code></span>
+<span class="codeline" id="line-424"><code>		dir = Getenv("XDG_CACHE_HOME")</code></span>
+<span class="codeline" id="line-425"><code>		if dir == "" {</code></span>
+<span class="codeline" id="line-426"><code>			dir = Getenv("HOME")</code></span>
+<span class="codeline" id="line-427"><code>			if dir == "" {</code></span>
+<span class="codeline" id="line-428"><code>				return "", errors.New("neither $XDG_CACHE_HOME nor $HOME are defined")</code></span>
+<span class="codeline" id="line-429"><code>			}</code></span>
+<span class="codeline" id="line-430"><code>			dir += "/.cache"</code></span>
+<span class="codeline" id="line-431"><code>		}</code></span>
+<span class="codeline" id="line-432"><code>	}</code></span>
+<span class="codeline" id="line-433"><code></code></span>
+<span class="codeline" id="line-434"><code>	return dir, nil</code></span>
+<span class="codeline" id="line-435"><code>}</code></span>
+<span class="codeline" id="line-436"><code></code></span>
+<span class="codeline" id="line-437"><code>// UserConfigDir returns the default root directory to use for user-specific</code></span>
+<span class="codeline" id="line-438"><code>// configuration data. Users should create their own application-specific</code></span>
+<span class="codeline" id="line-439"><code>// subdirectory within this one and use that.</code></span>
+<span class="codeline" id="line-440"><code>//</code></span>
+<span class="codeline" id="line-441"><code>// On Unix systems, it returns $XDG_CONFIG_HOME as specified by</code></span>
+<span class="codeline" id="line-442"><code>// https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html if</code></span>
+<span class="codeline" id="line-443"><code>// non-empty, else $HOME/.config.</code></span>
+<span class="codeline" id="line-444"><code>// On Darwin, it returns $HOME/Library/Application Support.</code></span>
+<span class="codeline" id="line-445"><code>// On Windows, it returns %AppData%.</code></span>
+<span class="codeline" id="line-446"><code>// On Plan 9, it returns $home/lib.</code></span>
+<span class="codeline" id="line-447"><code>//</code></span>
+<span class="codeline" id="line-448"><code>// If the location cannot be determined (for example, $HOME is not defined),</code></span>
+<span class="codeline" id="line-449"><code>// then it will return an error.</code></span>
+<span class="codeline" id="line-450"><code>func UserConfigDir() (string, error) {</code></span>
+<span class="codeline" id="line-451"><code>	var dir string</code></span>
+<span class="codeline" id="line-452"><code></code></span>
+<span class="codeline" id="line-453"><code>	switch runtime.GOOS {</code></span>
+<span class="codeline" id="line-454"><code>	case "windows":</code></span>
+<span class="codeline" id="line-455"><code>		dir = Getenv("AppData")</code></span>
+<span class="codeline" id="line-456"><code>		if dir == "" {</code></span>
+<span class="codeline" id="line-457"><code>			return "", errors.New("%AppData% is not defined")</code></span>
+<span class="codeline" id="line-458"><code>		}</code></span>
+<span class="codeline" id="line-459"><code></code></span>
+<span class="codeline" id="line-460"><code>	case "darwin", "ios":</code></span>
+<span class="codeline" id="line-461"><code>		dir = Getenv("HOME")</code></span>
+<span class="codeline" id="line-462"><code>		if dir == "" {</code></span>
+<span class="codeline" id="line-463"><code>			return "", errors.New("$HOME is not defined")</code></span>
+<span class="codeline" id="line-464"><code>		}</code></span>
+<span class="codeline" id="line-465"><code>		dir += "/Library/Application Support"</code></span>
+<span class="codeline" id="line-466"><code></code></span>
+<span class="codeline" id="line-467"><code>	case "plan9":</code></span>
+<span class="codeline" id="line-468"><code>		dir = Getenv("home")</code></span>
+<span class="codeline" id="line-469"><code>		if dir == "" {</code></span>
+<span class="codeline" id="line-470"><code>			return "", errors.New("$home is not defined")</code></span>
+<span class="codeline" id="line-471"><code>		}</code></span>
+<span class="codeline" id="line-472"><code>		dir += "/lib"</code></span>
+<span class="codeline" id="line-473"><code></code></span>
+<span class="codeline" id="line-474"><code>	default: // Unix</code></span>
+<span class="codeline" id="line-475"><code>		dir = Getenv("XDG_CONFIG_HOME")</code></span>
+<span class="codeline" id="line-476"><code>		if dir == "" {</code></span>
+<span class="codeline" id="line-477"><code>			dir = Getenv("HOME")</code></span>
+<span class="codeline" id="line-478"><code>			if dir == "" {</code></span>
+<span class="codeline" id="line-479"><code>				return "", errors.New("neither $XDG_CONFIG_HOME nor $HOME are defined")</code></span>
+<span class="codeline" id="line-480"><code>			}</code></span>
+<span class="codeline" id="line-481"><code>			dir += "/.config"</code></span>
+<span class="codeline" id="line-482"><code>		}</code></span>
+<span class="codeline" id="line-483"><code>	}</code></span>
+<span class="codeline" id="line-484"><code></code></span>
+<span class="codeline" id="line-485"><code>	return dir, nil</code></span>
+<span class="codeline" id="line-486"><code>}</code></span>
+<span class="codeline" id="line-487"><code></code></span>
+<span class="codeline" id="line-488"><code>// UserHomeDir returns the current user's home directory.</code></span>
+<span class="codeline" id="line-489"><code>//</code></span>
+<span class="codeline" id="line-490"><code>// On Unix, including macOS, it returns the $HOME environment variable.</code></span>
+<span class="codeline" id="line-491"><code>// On Windows, it returns %USERPROFILE%.</code></span>
+<span class="codeline" id="line-492"><code>// On Plan 9, it returns the $home environment variable.</code></span>
+<span class="codeline" id="line-493"><code>func UserHomeDir() (string, error) {</code></span>
+<span class="codeline" id="line-494"><code>	env, enverr := "HOME", "$HOME"</code></span>
+<span class="codeline" id="line-495"><code>	switch runtime.GOOS {</code></span>
+<span class="codeline" id="line-496"><code>	case "windows":</code></span>
+<span class="codeline" id="line-497"><code>		env, enverr = "USERPROFILE", "%userprofile%"</code></span>
+<span class="codeline" id="line-498"><code>	case "plan9":</code></span>
+<span class="codeline" id="line-499"><code>		env, enverr = "home", "$home"</code></span>
+<span class="codeline" id="line-500"><code>	}</code></span>
+<span class="codeline" id="line-501"><code>	if v := Getenv(env); v != "" {</code></span>
+<span class="codeline" id="line-502"><code>		return v, nil</code></span>
+<span class="codeline" id="line-503"><code>	}</code></span>
+<span class="codeline" id="line-504"><code>	// On some geese the home directory is not always defined.</code></span>
+<span class="codeline" id="line-505"><code>	switch runtime.GOOS {</code></span>
+<span class="codeline" id="line-506"><code>	case "android":</code></span>
+<span class="codeline" id="line-507"><code>		return "/sdcard", nil</code></span>
+<span class="codeline" id="line-508"><code>	case "ios":</code></span>
+<span class="codeline" id="line-509"><code>		return "/", nil</code></span>
+<span class="codeline" id="line-510"><code>	}</code></span>
+<span class="codeline" id="line-511"><code>	return "", errors.New(enverr + " is not defined")</code></span>
+<span class="codeline" id="line-512"><code>}</code></span>
+<span class="codeline" id="line-513"><code></code></span>
+<span class="codeline" id="line-514"><code>// Chmod changes the mode of the named file to mode.</code></span>
+<span class="codeline" id="line-515"><code>// If the file is a symbolic link, it changes the mode of the link's target.</code></span>
+<span class="codeline" id="line-516"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-517"><code>//</code></span>
+<span class="codeline" id="line-518"><code>// A different subset of the mode bits are used, depending on the</code></span>
+<span class="codeline" id="line-519"><code>// operating system.</code></span>
+<span class="codeline" id="line-520"><code>//</code></span>
+<span class="codeline" id="line-521"><code>// On Unix, the mode's permission bits, ModeSetuid, ModeSetgid, and</code></span>
+<span class="codeline" id="line-522"><code>// ModeSticky are used.</code></span>
+<span class="codeline" id="line-523"><code>//</code></span>
+<span class="codeline" id="line-524"><code>// On Windows, only the 0200 bit (owner writable) of mode is used; it</code></span>
+<span class="codeline" id="line-525"><code>// controls whether the file's read-only attribute is set or cleared.</code></span>
+<span class="codeline" id="line-526"><code>// The other bits are currently unused. For compatibility with Go 1.12</code></span>
+<span class="codeline" id="line-527"><code>// and earlier, use a non-zero mode. Use mode 0400 for a read-only</code></span>
+<span class="codeline" id="line-528"><code>// file and 0600 for a readable+writable file.</code></span>
+<span class="codeline" id="line-529"><code>//</code></span>
+<span class="codeline" id="line-530"><code>// On Plan 9, the mode's permission bits, ModeAppend, ModeExclusive,</code></span>
+<span class="codeline" id="line-531"><code>// and ModeTemporary are used.</code></span>
+<span class="codeline" id="line-532"><code>func Chmod(name string, mode FileMode) error { return chmod(name, mode) }</code></span>
+<span class="codeline" id="line-533"><code></code></span>
+<span class="codeline" id="line-534"><code>// Chmod changes the mode of the file to mode.</code></span>
+<span class="codeline" id="line-535"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-536"><code>func (f *File) Chmod(mode FileMode) error { return f.chmod(mode) }</code></span>
+<span class="codeline" id="line-537"><code></code></span>
+<span class="codeline" id="line-538"><code>// SetDeadline sets the read and write deadlines for a File.</code></span>
+<span class="codeline" id="line-539"><code>// It is equivalent to calling both SetReadDeadline and SetWriteDeadline.</code></span>
+<span class="codeline" id="line-540"><code>//</code></span>
+<span class="codeline" id="line-541"><code>// Only some kinds of files support setting a deadline. Calls to SetDeadline</code></span>
+<span class="codeline" id="line-542"><code>// for files that do not support deadlines will return ErrNoDeadline.</code></span>
+<span class="codeline" id="line-543"><code>// On most systems ordinary files do not support deadlines, but pipes do.</code></span>
+<span class="codeline" id="line-544"><code>//</code></span>
+<span class="codeline" id="line-545"><code>// A deadline is an absolute time after which I/O operations fail with an</code></span>
+<span class="codeline" id="line-546"><code>// error instead of blocking. The deadline applies to all future and pending</code></span>
+<span class="codeline" id="line-547"><code>// I/O, not just the immediately following call to Read or Write.</code></span>
+<span class="codeline" id="line-548"><code>// After a deadline has been exceeded, the connection can be refreshed</code></span>
+<span class="codeline" id="line-549"><code>// by setting a deadline in the future.</code></span>
+<span class="codeline" id="line-550"><code>//</code></span>
+<span class="codeline" id="line-551"><code>// If the deadline is exceeded a call to Read or Write or to other I/O</code></span>
+<span class="codeline" id="line-552"><code>// methods will return an error that wraps ErrDeadlineExceeded.</code></span>
+<span class="codeline" id="line-553"><code>// This can be tested using errors.Is(err, os.ErrDeadlineExceeded).</code></span>
+<span class="codeline" id="line-554"><code>// That error implements the Timeout method, and calling the Timeout</code></span>
+<span class="codeline" id="line-555"><code>// method will return true, but there are other possible errors for which</code></span>
+<span class="codeline" id="line-556"><code>// the Timeout will return true even if the deadline has not been exceeded.</code></span>
+<span class="codeline" id="line-557"><code>//</code></span>
+<span class="codeline" id="line-558"><code>// An idle timeout can be implemented by repeatedly extending</code></span>
+<span class="codeline" id="line-559"><code>// the deadline after successful Read or Write calls.</code></span>
+<span class="codeline" id="line-560"><code>//</code></span>
+<span class="codeline" id="line-561"><code>// A zero value for t means I/O operations will not time out.</code></span>
+<span class="codeline" id="line-562"><code>func (f *File) SetDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-563"><code>	return f.setDeadline(t)</code></span>
+<span class="codeline" id="line-564"><code>}</code></span>
+<span class="codeline" id="line-565"><code></code></span>
+<span class="codeline" id="line-566"><code>// SetReadDeadline sets the deadline for future Read calls and any</code></span>
+<span class="codeline" id="line-567"><code>// currently-blocked Read call.</code></span>
+<span class="codeline" id="line-568"><code>// A zero value for t means Read will not time out.</code></span>
+<span class="codeline" id="line-569"><code>// Not all files support setting deadlines; see SetDeadline.</code></span>
+<span class="codeline" id="line-570"><code>func (f *File) SetReadDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-571"><code>	return f.setReadDeadline(t)</code></span>
+<span class="codeline" id="line-572"><code>}</code></span>
+<span class="codeline" id="line-573"><code></code></span>
+<span class="codeline" id="line-574"><code>// SetWriteDeadline sets the deadline for any future Write calls and any</code></span>
+<span class="codeline" id="line-575"><code>// currently-blocked Write call.</code></span>
+<span class="codeline" id="line-576"><code>// Even if Write times out, it may return n &gt; 0, indicating that</code></span>
+<span class="codeline" id="line-577"><code>// some of the data was successfully written.</code></span>
+<span class="codeline" id="line-578"><code>// A zero value for t means Write will not time out.</code></span>
+<span class="codeline" id="line-579"><code>// Not all files support setting deadlines; see SetDeadline.</code></span>
+<span class="codeline" id="line-580"><code>func (f *File) SetWriteDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-581"><code>	return f.setWriteDeadline(t)</code></span>
+<span class="codeline" id="line-582"><code>}</code></span>
+<span class="codeline" id="line-583"><code></code></span>
+<span class="codeline" id="line-584"><code>// SyscallConn returns a raw file.</code></span>
+<span class="codeline" id="line-585"><code>// This implements the syscall.Conn interface.</code></span>
+<span class="codeline" id="line-586"><code>func (f *File) SyscallConn() (syscall.RawConn, error) {</code></span>
+<span class="codeline" id="line-587"><code>	if err := f.checkValid("SyscallConn"); err != nil {</code></span>
+<span class="codeline" id="line-588"><code>		return nil, err</code></span>
+<span class="codeline" id="line-589"><code>	}</code></span>
+<span class="codeline" id="line-590"><code>	return newRawConn(f)</code></span>
+<span class="codeline" id="line-591"><code>}</code></span>
+<span class="codeline" id="line-592"><code></code></span>
+<span class="codeline" id="line-593"><code>// isWindowsNulName reports whether name is os.DevNull ('NUL') on Windows.</code></span>
+<span class="codeline" id="line-594"><code>// True is returned if name is 'NUL' whatever the case.</code></span>
+<span class="codeline" id="line-595"><code>func isWindowsNulName(name string) bool {</code></span>
+<span class="codeline" id="line-596"><code>	if len(name) != 3 {</code></span>
+<span class="codeline" id="line-597"><code>		return false</code></span>
+<span class="codeline" id="line-598"><code>	}</code></span>
+<span class="codeline" id="line-599"><code>	if name[0] != 'n' &amp;&amp; name[0] != 'N' {</code></span>
+<span class="codeline" id="line-600"><code>		return false</code></span>
+<span class="codeline" id="line-601"><code>	}</code></span>
+<span class="codeline" id="line-602"><code>	if name[1] != 'u' &amp;&amp; name[1] != 'U' {</code></span>
+<span class="codeline" id="line-603"><code>		return false</code></span>
+<span class="codeline" id="line-604"><code>	}</code></span>
+<span class="codeline" id="line-605"><code>	if name[2] != 'l' &amp;&amp; name[2] != 'L' {</code></span>
+<span class="codeline" id="line-606"><code>		return false</code></span>
+<span class="codeline" id="line-607"><code>	}</code></span>
+<span class="codeline" id="line-608"><code>	return true</code></span>
+<span class="codeline" id="line-609"><code>}</code></span>
+<span class="codeline" id="line-610"><code></code></span>
+<span class="codeline" id="line-611"><code>// DirFS returns a file system (an fs.FS) for the tree of files rooted at the directory dir.</code></span>
+<span class="codeline" id="line-612"><code>//</code></span>
+<span class="codeline" id="line-613"><code>// Note that DirFS("/prefix") only guarantees that the Open calls it makes to the</code></span>
+<span class="codeline" id="line-614"><code>// operating system will begin with "/prefix": DirFS("/prefix").Open("file") is the</code></span>
+<span class="codeline" id="line-615"><code>// same as os.Open("/prefix/file"). So if /prefix/file is a symbolic link pointing outside</code></span>
+<span class="codeline" id="line-616"><code>// the /prefix tree, then using DirFS does not stop the access any more than using</code></span>
+<span class="codeline" id="line-617"><code>// os.Open does. DirFS is therefore not a general substitute for a chroot-style security</code></span>
+<span class="codeline" id="line-618"><code>// mechanism when the directory tree contains arbitrary content.</code></span>
+<span class="codeline" id="line-619"><code>func DirFS(dir string) fs.FS {</code></span>
+<span class="codeline" id="line-620"><code>	return dirFS(dir)</code></span>
+<span class="codeline" id="line-621"><code>}</code></span>
+<span class="codeline" id="line-622"><code></code></span>
+<span class="codeline" id="line-623"><code>func containsAny(s, chars string) bool {</code></span>
+<span class="codeline" id="line-624"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-625"><code>		for j := 0; j &lt; len(chars); j++ {</code></span>
+<span class="codeline" id="line-626"><code>			if s[i] == chars[j] {</code></span>
+<span class="codeline" id="line-627"><code>				return true</code></span>
+<span class="codeline" id="line-628"><code>			}</code></span>
+<span class="codeline" id="line-629"><code>		}</code></span>
+<span class="codeline" id="line-630"><code>	}</code></span>
+<span class="codeline" id="line-631"><code>	return false</code></span>
+<span class="codeline" id="line-632"><code>}</code></span>
+<span class="codeline" id="line-633"><code></code></span>
+<span class="codeline" id="line-634"><code>type dirFS string</code></span>
+<span class="codeline" id="line-635"><code></code></span>
+<span class="codeline" id="line-636"><code>func (dir dirFS) Open(name string) (fs.File, error) {</code></span>
+<span class="codeline" id="line-637"><code>	if !fs.ValidPath(name) || runtime.GOOS == "windows" &amp;&amp; containsAny(name, `\:`) {</code></span>
+<span class="codeline" id="line-638"><code>		return nil, &amp;PathError{Op: "open", Path: name, Err: ErrInvalid}</code></span>
+<span class="codeline" id="line-639"><code>	}</code></span>
+<span class="codeline" id="line-640"><code>	f, err := Open(string(dir) + "/" + name)</code></span>
+<span class="codeline" id="line-641"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-642"><code>		return nil, err // nil fs.File</code></span>
+<span class="codeline" id="line-643"><code>	}</code></span>
+<span class="codeline" id="line-644"><code>	return f, nil</code></span>
+<span class="codeline" id="line-645"><code>}</code></span>
+<span class="codeline" id="line-646"><code></code></span>
+<span class="codeline" id="line-647"><code>// ReadFile reads the named file and returns the contents.</code></span>
+<span class="codeline" id="line-648"><code>// A successful call returns err == nil, not err == EOF.</code></span>
+<span class="codeline" id="line-649"><code>// Because ReadFile reads the whole file, it does not treat an EOF from Read</code></span>
+<span class="codeline" id="line-650"><code>// as an error to be reported.</code></span>
+<span class="codeline" id="line-651"><code>func ReadFile(name string) ([]byte, error) {</code></span>
+<span class="codeline" id="line-652"><code>	f, err := Open(name)</code></span>
+<span class="codeline" id="line-653"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-654"><code>		return nil, err</code></span>
+<span class="codeline" id="line-655"><code>	}</code></span>
+<span class="codeline" id="line-656"><code>	defer f.Close()</code></span>
+<span class="codeline" id="line-657"><code></code></span>
+<span class="codeline" id="line-658"><code>	var size int</code></span>
+<span class="codeline" id="line-659"><code>	if info, err := f.Stat(); err == nil {</code></span>
+<span class="codeline" id="line-660"><code>		size64 := info.Size()</code></span>
+<span class="codeline" id="line-661"><code>		if int64(int(size64)) == size64 {</code></span>
+<span class="codeline" id="line-662"><code>			size = int(size64)</code></span>
+<span class="codeline" id="line-663"><code>		}</code></span>
+<span class="codeline" id="line-664"><code>	}</code></span>
+<span class="codeline" id="line-665"><code>	size++ // one byte for final read at EOF</code></span>
+<span class="codeline" id="line-666"><code></code></span>
+<span class="codeline" id="line-667"><code>	// If a file claims a small size, read at least 512 bytes.</code></span>
+<span class="codeline" id="line-668"><code>	// In particular, files in Linux's /proc claim size 0 but</code></span>
+<span class="codeline" id="line-669"><code>	// then do not work right if read in small pieces,</code></span>
+<span class="codeline" id="line-670"><code>	// so an initial read of 1 byte would not work correctly.</code></span>
+<span class="codeline" id="line-671"><code>	if size &lt; 512 {</code></span>
+<span class="codeline" id="line-672"><code>		size = 512</code></span>
+<span class="codeline" id="line-673"><code>	}</code></span>
+<span class="codeline" id="line-674"><code></code></span>
+<span class="codeline" id="line-675"><code>	data := make([]byte, 0, size)</code></span>
+<span class="codeline" id="line-676"><code>	for {</code></span>
+<span class="codeline" id="line-677"><code>		if len(data) &gt;= cap(data) {</code></span>
+<span class="codeline" id="line-678"><code>			d := append(data[:cap(data)], 0)</code></span>
+<span class="codeline" id="line-679"><code>			data = d[:len(data)]</code></span>
+<span class="codeline" id="line-680"><code>		}</code></span>
+<span class="codeline" id="line-681"><code>		n, err := f.Read(data[len(data):cap(data)])</code></span>
+<span class="codeline" id="line-682"><code>		data = data[:len(data)+n]</code></span>
+<span class="codeline" id="line-683"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-684"><code>			if err == io.EOF {</code></span>
+<span class="codeline" id="line-685"><code>				err = nil</code></span>
+<span class="codeline" id="line-686"><code>			}</code></span>
+<span class="codeline" id="line-687"><code>			return data, err</code></span>
+<span class="codeline" id="line-688"><code>		}</code></span>
+<span class="codeline" id="line-689"><code>	}</code></span>
+<span class="codeline" id="line-690"><code>}</code></span>
+<span class="codeline" id="line-691"><code></code></span>
+<span class="codeline" id="line-692"><code>// WriteFile writes data to the named file, creating it if necessary.</code></span>
+<span class="codeline" id="line-693"><code>// If the file does not exist, WriteFile creates it with permissions perm (before umask);</code></span>
+<span class="codeline" id="line-694"><code>// otherwise WriteFile truncates it before writing, without changing permissions.</code></span>
+<span class="codeline" id="line-695"><code>func WriteFile(name string, data []byte, perm FileMode) error {</code></span>
+<span class="codeline" id="line-696"><code>	f, err := OpenFile(name, O_WRONLY|O_CREATE|O_TRUNC, perm)</code></span>
+<span class="codeline" id="line-697"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-698"><code>		return err</code></span>
+<span class="codeline" id="line-699"><code>	}</code></span>
+<span class="codeline" id="line-700"><code>	_, err = f.Write(data)</code></span>
+<span class="codeline" id="line-701"><code>	if err1 := f.Close(); err1 != nil &amp;&amp; err == nil {</code></span>
+<span class="codeline" id="line-702"><code>		err = err1</code></span>
+<span class="codeline" id="line-703"><code>	}</code></span>
+<span class="codeline" id="line-704"><code>	return err</code></span>
+<span class="codeline" id="line-705"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

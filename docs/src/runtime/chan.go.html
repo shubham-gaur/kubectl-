@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: chan.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	chan.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// This file contains the implementation of Go channels.</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// Invariants:</code></span>
+<span class="codeline" id="line-10"><code>//  At least one of c.sendq and c.recvq is empty,</code></span>
+<span class="codeline" id="line-11"><code>//  except for the case of an unbuffered channel with a single goroutine</code></span>
+<span class="codeline" id="line-12"><code>//  blocked on it for both sending and receiving using a select statement,</code></span>
+<span class="codeline" id="line-13"><code>//  in which case the length of c.sendq and c.recvq is limited only by the</code></span>
+<span class="codeline" id="line-14"><code>//  size of the select statement.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>// For buffered channels, also:</code></span>
+<span class="codeline" id="line-17"><code>//  c.qcount &gt; 0 implies that c.recvq is empty.</code></span>
+<span class="codeline" id="line-18"><code>//  c.qcount &lt; c.dataqsiz implies that c.sendq is empty.</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>import (</code></span>
+<span class="codeline" id="line-21"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-22"><code>	"runtime/internal/math"</code></span>
+<span class="codeline" id="line-23"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-24"><code>)</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>const (</code></span>
+<span class="codeline" id="line-27"><code>	maxAlign  = 8</code></span>
+<span class="codeline" id="line-28"><code>	hchanSize = unsafe.Sizeof(hchan{}) + uintptr(-int(unsafe.Sizeof(hchan{}))&amp;(maxAlign-1))</code></span>
+<span class="codeline" id="line-29"><code>	debugChan = false</code></span>
+<span class="codeline" id="line-30"><code>)</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>type hchan struct {</code></span>
+<span class="codeline" id="line-33"><code>	qcount   uint           // total data in the queue</code></span>
+<span class="codeline" id="line-34"><code>	dataqsiz uint           // size of the circular queue</code></span>
+<span class="codeline" id="line-35"><code>	buf      unsafe.Pointer // points to an array of dataqsiz elements</code></span>
+<span class="codeline" id="line-36"><code>	elemsize uint16</code></span>
+<span class="codeline" id="line-37"><code>	closed   uint32</code></span>
+<span class="codeline" id="line-38"><code>	elemtype *_type // element type</code></span>
+<span class="codeline" id="line-39"><code>	sendx    uint   // send index</code></span>
+<span class="codeline" id="line-40"><code>	recvx    uint   // receive index</code></span>
+<span class="codeline" id="line-41"><code>	recvq    waitq  // list of recv waiters</code></span>
+<span class="codeline" id="line-42"><code>	sendq    waitq  // list of send waiters</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	// lock protects all fields in hchan, as well as several</code></span>
+<span class="codeline" id="line-45"><code>	// fields in sudogs blocked on this channel.</code></span>
+<span class="codeline" id="line-46"><code>	//</code></span>
+<span class="codeline" id="line-47"><code>	// Do not change another G's status while holding this lock</code></span>
+<span class="codeline" id="line-48"><code>	// (in particular, do not ready a G), as this can deadlock</code></span>
+<span class="codeline" id="line-49"><code>	// with stack shrinking.</code></span>
+<span class="codeline" id="line-50"><code>	lock mutex</code></span>
+<span class="codeline" id="line-51"><code>}</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>type waitq struct {</code></span>
+<span class="codeline" id="line-54"><code>	first *sudog</code></span>
+<span class="codeline" id="line-55"><code>	last  *sudog</code></span>
+<span class="codeline" id="line-56"><code>}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>//go:linkname reflect_makechan reflect.makechan</code></span>
+<span class="codeline" id="line-59"><code>func reflect_makechan(t *chantype, size int) *hchan {</code></span>
+<span class="codeline" id="line-60"><code>	return makechan(t, size)</code></span>
+<span class="codeline" id="line-61"><code>}</code></span>
+<span class="codeline" id="line-62"><code></code></span>
+<span class="codeline" id="line-63"><code>func makechan64(t *chantype, size int64) *hchan {</code></span>
+<span class="codeline" id="line-64"><code>	if int64(int(size)) != size {</code></span>
+<span class="codeline" id="line-65"><code>		panic(plainError("makechan: size out of range"))</code></span>
+<span class="codeline" id="line-66"><code>	}</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>	return makechan(t, int(size))</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>func makechan(t *chantype, size int) *hchan {</code></span>
+<span class="codeline" id="line-72"><code>	elem := t.elem</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>	// compiler checks this but be safe.</code></span>
+<span class="codeline" id="line-75"><code>	if elem.size &gt;= 1&lt;&lt;16 {</code></span>
+<span class="codeline" id="line-76"><code>		throw("makechan: invalid channel element type")</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>	if hchanSize%maxAlign != 0 || elem.align &gt; maxAlign {</code></span>
+<span class="codeline" id="line-79"><code>		throw("makechan: bad alignment")</code></span>
+<span class="codeline" id="line-80"><code>	}</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>	mem, overflow := math.MulUintptr(elem.size, uintptr(size))</code></span>
+<span class="codeline" id="line-83"><code>	if overflow || mem &gt; maxAlloc-hchanSize || size &lt; 0 {</code></span>
+<span class="codeline" id="line-84"><code>		panic(plainError("makechan: size out of range"))</code></span>
+<span class="codeline" id="line-85"><code>	}</code></span>
+<span class="codeline" id="line-86"><code></code></span>
+<span class="codeline" id="line-87"><code>	// Hchan does not contain pointers interesting for GC when elements stored in buf do not contain pointers.</code></span>
+<span class="codeline" id="line-88"><code>	// buf points into the same allocation, elemtype is persistent.</code></span>
+<span class="codeline" id="line-89"><code>	// SudoG's are referenced from their owning thread so they can't be collected.</code></span>
+<span class="codeline" id="line-90"><code>	// TODO(dvyukov,rlh): Rethink when collector can move allocated objects.</code></span>
+<span class="codeline" id="line-91"><code>	var c *hchan</code></span>
+<span class="codeline" id="line-92"><code>	switch {</code></span>
+<span class="codeline" id="line-93"><code>	case mem == 0:</code></span>
+<span class="codeline" id="line-94"><code>		// Queue or element size is zero.</code></span>
+<span class="codeline" id="line-95"><code>		c = (*hchan)(mallocgc(hchanSize, nil, true))</code></span>
+<span class="codeline" id="line-96"><code>		// Race detector uses this location for synchronization.</code></span>
+<span class="codeline" id="line-97"><code>		c.buf = c.raceaddr()</code></span>
+<span class="codeline" id="line-98"><code>	case elem.ptrdata == 0:</code></span>
+<span class="codeline" id="line-99"><code>		// Elements do not contain pointers.</code></span>
+<span class="codeline" id="line-100"><code>		// Allocate hchan and buf in one call.</code></span>
+<span class="codeline" id="line-101"><code>		c = (*hchan)(mallocgc(hchanSize+mem, nil, true))</code></span>
+<span class="codeline" id="line-102"><code>		c.buf = add(unsafe.Pointer(c), hchanSize)</code></span>
+<span class="codeline" id="line-103"><code>	default:</code></span>
+<span class="codeline" id="line-104"><code>		// Elements contain pointers.</code></span>
+<span class="codeline" id="line-105"><code>		c = new(hchan)</code></span>
+<span class="codeline" id="line-106"><code>		c.buf = mallocgc(mem, elem, true)</code></span>
+<span class="codeline" id="line-107"><code>	}</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>	c.elemsize = uint16(elem.size)</code></span>
+<span class="codeline" id="line-110"><code>	c.elemtype = elem</code></span>
+<span class="codeline" id="line-111"><code>	c.dataqsiz = uint(size)</code></span>
+<span class="codeline" id="line-112"><code>	lockInit(&amp;c.lock, lockRankHchan)</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>	if debugChan {</code></span>
+<span class="codeline" id="line-115"><code>		print("makechan: chan=", c, "; elemsize=", elem.size, "; dataqsiz=", size, "\n")</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code>	return c</code></span>
+<span class="codeline" id="line-118"><code>}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>// chanbuf(c, i) is pointer to the i'th slot in the buffer.</code></span>
+<span class="codeline" id="line-121"><code>func chanbuf(c *hchan, i uint) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-122"><code>	return add(c.buf, uintptr(i)*uintptr(c.elemsize))</code></span>
+<span class="codeline" id="line-123"><code>}</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>// full reports whether a send on c would block (that is, the channel is full).</code></span>
+<span class="codeline" id="line-126"><code>// It uses a single word-sized read of mutable state, so although</code></span>
+<span class="codeline" id="line-127"><code>// the answer is instantaneously true, the correct answer may have changed</code></span>
+<span class="codeline" id="line-128"><code>// by the time the calling function receives the return value.</code></span>
+<span class="codeline" id="line-129"><code>func full(c *hchan) bool {</code></span>
+<span class="codeline" id="line-130"><code>	// c.dataqsiz is immutable (never written after the channel is created)</code></span>
+<span class="codeline" id="line-131"><code>	// so it is safe to read at any time during channel operation.</code></span>
+<span class="codeline" id="line-132"><code>	if c.dataqsiz == 0 {</code></span>
+<span class="codeline" id="line-133"><code>		// Assumes that a pointer read is relaxed-atomic.</code></span>
+<span class="codeline" id="line-134"><code>		return c.recvq.first == nil</code></span>
+<span class="codeline" id="line-135"><code>	}</code></span>
+<span class="codeline" id="line-136"><code>	// Assumes that a uint read is relaxed-atomic.</code></span>
+<span class="codeline" id="line-137"><code>	return c.qcount == c.dataqsiz</code></span>
+<span class="codeline" id="line-138"><code>}</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>// entry point for c &lt;- x from compiled code</code></span>
+<span class="codeline" id="line-141"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-142"><code>func chansend1(c *hchan, elem unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-143"><code>	chansend(c, elem, true, getcallerpc())</code></span>
+<span class="codeline" id="line-144"><code>}</code></span>
+<span class="codeline" id="line-145"><code></code></span>
+<span class="codeline" id="line-146"><code>/*</code></span>
+<span class="codeline" id="line-147"><code> * generic single channel send/recv</code></span>
+<span class="codeline" id="line-148"><code> * If block is not nil,</code></span>
+<span class="codeline" id="line-149"><code> * then the protocol will not</code></span>
+<span class="codeline" id="line-150"><code> * sleep but return if it could</code></span>
+<span class="codeline" id="line-151"><code> * not complete.</code></span>
+<span class="codeline" id="line-152"><code> *</code></span>
+<span class="codeline" id="line-153"><code> * sleep can wake up with g.param == nil</code></span>
+<span class="codeline" id="line-154"><code> * when a channel involved in the sleep has</code></span>
+<span class="codeline" id="line-155"><code> * been closed.  it is easiest to loop and re-run</code></span>
+<span class="codeline" id="line-156"><code> * the operation; we'll see that it's now closed.</code></span>
+<span class="codeline" id="line-157"><code> */</code></span>
+<span class="codeline" id="line-158"><code>func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {</code></span>
+<span class="codeline" id="line-159"><code>	if c == nil {</code></span>
+<span class="codeline" id="line-160"><code>		if !block {</code></span>
+<span class="codeline" id="line-161"><code>			return false</code></span>
+<span class="codeline" id="line-162"><code>		}</code></span>
+<span class="codeline" id="line-163"><code>		gopark(nil, nil, waitReasonChanSendNilChan, traceEvGoStop, 2)</code></span>
+<span class="codeline" id="line-164"><code>		throw("unreachable")</code></span>
+<span class="codeline" id="line-165"><code>	}</code></span>
+<span class="codeline" id="line-166"><code></code></span>
+<span class="codeline" id="line-167"><code>	if debugChan {</code></span>
+<span class="codeline" id="line-168"><code>		print("chansend: chan=", c, "\n")</code></span>
+<span class="codeline" id="line-169"><code>	}</code></span>
+<span class="codeline" id="line-170"><code></code></span>
+<span class="codeline" id="line-171"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-172"><code>		racereadpc(c.raceaddr(), callerpc, funcPC(chansend))</code></span>
+<span class="codeline" id="line-173"><code>	}</code></span>
+<span class="codeline" id="line-174"><code></code></span>
+<span class="codeline" id="line-175"><code>	// Fast path: check for failed non-blocking operation without acquiring the lock.</code></span>
+<span class="codeline" id="line-176"><code>	//</code></span>
+<span class="codeline" id="line-177"><code>	// After observing that the channel is not closed, we observe that the channel is</code></span>
+<span class="codeline" id="line-178"><code>	// not ready for sending. Each of these observations is a single word-sized read</code></span>
+<span class="codeline" id="line-179"><code>	// (first c.closed and second full()).</code></span>
+<span class="codeline" id="line-180"><code>	// Because a closed channel cannot transition from 'ready for sending' to</code></span>
+<span class="codeline" id="line-181"><code>	// 'not ready for sending', even if the channel is closed between the two observations,</code></span>
+<span class="codeline" id="line-182"><code>	// they imply a moment between the two when the channel was both not yet closed</code></span>
+<span class="codeline" id="line-183"><code>	// and not ready for sending. We behave as if we observed the channel at that moment,</code></span>
+<span class="codeline" id="line-184"><code>	// and report that the send cannot proceed.</code></span>
+<span class="codeline" id="line-185"><code>	//</code></span>
+<span class="codeline" id="line-186"><code>	// It is okay if the reads are reordered here: if we observe that the channel is not</code></span>
+<span class="codeline" id="line-187"><code>	// ready for sending and then observe that it is not closed, that implies that the</code></span>
+<span class="codeline" id="line-188"><code>	// channel wasn't closed during the first observation. However, nothing here</code></span>
+<span class="codeline" id="line-189"><code>	// guarantees forward progress. We rely on the side effects of lock release in</code></span>
+<span class="codeline" id="line-190"><code>	// chanrecv() and closechan() to update this thread's view of c.closed and full().</code></span>
+<span class="codeline" id="line-191"><code>	if !block &amp;&amp; c.closed == 0 &amp;&amp; full(c) {</code></span>
+<span class="codeline" id="line-192"><code>		return false</code></span>
+<span class="codeline" id="line-193"><code>	}</code></span>
+<span class="codeline" id="line-194"><code></code></span>
+<span class="codeline" id="line-195"><code>	var t0 int64</code></span>
+<span class="codeline" id="line-196"><code>	if blockprofilerate &gt; 0 {</code></span>
+<span class="codeline" id="line-197"><code>		t0 = cputicks()</code></span>
+<span class="codeline" id="line-198"><code>	}</code></span>
+<span class="codeline" id="line-199"><code></code></span>
+<span class="codeline" id="line-200"><code>	lock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-201"><code></code></span>
+<span class="codeline" id="line-202"><code>	if c.closed != 0 {</code></span>
+<span class="codeline" id="line-203"><code>		unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-204"><code>		panic(plainError("send on closed channel"))</code></span>
+<span class="codeline" id="line-205"><code>	}</code></span>
+<span class="codeline" id="line-206"><code></code></span>
+<span class="codeline" id="line-207"><code>	if sg := c.recvq.dequeue(); sg != nil {</code></span>
+<span class="codeline" id="line-208"><code>		// Found a waiting receiver. We pass the value we want to send</code></span>
+<span class="codeline" id="line-209"><code>		// directly to the receiver, bypassing the channel buffer (if any).</code></span>
+<span class="codeline" id="line-210"><code>		send(c, sg, ep, func() { unlock(&amp;c.lock) }, 3)</code></span>
+<span class="codeline" id="line-211"><code>		return true</code></span>
+<span class="codeline" id="line-212"><code>	}</code></span>
+<span class="codeline" id="line-213"><code></code></span>
+<span class="codeline" id="line-214"><code>	if c.qcount &lt; c.dataqsiz {</code></span>
+<span class="codeline" id="line-215"><code>		// Space is available in the channel buffer. Enqueue the element to send.</code></span>
+<span class="codeline" id="line-216"><code>		qp := chanbuf(c, c.sendx)</code></span>
+<span class="codeline" id="line-217"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-218"><code>			racenotify(c, c.sendx, nil)</code></span>
+<span class="codeline" id="line-219"><code>		}</code></span>
+<span class="codeline" id="line-220"><code>		typedmemmove(c.elemtype, qp, ep)</code></span>
+<span class="codeline" id="line-221"><code>		c.sendx++</code></span>
+<span class="codeline" id="line-222"><code>		if c.sendx == c.dataqsiz {</code></span>
+<span class="codeline" id="line-223"><code>			c.sendx = 0</code></span>
+<span class="codeline" id="line-224"><code>		}</code></span>
+<span class="codeline" id="line-225"><code>		c.qcount++</code></span>
+<span class="codeline" id="line-226"><code>		unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-227"><code>		return true</code></span>
+<span class="codeline" id="line-228"><code>	}</code></span>
+<span class="codeline" id="line-229"><code></code></span>
+<span class="codeline" id="line-230"><code>	if !block {</code></span>
+<span class="codeline" id="line-231"><code>		unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-232"><code>		return false</code></span>
+<span class="codeline" id="line-233"><code>	}</code></span>
+<span class="codeline" id="line-234"><code></code></span>
+<span class="codeline" id="line-235"><code>	// Block on the channel. Some receiver will complete our operation for us.</code></span>
+<span class="codeline" id="line-236"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-237"><code>	mysg := acquireSudog()</code></span>
+<span class="codeline" id="line-238"><code>	mysg.releasetime = 0</code></span>
+<span class="codeline" id="line-239"><code>	if t0 != 0 {</code></span>
+<span class="codeline" id="line-240"><code>		mysg.releasetime = -1</code></span>
+<span class="codeline" id="line-241"><code>	}</code></span>
+<span class="codeline" id="line-242"><code>	// No stack splits between assigning elem and enqueuing mysg</code></span>
+<span class="codeline" id="line-243"><code>	// on gp.waiting where copystack can find it.</code></span>
+<span class="codeline" id="line-244"><code>	mysg.elem = ep</code></span>
+<span class="codeline" id="line-245"><code>	mysg.waitlink = nil</code></span>
+<span class="codeline" id="line-246"><code>	mysg.g = gp</code></span>
+<span class="codeline" id="line-247"><code>	mysg.isSelect = false</code></span>
+<span class="codeline" id="line-248"><code>	mysg.c = c</code></span>
+<span class="codeline" id="line-249"><code>	gp.waiting = mysg</code></span>
+<span class="codeline" id="line-250"><code>	gp.param = nil</code></span>
+<span class="codeline" id="line-251"><code>	c.sendq.enqueue(mysg)</code></span>
+<span class="codeline" id="line-252"><code>	// Signal to anyone trying to shrink our stack that we're about</code></span>
+<span class="codeline" id="line-253"><code>	// to park on a channel. The window between when this G's status</code></span>
+<span class="codeline" id="line-254"><code>	// changes and when we set gp.activeStackChans is not safe for</code></span>
+<span class="codeline" id="line-255"><code>	// stack shrinking.</code></span>
+<span class="codeline" id="line-256"><code>	atomic.Store8(&amp;gp.parkingOnChan, 1)</code></span>
+<span class="codeline" id="line-257"><code>	gopark(chanparkcommit, unsafe.Pointer(&amp;c.lock), waitReasonChanSend, traceEvGoBlockSend, 2)</code></span>
+<span class="codeline" id="line-258"><code>	// Ensure the value being sent is kept alive until the</code></span>
+<span class="codeline" id="line-259"><code>	// receiver copies it out. The sudog has a pointer to the</code></span>
+<span class="codeline" id="line-260"><code>	// stack object, but sudogs aren't considered as roots of the</code></span>
+<span class="codeline" id="line-261"><code>	// stack tracer.</code></span>
+<span class="codeline" id="line-262"><code>	KeepAlive(ep)</code></span>
+<span class="codeline" id="line-263"><code></code></span>
+<span class="codeline" id="line-264"><code>	// someone woke us up.</code></span>
+<span class="codeline" id="line-265"><code>	if mysg != gp.waiting {</code></span>
+<span class="codeline" id="line-266"><code>		throw("G waiting list is corrupted")</code></span>
+<span class="codeline" id="line-267"><code>	}</code></span>
+<span class="codeline" id="line-268"><code>	gp.waiting = nil</code></span>
+<span class="codeline" id="line-269"><code>	gp.activeStackChans = false</code></span>
+<span class="codeline" id="line-270"><code>	closed := !mysg.success</code></span>
+<span class="codeline" id="line-271"><code>	gp.param = nil</code></span>
+<span class="codeline" id="line-272"><code>	if mysg.releasetime &gt; 0 {</code></span>
+<span class="codeline" id="line-273"><code>		blockevent(mysg.releasetime-t0, 2)</code></span>
+<span class="codeline" id="line-274"><code>	}</code></span>
+<span class="codeline" id="line-275"><code>	mysg.c = nil</code></span>
+<span class="codeline" id="line-276"><code>	releaseSudog(mysg)</code></span>
+<span class="codeline" id="line-277"><code>	if closed {</code></span>
+<span class="codeline" id="line-278"><code>		if c.closed == 0 {</code></span>
+<span class="codeline" id="line-279"><code>			throw("chansend: spurious wakeup")</code></span>
+<span class="codeline" id="line-280"><code>		}</code></span>
+<span class="codeline" id="line-281"><code>		panic(plainError("send on closed channel"))</code></span>
+<span class="codeline" id="line-282"><code>	}</code></span>
+<span class="codeline" id="line-283"><code>	return true</code></span>
+<span class="codeline" id="line-284"><code>}</code></span>
+<span class="codeline" id="line-285"><code></code></span>
+<span class="codeline" id="line-286"><code>// send processes a send operation on an empty channel c.</code></span>
+<span class="codeline" id="line-287"><code>// The value ep sent by the sender is copied to the receiver sg.</code></span>
+<span class="codeline" id="line-288"><code>// The receiver is then woken up to go on its merry way.</code></span>
+<span class="codeline" id="line-289"><code>// Channel c must be empty and locked.  send unlocks c with unlockf.</code></span>
+<span class="codeline" id="line-290"><code>// sg must already be dequeued from c.</code></span>
+<span class="codeline" id="line-291"><code>// ep must be non-nil and point to the heap or the caller's stack.</code></span>
+<span class="codeline" id="line-292"><code>func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {</code></span>
+<span class="codeline" id="line-293"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-294"><code>		if c.dataqsiz == 0 {</code></span>
+<span class="codeline" id="line-295"><code>			racesync(c, sg)</code></span>
+<span class="codeline" id="line-296"><code>		} else {</code></span>
+<span class="codeline" id="line-297"><code>			// Pretend we go through the buffer, even though</code></span>
+<span class="codeline" id="line-298"><code>			// we copy directly. Note that we need to increment</code></span>
+<span class="codeline" id="line-299"><code>			// the head/tail locations only when raceenabled.</code></span>
+<span class="codeline" id="line-300"><code>			racenotify(c, c.recvx, nil)</code></span>
+<span class="codeline" id="line-301"><code>			racenotify(c, c.recvx, sg)</code></span>
+<span class="codeline" id="line-302"><code>			c.recvx++</code></span>
+<span class="codeline" id="line-303"><code>			if c.recvx == c.dataqsiz {</code></span>
+<span class="codeline" id="line-304"><code>				c.recvx = 0</code></span>
+<span class="codeline" id="line-305"><code>			}</code></span>
+<span class="codeline" id="line-306"><code>			c.sendx = c.recvx // c.sendx = (c.sendx+1) % c.dataqsiz</code></span>
+<span class="codeline" id="line-307"><code>		}</code></span>
+<span class="codeline" id="line-308"><code>	}</code></span>
+<span class="codeline" id="line-309"><code>	if sg.elem != nil {</code></span>
+<span class="codeline" id="line-310"><code>		sendDirect(c.elemtype, sg, ep)</code></span>
+<span class="codeline" id="line-311"><code>		sg.elem = nil</code></span>
+<span class="codeline" id="line-312"><code>	}</code></span>
+<span class="codeline" id="line-313"><code>	gp := sg.g</code></span>
+<span class="codeline" id="line-314"><code>	unlockf()</code></span>
+<span class="codeline" id="line-315"><code>	gp.param = unsafe.Pointer(sg)</code></span>
+<span class="codeline" id="line-316"><code>	sg.success = true</code></span>
+<span class="codeline" id="line-317"><code>	if sg.releasetime != 0 {</code></span>
+<span class="codeline" id="line-318"><code>		sg.releasetime = cputicks()</code></span>
+<span class="codeline" id="line-319"><code>	}</code></span>
+<span class="codeline" id="line-320"><code>	goready(gp, skip+1)</code></span>
+<span class="codeline" id="line-321"><code>}</code></span>
+<span class="codeline" id="line-322"><code></code></span>
+<span class="codeline" id="line-323"><code>// Sends and receives on unbuffered or empty-buffered channels are the</code></span>
+<span class="codeline" id="line-324"><code>// only operations where one running goroutine writes to the stack of</code></span>
+<span class="codeline" id="line-325"><code>// another running goroutine. The GC assumes that stack writes only</code></span>
+<span class="codeline" id="line-326"><code>// happen when the goroutine is running and are only done by that</code></span>
+<span class="codeline" id="line-327"><code>// goroutine. Using a write barrier is sufficient to make up for</code></span>
+<span class="codeline" id="line-328"><code>// violating that assumption, but the write barrier has to work.</code></span>
+<span class="codeline" id="line-329"><code>// typedmemmove will call bulkBarrierPreWrite, but the target bytes</code></span>
+<span class="codeline" id="line-330"><code>// are not in the heap, so that will not help. We arrange to call</code></span>
+<span class="codeline" id="line-331"><code>// memmove and typeBitsBulkBarrier instead.</code></span>
+<span class="codeline" id="line-332"><code></code></span>
+<span class="codeline" id="line-333"><code>func sendDirect(t *_type, sg *sudog, src unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-334"><code>	// src is on our stack, dst is a slot on another stack.</code></span>
+<span class="codeline" id="line-335"><code></code></span>
+<span class="codeline" id="line-336"><code>	// Once we read sg.elem out of sg, it will no longer</code></span>
+<span class="codeline" id="line-337"><code>	// be updated if the destination's stack gets copied (shrunk).</code></span>
+<span class="codeline" id="line-338"><code>	// So make sure that no preemption points can happen between read &amp; use.</code></span>
+<span class="codeline" id="line-339"><code>	dst := sg.elem</code></span>
+<span class="codeline" id="line-340"><code>	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.size)</code></span>
+<span class="codeline" id="line-341"><code>	// No need for cgo write barrier checks because dst is always</code></span>
+<span class="codeline" id="line-342"><code>	// Go memory.</code></span>
+<span class="codeline" id="line-343"><code>	memmove(dst, src, t.size)</code></span>
+<span class="codeline" id="line-344"><code>}</code></span>
+<span class="codeline" id="line-345"><code></code></span>
+<span class="codeline" id="line-346"><code>func recvDirect(t *_type, sg *sudog, dst unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-347"><code>	// dst is on our stack or the heap, src is on another stack.</code></span>
+<span class="codeline" id="line-348"><code>	// The channel is locked, so src will not move during this</code></span>
+<span class="codeline" id="line-349"><code>	// operation.</code></span>
+<span class="codeline" id="line-350"><code>	src := sg.elem</code></span>
+<span class="codeline" id="line-351"><code>	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.size)</code></span>
+<span class="codeline" id="line-352"><code>	memmove(dst, src, t.size)</code></span>
+<span class="codeline" id="line-353"><code>}</code></span>
+<span class="codeline" id="line-354"><code></code></span>
+<span class="codeline" id="line-355"><code>func closechan(c *hchan) {</code></span>
+<span class="codeline" id="line-356"><code>	if c == nil {</code></span>
+<span class="codeline" id="line-357"><code>		panic(plainError("close of nil channel"))</code></span>
+<span class="codeline" id="line-358"><code>	}</code></span>
+<span class="codeline" id="line-359"><code></code></span>
+<span class="codeline" id="line-360"><code>	lock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-361"><code>	if c.closed != 0 {</code></span>
+<span class="codeline" id="line-362"><code>		unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-363"><code>		panic(plainError("close of closed channel"))</code></span>
+<span class="codeline" id="line-364"><code>	}</code></span>
+<span class="codeline" id="line-365"><code></code></span>
+<span class="codeline" id="line-366"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-367"><code>		callerpc := getcallerpc()</code></span>
+<span class="codeline" id="line-368"><code>		racewritepc(c.raceaddr(), callerpc, funcPC(closechan))</code></span>
+<span class="codeline" id="line-369"><code>		racerelease(c.raceaddr())</code></span>
+<span class="codeline" id="line-370"><code>	}</code></span>
+<span class="codeline" id="line-371"><code></code></span>
+<span class="codeline" id="line-372"><code>	c.closed = 1</code></span>
+<span class="codeline" id="line-373"><code></code></span>
+<span class="codeline" id="line-374"><code>	var glist gList</code></span>
+<span class="codeline" id="line-375"><code></code></span>
+<span class="codeline" id="line-376"><code>	// release all readers</code></span>
+<span class="codeline" id="line-377"><code>	for {</code></span>
+<span class="codeline" id="line-378"><code>		sg := c.recvq.dequeue()</code></span>
+<span class="codeline" id="line-379"><code>		if sg == nil {</code></span>
+<span class="codeline" id="line-380"><code>			break</code></span>
+<span class="codeline" id="line-381"><code>		}</code></span>
+<span class="codeline" id="line-382"><code>		if sg.elem != nil {</code></span>
+<span class="codeline" id="line-383"><code>			typedmemclr(c.elemtype, sg.elem)</code></span>
+<span class="codeline" id="line-384"><code>			sg.elem = nil</code></span>
+<span class="codeline" id="line-385"><code>		}</code></span>
+<span class="codeline" id="line-386"><code>		if sg.releasetime != 0 {</code></span>
+<span class="codeline" id="line-387"><code>			sg.releasetime = cputicks()</code></span>
+<span class="codeline" id="line-388"><code>		}</code></span>
+<span class="codeline" id="line-389"><code>		gp := sg.g</code></span>
+<span class="codeline" id="line-390"><code>		gp.param = unsafe.Pointer(sg)</code></span>
+<span class="codeline" id="line-391"><code>		sg.success = false</code></span>
+<span class="codeline" id="line-392"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-393"><code>			raceacquireg(gp, c.raceaddr())</code></span>
+<span class="codeline" id="line-394"><code>		}</code></span>
+<span class="codeline" id="line-395"><code>		glist.push(gp)</code></span>
+<span class="codeline" id="line-396"><code>	}</code></span>
+<span class="codeline" id="line-397"><code></code></span>
+<span class="codeline" id="line-398"><code>	// release all writers (they will panic)</code></span>
+<span class="codeline" id="line-399"><code>	for {</code></span>
+<span class="codeline" id="line-400"><code>		sg := c.sendq.dequeue()</code></span>
+<span class="codeline" id="line-401"><code>		if sg == nil {</code></span>
+<span class="codeline" id="line-402"><code>			break</code></span>
+<span class="codeline" id="line-403"><code>		}</code></span>
+<span class="codeline" id="line-404"><code>		sg.elem = nil</code></span>
+<span class="codeline" id="line-405"><code>		if sg.releasetime != 0 {</code></span>
+<span class="codeline" id="line-406"><code>			sg.releasetime = cputicks()</code></span>
+<span class="codeline" id="line-407"><code>		}</code></span>
+<span class="codeline" id="line-408"><code>		gp := sg.g</code></span>
+<span class="codeline" id="line-409"><code>		gp.param = unsafe.Pointer(sg)</code></span>
+<span class="codeline" id="line-410"><code>		sg.success = false</code></span>
+<span class="codeline" id="line-411"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-412"><code>			raceacquireg(gp, c.raceaddr())</code></span>
+<span class="codeline" id="line-413"><code>		}</code></span>
+<span class="codeline" id="line-414"><code>		glist.push(gp)</code></span>
+<span class="codeline" id="line-415"><code>	}</code></span>
+<span class="codeline" id="line-416"><code>	unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-417"><code></code></span>
+<span class="codeline" id="line-418"><code>	// Ready all Gs now that we've dropped the channel lock.</code></span>
+<span class="codeline" id="line-419"><code>	for !glist.empty() {</code></span>
+<span class="codeline" id="line-420"><code>		gp := glist.pop()</code></span>
+<span class="codeline" id="line-421"><code>		gp.schedlink = 0</code></span>
+<span class="codeline" id="line-422"><code>		goready(gp, 3)</code></span>
+<span class="codeline" id="line-423"><code>	}</code></span>
+<span class="codeline" id="line-424"><code>}</code></span>
+<span class="codeline" id="line-425"><code></code></span>
+<span class="codeline" id="line-426"><code>// empty reports whether a read from c would block (that is, the channel is</code></span>
+<span class="codeline" id="line-427"><code>// empty).  It uses a single atomic read of mutable state.</code></span>
+<span class="codeline" id="line-428"><code>func empty(c *hchan) bool {</code></span>
+<span class="codeline" id="line-429"><code>	// c.dataqsiz is immutable.</code></span>
+<span class="codeline" id="line-430"><code>	if c.dataqsiz == 0 {</code></span>
+<span class="codeline" id="line-431"><code>		return atomic.Loadp(unsafe.Pointer(&amp;c.sendq.first)) == nil</code></span>
+<span class="codeline" id="line-432"><code>	}</code></span>
+<span class="codeline" id="line-433"><code>	return atomic.Loaduint(&amp;c.qcount) == 0</code></span>
+<span class="codeline" id="line-434"><code>}</code></span>
+<span class="codeline" id="line-435"><code></code></span>
+<span class="codeline" id="line-436"><code>// entry points for &lt;- c from compiled code</code></span>
+<span class="codeline" id="line-437"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-438"><code>func chanrecv1(c *hchan, elem unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-439"><code>	chanrecv(c, elem, true)</code></span>
+<span class="codeline" id="line-440"><code>}</code></span>
+<span class="codeline" id="line-441"><code></code></span>
+<span class="codeline" id="line-442"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-443"><code>func chanrecv2(c *hchan, elem unsafe.Pointer) (received bool) {</code></span>
+<span class="codeline" id="line-444"><code>	_, received = chanrecv(c, elem, true)</code></span>
+<span class="codeline" id="line-445"><code>	return</code></span>
+<span class="codeline" id="line-446"><code>}</code></span>
+<span class="codeline" id="line-447"><code></code></span>
+<span class="codeline" id="line-448"><code>// chanrecv receives on channel c and writes the received data to ep.</code></span>
+<span class="codeline" id="line-449"><code>// ep may be nil, in which case received data is ignored.</code></span>
+<span class="codeline" id="line-450"><code>// If block == false and no elements are available, returns (false, false).</code></span>
+<span class="codeline" id="line-451"><code>// Otherwise, if c is closed, zeros *ep and returns (true, false).</code></span>
+<span class="codeline" id="line-452"><code>// Otherwise, fills in *ep with an element and returns (true, true).</code></span>
+<span class="codeline" id="line-453"><code>// A non-nil ep must point to the heap or the caller's stack.</code></span>
+<span class="codeline" id="line-454"><code>func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool) {</code></span>
+<span class="codeline" id="line-455"><code>	// raceenabled: don't need to check ep, as it is always on the stack</code></span>
+<span class="codeline" id="line-456"><code>	// or is new memory allocated by reflect.</code></span>
+<span class="codeline" id="line-457"><code></code></span>
+<span class="codeline" id="line-458"><code>	if debugChan {</code></span>
+<span class="codeline" id="line-459"><code>		print("chanrecv: chan=", c, "\n")</code></span>
+<span class="codeline" id="line-460"><code>	}</code></span>
+<span class="codeline" id="line-461"><code></code></span>
+<span class="codeline" id="line-462"><code>	if c == nil {</code></span>
+<span class="codeline" id="line-463"><code>		if !block {</code></span>
+<span class="codeline" id="line-464"><code>			return</code></span>
+<span class="codeline" id="line-465"><code>		}</code></span>
+<span class="codeline" id="line-466"><code>		gopark(nil, nil, waitReasonChanReceiveNilChan, traceEvGoStop, 2)</code></span>
+<span class="codeline" id="line-467"><code>		throw("unreachable")</code></span>
+<span class="codeline" id="line-468"><code>	}</code></span>
+<span class="codeline" id="line-469"><code></code></span>
+<span class="codeline" id="line-470"><code>	// Fast path: check for failed non-blocking operation without acquiring the lock.</code></span>
+<span class="codeline" id="line-471"><code>	if !block &amp;&amp; empty(c) {</code></span>
+<span class="codeline" id="line-472"><code>		// After observing that the channel is not ready for receiving, we observe whether the</code></span>
+<span class="codeline" id="line-473"><code>		// channel is closed.</code></span>
+<span class="codeline" id="line-474"><code>		//</code></span>
+<span class="codeline" id="line-475"><code>		// Reordering of these checks could lead to incorrect behavior when racing with a close.</code></span>
+<span class="codeline" id="line-476"><code>		// For example, if the channel was open and not empty, was closed, and then drained,</code></span>
+<span class="codeline" id="line-477"><code>		// reordered reads could incorrectly indicate "open and empty". To prevent reordering,</code></span>
+<span class="codeline" id="line-478"><code>		// we use atomic loads for both checks, and rely on emptying and closing to happen in</code></span>
+<span class="codeline" id="line-479"><code>		// separate critical sections under the same lock.  This assumption fails when closing</code></span>
+<span class="codeline" id="line-480"><code>		// an unbuffered channel with a blocked send, but that is an error condition anyway.</code></span>
+<span class="codeline" id="line-481"><code>		if atomic.Load(&amp;c.closed) == 0 {</code></span>
+<span class="codeline" id="line-482"><code>			// Because a channel cannot be reopened, the later observation of the channel</code></span>
+<span class="codeline" id="line-483"><code>			// being not closed implies that it was also not closed at the moment of the</code></span>
+<span class="codeline" id="line-484"><code>			// first observation. We behave as if we observed the channel at that moment</code></span>
+<span class="codeline" id="line-485"><code>			// and report that the receive cannot proceed.</code></span>
+<span class="codeline" id="line-486"><code>			return</code></span>
+<span class="codeline" id="line-487"><code>		}</code></span>
+<span class="codeline" id="line-488"><code>		// The channel is irreversibly closed. Re-check whether the channel has any pending data</code></span>
+<span class="codeline" id="line-489"><code>		// to receive, which could have arrived between the empty and closed checks above.</code></span>
+<span class="codeline" id="line-490"><code>		// Sequential consistency is also required here, when racing with such a send.</code></span>
+<span class="codeline" id="line-491"><code>		if empty(c) {</code></span>
+<span class="codeline" id="line-492"><code>			// The channel is irreversibly closed and empty.</code></span>
+<span class="codeline" id="line-493"><code>			if raceenabled {</code></span>
+<span class="codeline" id="line-494"><code>				raceacquire(c.raceaddr())</code></span>
+<span class="codeline" id="line-495"><code>			}</code></span>
+<span class="codeline" id="line-496"><code>			if ep != nil {</code></span>
+<span class="codeline" id="line-497"><code>				typedmemclr(c.elemtype, ep)</code></span>
+<span class="codeline" id="line-498"><code>			}</code></span>
+<span class="codeline" id="line-499"><code>			return true, false</code></span>
+<span class="codeline" id="line-500"><code>		}</code></span>
+<span class="codeline" id="line-501"><code>	}</code></span>
+<span class="codeline" id="line-502"><code></code></span>
+<span class="codeline" id="line-503"><code>	var t0 int64</code></span>
+<span class="codeline" id="line-504"><code>	if blockprofilerate &gt; 0 {</code></span>
+<span class="codeline" id="line-505"><code>		t0 = cputicks()</code></span>
+<span class="codeline" id="line-506"><code>	}</code></span>
+<span class="codeline" id="line-507"><code></code></span>
+<span class="codeline" id="line-508"><code>	lock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-509"><code></code></span>
+<span class="codeline" id="line-510"><code>	if c.closed != 0 &amp;&amp; c.qcount == 0 {</code></span>
+<span class="codeline" id="line-511"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-512"><code>			raceacquire(c.raceaddr())</code></span>
+<span class="codeline" id="line-513"><code>		}</code></span>
+<span class="codeline" id="line-514"><code>		unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-515"><code>		if ep != nil {</code></span>
+<span class="codeline" id="line-516"><code>			typedmemclr(c.elemtype, ep)</code></span>
+<span class="codeline" id="line-517"><code>		}</code></span>
+<span class="codeline" id="line-518"><code>		return true, false</code></span>
+<span class="codeline" id="line-519"><code>	}</code></span>
+<span class="codeline" id="line-520"><code></code></span>
+<span class="codeline" id="line-521"><code>	if sg := c.sendq.dequeue(); sg != nil {</code></span>
+<span class="codeline" id="line-522"><code>		// Found a waiting sender. If buffer is size 0, receive value</code></span>
+<span class="codeline" id="line-523"><code>		// directly from sender. Otherwise, receive from head of queue</code></span>
+<span class="codeline" id="line-524"><code>		// and add sender's value to the tail of the queue (both map to</code></span>
+<span class="codeline" id="line-525"><code>		// the same buffer slot because the queue is full).</code></span>
+<span class="codeline" id="line-526"><code>		recv(c, sg, ep, func() { unlock(&amp;c.lock) }, 3)</code></span>
+<span class="codeline" id="line-527"><code>		return true, true</code></span>
+<span class="codeline" id="line-528"><code>	}</code></span>
+<span class="codeline" id="line-529"><code></code></span>
+<span class="codeline" id="line-530"><code>	if c.qcount &gt; 0 {</code></span>
+<span class="codeline" id="line-531"><code>		// Receive directly from queue</code></span>
+<span class="codeline" id="line-532"><code>		qp := chanbuf(c, c.recvx)</code></span>
+<span class="codeline" id="line-533"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-534"><code>			racenotify(c, c.recvx, nil)</code></span>
+<span class="codeline" id="line-535"><code>		}</code></span>
+<span class="codeline" id="line-536"><code>		if ep != nil {</code></span>
+<span class="codeline" id="line-537"><code>			typedmemmove(c.elemtype, ep, qp)</code></span>
+<span class="codeline" id="line-538"><code>		}</code></span>
+<span class="codeline" id="line-539"><code>		typedmemclr(c.elemtype, qp)</code></span>
+<span class="codeline" id="line-540"><code>		c.recvx++</code></span>
+<span class="codeline" id="line-541"><code>		if c.recvx == c.dataqsiz {</code></span>
+<span class="codeline" id="line-542"><code>			c.recvx = 0</code></span>
+<span class="codeline" id="line-543"><code>		}</code></span>
+<span class="codeline" id="line-544"><code>		c.qcount--</code></span>
+<span class="codeline" id="line-545"><code>		unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-546"><code>		return true, true</code></span>
+<span class="codeline" id="line-547"><code>	}</code></span>
+<span class="codeline" id="line-548"><code></code></span>
+<span class="codeline" id="line-549"><code>	if !block {</code></span>
+<span class="codeline" id="line-550"><code>		unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-551"><code>		return false, false</code></span>
+<span class="codeline" id="line-552"><code>	}</code></span>
+<span class="codeline" id="line-553"><code></code></span>
+<span class="codeline" id="line-554"><code>	// no sender available: block on this channel.</code></span>
+<span class="codeline" id="line-555"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-556"><code>	mysg := acquireSudog()</code></span>
+<span class="codeline" id="line-557"><code>	mysg.releasetime = 0</code></span>
+<span class="codeline" id="line-558"><code>	if t0 != 0 {</code></span>
+<span class="codeline" id="line-559"><code>		mysg.releasetime = -1</code></span>
+<span class="codeline" id="line-560"><code>	}</code></span>
+<span class="codeline" id="line-561"><code>	// No stack splits between assigning elem and enqueuing mysg</code></span>
+<span class="codeline" id="line-562"><code>	// on gp.waiting where copystack can find it.</code></span>
+<span class="codeline" id="line-563"><code>	mysg.elem = ep</code></span>
+<span class="codeline" id="line-564"><code>	mysg.waitlink = nil</code></span>
+<span class="codeline" id="line-565"><code>	gp.waiting = mysg</code></span>
+<span class="codeline" id="line-566"><code>	mysg.g = gp</code></span>
+<span class="codeline" id="line-567"><code>	mysg.isSelect = false</code></span>
+<span class="codeline" id="line-568"><code>	mysg.c = c</code></span>
+<span class="codeline" id="line-569"><code>	gp.param = nil</code></span>
+<span class="codeline" id="line-570"><code>	c.recvq.enqueue(mysg)</code></span>
+<span class="codeline" id="line-571"><code>	// Signal to anyone trying to shrink our stack that we're about</code></span>
+<span class="codeline" id="line-572"><code>	// to park on a channel. The window between when this G's status</code></span>
+<span class="codeline" id="line-573"><code>	// changes and when we set gp.activeStackChans is not safe for</code></span>
+<span class="codeline" id="line-574"><code>	// stack shrinking.</code></span>
+<span class="codeline" id="line-575"><code>	atomic.Store8(&amp;gp.parkingOnChan, 1)</code></span>
+<span class="codeline" id="line-576"><code>	gopark(chanparkcommit, unsafe.Pointer(&amp;c.lock), waitReasonChanReceive, traceEvGoBlockRecv, 2)</code></span>
+<span class="codeline" id="line-577"><code></code></span>
+<span class="codeline" id="line-578"><code>	// someone woke us up</code></span>
+<span class="codeline" id="line-579"><code>	if mysg != gp.waiting {</code></span>
+<span class="codeline" id="line-580"><code>		throw("G waiting list is corrupted")</code></span>
+<span class="codeline" id="line-581"><code>	}</code></span>
+<span class="codeline" id="line-582"><code>	gp.waiting = nil</code></span>
+<span class="codeline" id="line-583"><code>	gp.activeStackChans = false</code></span>
+<span class="codeline" id="line-584"><code>	if mysg.releasetime &gt; 0 {</code></span>
+<span class="codeline" id="line-585"><code>		blockevent(mysg.releasetime-t0, 2)</code></span>
+<span class="codeline" id="line-586"><code>	}</code></span>
+<span class="codeline" id="line-587"><code>	success := mysg.success</code></span>
+<span class="codeline" id="line-588"><code>	gp.param = nil</code></span>
+<span class="codeline" id="line-589"><code>	mysg.c = nil</code></span>
+<span class="codeline" id="line-590"><code>	releaseSudog(mysg)</code></span>
+<span class="codeline" id="line-591"><code>	return true, success</code></span>
+<span class="codeline" id="line-592"><code>}</code></span>
+<span class="codeline" id="line-593"><code></code></span>
+<span class="codeline" id="line-594"><code>// recv processes a receive operation on a full channel c.</code></span>
+<span class="codeline" id="line-595"><code>// There are 2 parts:</code></span>
+<span class="codeline" id="line-596"><code>// 1) The value sent by the sender sg is put into the channel</code></span>
+<span class="codeline" id="line-597"><code>//    and the sender is woken up to go on its merry way.</code></span>
+<span class="codeline" id="line-598"><code>// 2) The value received by the receiver (the current G) is</code></span>
+<span class="codeline" id="line-599"><code>//    written to ep.</code></span>
+<span class="codeline" id="line-600"><code>// For synchronous channels, both values are the same.</code></span>
+<span class="codeline" id="line-601"><code>// For asynchronous channels, the receiver gets its data from</code></span>
+<span class="codeline" id="line-602"><code>// the channel buffer and the sender's data is put in the</code></span>
+<span class="codeline" id="line-603"><code>// channel buffer.</code></span>
+<span class="codeline" id="line-604"><code>// Channel c must be full and locked. recv unlocks c with unlockf.</code></span>
+<span class="codeline" id="line-605"><code>// sg must already be dequeued from c.</code></span>
+<span class="codeline" id="line-606"><code>// A non-nil ep must point to the heap or the caller's stack.</code></span>
+<span class="codeline" id="line-607"><code>func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {</code></span>
+<span class="codeline" id="line-608"><code>	if c.dataqsiz == 0 {</code></span>
+<span class="codeline" id="line-609"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-610"><code>			racesync(c, sg)</code></span>
+<span class="codeline" id="line-611"><code>		}</code></span>
+<span class="codeline" id="line-612"><code>		if ep != nil {</code></span>
+<span class="codeline" id="line-613"><code>			// copy data from sender</code></span>
+<span class="codeline" id="line-614"><code>			recvDirect(c.elemtype, sg, ep)</code></span>
+<span class="codeline" id="line-615"><code>		}</code></span>
+<span class="codeline" id="line-616"><code>	} else {</code></span>
+<span class="codeline" id="line-617"><code>		// Queue is full. Take the item at the</code></span>
+<span class="codeline" id="line-618"><code>		// head of the queue. Make the sender enqueue</code></span>
+<span class="codeline" id="line-619"><code>		// its item at the tail of the queue. Since the</code></span>
+<span class="codeline" id="line-620"><code>		// queue is full, those are both the same slot.</code></span>
+<span class="codeline" id="line-621"><code>		qp := chanbuf(c, c.recvx)</code></span>
+<span class="codeline" id="line-622"><code>		if raceenabled {</code></span>
+<span class="codeline" id="line-623"><code>			racenotify(c, c.recvx, nil)</code></span>
+<span class="codeline" id="line-624"><code>			racenotify(c, c.recvx, sg)</code></span>
+<span class="codeline" id="line-625"><code>		}</code></span>
+<span class="codeline" id="line-626"><code>		// copy data from queue to receiver</code></span>
+<span class="codeline" id="line-627"><code>		if ep != nil {</code></span>
+<span class="codeline" id="line-628"><code>			typedmemmove(c.elemtype, ep, qp)</code></span>
+<span class="codeline" id="line-629"><code>		}</code></span>
+<span class="codeline" id="line-630"><code>		// copy data from sender to queue</code></span>
+<span class="codeline" id="line-631"><code>		typedmemmove(c.elemtype, qp, sg.elem)</code></span>
+<span class="codeline" id="line-632"><code>		c.recvx++</code></span>
+<span class="codeline" id="line-633"><code>		if c.recvx == c.dataqsiz {</code></span>
+<span class="codeline" id="line-634"><code>			c.recvx = 0</code></span>
+<span class="codeline" id="line-635"><code>		}</code></span>
+<span class="codeline" id="line-636"><code>		c.sendx = c.recvx // c.sendx = (c.sendx+1) % c.dataqsiz</code></span>
+<span class="codeline" id="line-637"><code>	}</code></span>
+<span class="codeline" id="line-638"><code>	sg.elem = nil</code></span>
+<span class="codeline" id="line-639"><code>	gp := sg.g</code></span>
+<span class="codeline" id="line-640"><code>	unlockf()</code></span>
+<span class="codeline" id="line-641"><code>	gp.param = unsafe.Pointer(sg)</code></span>
+<span class="codeline" id="line-642"><code>	sg.success = true</code></span>
+<span class="codeline" id="line-643"><code>	if sg.releasetime != 0 {</code></span>
+<span class="codeline" id="line-644"><code>		sg.releasetime = cputicks()</code></span>
+<span class="codeline" id="line-645"><code>	}</code></span>
+<span class="codeline" id="line-646"><code>	goready(gp, skip+1)</code></span>
+<span class="codeline" id="line-647"><code>}</code></span>
+<span class="codeline" id="line-648"><code></code></span>
+<span class="codeline" id="line-649"><code>func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {</code></span>
+<span class="codeline" id="line-650"><code>	// There are unlocked sudogs that point into gp's stack. Stack</code></span>
+<span class="codeline" id="line-651"><code>	// copying must lock the channels of those sudogs.</code></span>
+<span class="codeline" id="line-652"><code>	// Set activeStackChans here instead of before we try parking</code></span>
+<span class="codeline" id="line-653"><code>	// because we could self-deadlock in stack growth on the</code></span>
+<span class="codeline" id="line-654"><code>	// channel lock.</code></span>
+<span class="codeline" id="line-655"><code>	gp.activeStackChans = true</code></span>
+<span class="codeline" id="line-656"><code>	// Mark that it's safe for stack shrinking to occur now,</code></span>
+<span class="codeline" id="line-657"><code>	// because any thread acquiring this G's stack for shrinking</code></span>
+<span class="codeline" id="line-658"><code>	// is guaranteed to observe activeStackChans after this store.</code></span>
+<span class="codeline" id="line-659"><code>	atomic.Store8(&amp;gp.parkingOnChan, 0)</code></span>
+<span class="codeline" id="line-660"><code>	// Make sure we unlock after setting activeStackChans and</code></span>
+<span class="codeline" id="line-661"><code>	// unsetting parkingOnChan. The moment we unlock chanLock</code></span>
+<span class="codeline" id="line-662"><code>	// we risk gp getting readied by a channel operation and</code></span>
+<span class="codeline" id="line-663"><code>	// so gp could continue running before everything before</code></span>
+<span class="codeline" id="line-664"><code>	// the unlock is visible (even to gp itself).</code></span>
+<span class="codeline" id="line-665"><code>	unlock((*mutex)(chanLock))</code></span>
+<span class="codeline" id="line-666"><code>	return true</code></span>
+<span class="codeline" id="line-667"><code>}</code></span>
+<span class="codeline" id="line-668"><code></code></span>
+<span class="codeline" id="line-669"><code>// compiler implements</code></span>
+<span class="codeline" id="line-670"><code>//</code></span>
+<span class="codeline" id="line-671"><code>//	select {</code></span>
+<span class="codeline" id="line-672"><code>//	case c &lt;- v:</code></span>
+<span class="codeline" id="line-673"><code>//		... foo</code></span>
+<span class="codeline" id="line-674"><code>//	default:</code></span>
+<span class="codeline" id="line-675"><code>//		... bar</code></span>
+<span class="codeline" id="line-676"><code>//	}</code></span>
+<span class="codeline" id="line-677"><code>//</code></span>
+<span class="codeline" id="line-678"><code>// as</code></span>
+<span class="codeline" id="line-679"><code>//</code></span>
+<span class="codeline" id="line-680"><code>//	if selectnbsend(c, v) {</code></span>
+<span class="codeline" id="line-681"><code>//		... foo</code></span>
+<span class="codeline" id="line-682"><code>//	} else {</code></span>
+<span class="codeline" id="line-683"><code>//		... bar</code></span>
+<span class="codeline" id="line-684"><code>//	}</code></span>
+<span class="codeline" id="line-685"><code>//</code></span>
+<span class="codeline" id="line-686"><code>func selectnbsend(c *hchan, elem unsafe.Pointer) (selected bool) {</code></span>
+<span class="codeline" id="line-687"><code>	return chansend(c, elem, false, getcallerpc())</code></span>
+<span class="codeline" id="line-688"><code>}</code></span>
+<span class="codeline" id="line-689"><code></code></span>
+<span class="codeline" id="line-690"><code>// compiler implements</code></span>
+<span class="codeline" id="line-691"><code>//</code></span>
+<span class="codeline" id="line-692"><code>//	select {</code></span>
+<span class="codeline" id="line-693"><code>//	case v = &lt;-c:</code></span>
+<span class="codeline" id="line-694"><code>//		... foo</code></span>
+<span class="codeline" id="line-695"><code>//	default:</code></span>
+<span class="codeline" id="line-696"><code>//		... bar</code></span>
+<span class="codeline" id="line-697"><code>//	}</code></span>
+<span class="codeline" id="line-698"><code>//</code></span>
+<span class="codeline" id="line-699"><code>// as</code></span>
+<span class="codeline" id="line-700"><code>//</code></span>
+<span class="codeline" id="line-701"><code>//	if selectnbrecv(&amp;v, c) {</code></span>
+<span class="codeline" id="line-702"><code>//		... foo</code></span>
+<span class="codeline" id="line-703"><code>//	} else {</code></span>
+<span class="codeline" id="line-704"><code>//		... bar</code></span>
+<span class="codeline" id="line-705"><code>//	}</code></span>
+<span class="codeline" id="line-706"><code>//</code></span>
+<span class="codeline" id="line-707"><code>func selectnbrecv(elem unsafe.Pointer, c *hchan) (selected bool) {</code></span>
+<span class="codeline" id="line-708"><code>	selected, _ = chanrecv(c, elem, false)</code></span>
+<span class="codeline" id="line-709"><code>	return</code></span>
+<span class="codeline" id="line-710"><code>}</code></span>
+<span class="codeline" id="line-711"><code></code></span>
+<span class="codeline" id="line-712"><code>// compiler implements</code></span>
+<span class="codeline" id="line-713"><code>//</code></span>
+<span class="codeline" id="line-714"><code>//	select {</code></span>
+<span class="codeline" id="line-715"><code>//	case v, ok = &lt;-c:</code></span>
+<span class="codeline" id="line-716"><code>//		... foo</code></span>
+<span class="codeline" id="line-717"><code>//	default:</code></span>
+<span class="codeline" id="line-718"><code>//		... bar</code></span>
+<span class="codeline" id="line-719"><code>//	}</code></span>
+<span class="codeline" id="line-720"><code>//</code></span>
+<span class="codeline" id="line-721"><code>// as</code></span>
+<span class="codeline" id="line-722"><code>//</code></span>
+<span class="codeline" id="line-723"><code>//	if c != nil &amp;&amp; selectnbrecv2(&amp;v, &amp;ok, c) {</code></span>
+<span class="codeline" id="line-724"><code>//		... foo</code></span>
+<span class="codeline" id="line-725"><code>//	} else {</code></span>
+<span class="codeline" id="line-726"><code>//		... bar</code></span>
+<span class="codeline" id="line-727"><code>//	}</code></span>
+<span class="codeline" id="line-728"><code>//</code></span>
+<span class="codeline" id="line-729"><code>func selectnbrecv2(elem unsafe.Pointer, received *bool, c *hchan) (selected bool) {</code></span>
+<span class="codeline" id="line-730"><code>	// TODO(khr): just return 2 values from this function, now that it is in Go.</code></span>
+<span class="codeline" id="line-731"><code>	selected, *received = chanrecv(c, elem, false)</code></span>
+<span class="codeline" id="line-732"><code>	return</code></span>
+<span class="codeline" id="line-733"><code>}</code></span>
+<span class="codeline" id="line-734"><code></code></span>
+<span class="codeline" id="line-735"><code>//go:linkname reflect_chansend reflect.chansend</code></span>
+<span class="codeline" id="line-736"><code>func reflect_chansend(c *hchan, elem unsafe.Pointer, nb bool) (selected bool) {</code></span>
+<span class="codeline" id="line-737"><code>	return chansend(c, elem, !nb, getcallerpc())</code></span>
+<span class="codeline" id="line-738"><code>}</code></span>
+<span class="codeline" id="line-739"><code></code></span>
+<span class="codeline" id="line-740"><code>//go:linkname reflect_chanrecv reflect.chanrecv</code></span>
+<span class="codeline" id="line-741"><code>func reflect_chanrecv(c *hchan, nb bool, elem unsafe.Pointer) (selected bool, received bool) {</code></span>
+<span class="codeline" id="line-742"><code>	return chanrecv(c, elem, !nb)</code></span>
+<span class="codeline" id="line-743"><code>}</code></span>
+<span class="codeline" id="line-744"><code></code></span>
+<span class="codeline" id="line-745"><code>//go:linkname reflect_chanlen reflect.chanlen</code></span>
+<span class="codeline" id="line-746"><code>func reflect_chanlen(c *hchan) int {</code></span>
+<span class="codeline" id="line-747"><code>	if c == nil {</code></span>
+<span class="codeline" id="line-748"><code>		return 0</code></span>
+<span class="codeline" id="line-749"><code>	}</code></span>
+<span class="codeline" id="line-750"><code>	return int(c.qcount)</code></span>
+<span class="codeline" id="line-751"><code>}</code></span>
+<span class="codeline" id="line-752"><code></code></span>
+<span class="codeline" id="line-753"><code>//go:linkname reflectlite_chanlen internal/reflectlite.chanlen</code></span>
+<span class="codeline" id="line-754"><code>func reflectlite_chanlen(c *hchan) int {</code></span>
+<span class="codeline" id="line-755"><code>	if c == nil {</code></span>
+<span class="codeline" id="line-756"><code>		return 0</code></span>
+<span class="codeline" id="line-757"><code>	}</code></span>
+<span class="codeline" id="line-758"><code>	return int(c.qcount)</code></span>
+<span class="codeline" id="line-759"><code>}</code></span>
+<span class="codeline" id="line-760"><code></code></span>
+<span class="codeline" id="line-761"><code>//go:linkname reflect_chancap reflect.chancap</code></span>
+<span class="codeline" id="line-762"><code>func reflect_chancap(c *hchan) int {</code></span>
+<span class="codeline" id="line-763"><code>	if c == nil {</code></span>
+<span class="codeline" id="line-764"><code>		return 0</code></span>
+<span class="codeline" id="line-765"><code>	}</code></span>
+<span class="codeline" id="line-766"><code>	return int(c.dataqsiz)</code></span>
+<span class="codeline" id="line-767"><code>}</code></span>
+<span class="codeline" id="line-768"><code></code></span>
+<span class="codeline" id="line-769"><code>//go:linkname reflect_chanclose reflect.chanclose</code></span>
+<span class="codeline" id="line-770"><code>func reflect_chanclose(c *hchan) {</code></span>
+<span class="codeline" id="line-771"><code>	closechan(c)</code></span>
+<span class="codeline" id="line-772"><code>}</code></span>
+<span class="codeline" id="line-773"><code></code></span>
+<span class="codeline" id="line-774"><code>func (q *waitq) enqueue(sgp *sudog) {</code></span>
+<span class="codeline" id="line-775"><code>	sgp.next = nil</code></span>
+<span class="codeline" id="line-776"><code>	x := q.last</code></span>
+<span class="codeline" id="line-777"><code>	if x == nil {</code></span>
+<span class="codeline" id="line-778"><code>		sgp.prev = nil</code></span>
+<span class="codeline" id="line-779"><code>		q.first = sgp</code></span>
+<span class="codeline" id="line-780"><code>		q.last = sgp</code></span>
+<span class="codeline" id="line-781"><code>		return</code></span>
+<span class="codeline" id="line-782"><code>	}</code></span>
+<span class="codeline" id="line-783"><code>	sgp.prev = x</code></span>
+<span class="codeline" id="line-784"><code>	x.next = sgp</code></span>
+<span class="codeline" id="line-785"><code>	q.last = sgp</code></span>
+<span class="codeline" id="line-786"><code>}</code></span>
+<span class="codeline" id="line-787"><code></code></span>
+<span class="codeline" id="line-788"><code>func (q *waitq) dequeue() *sudog {</code></span>
+<span class="codeline" id="line-789"><code>	for {</code></span>
+<span class="codeline" id="line-790"><code>		sgp := q.first</code></span>
+<span class="codeline" id="line-791"><code>		if sgp == nil {</code></span>
+<span class="codeline" id="line-792"><code>			return nil</code></span>
+<span class="codeline" id="line-793"><code>		}</code></span>
+<span class="codeline" id="line-794"><code>		y := sgp.next</code></span>
+<span class="codeline" id="line-795"><code>		if y == nil {</code></span>
+<span class="codeline" id="line-796"><code>			q.first = nil</code></span>
+<span class="codeline" id="line-797"><code>			q.last = nil</code></span>
+<span class="codeline" id="line-798"><code>		} else {</code></span>
+<span class="codeline" id="line-799"><code>			y.prev = nil</code></span>
+<span class="codeline" id="line-800"><code>			q.first = y</code></span>
+<span class="codeline" id="line-801"><code>			sgp.next = nil // mark as removed (see dequeueSudog)</code></span>
+<span class="codeline" id="line-802"><code>		}</code></span>
+<span class="codeline" id="line-803"><code></code></span>
+<span class="codeline" id="line-804"><code>		// if a goroutine was put on this queue because of a</code></span>
+<span class="codeline" id="line-805"><code>		// select, there is a small window between the goroutine</code></span>
+<span class="codeline" id="line-806"><code>		// being woken up by a different case and it grabbing the</code></span>
+<span class="codeline" id="line-807"><code>		// channel locks. Once it has the lock</code></span>
+<span class="codeline" id="line-808"><code>		// it removes itself from the queue, so we won't see it after that.</code></span>
+<span class="codeline" id="line-809"><code>		// We use a flag in the G struct to tell us when someone</code></span>
+<span class="codeline" id="line-810"><code>		// else has won the race to signal this goroutine but the goroutine</code></span>
+<span class="codeline" id="line-811"><code>		// hasn't removed itself from the queue yet.</code></span>
+<span class="codeline" id="line-812"><code>		if sgp.isSelect &amp;&amp; !atomic.Cas(&amp;sgp.g.selectDone, 0, 1) {</code></span>
+<span class="codeline" id="line-813"><code>			continue</code></span>
+<span class="codeline" id="line-814"><code>		}</code></span>
+<span class="codeline" id="line-815"><code></code></span>
+<span class="codeline" id="line-816"><code>		return sgp</code></span>
+<span class="codeline" id="line-817"><code>	}</code></span>
+<span class="codeline" id="line-818"><code>}</code></span>
+<span class="codeline" id="line-819"><code></code></span>
+<span class="codeline" id="line-820"><code>func (c *hchan) raceaddr() unsafe.Pointer {</code></span>
+<span class="codeline" id="line-821"><code>	// Treat read-like and write-like operations on the channel to</code></span>
+<span class="codeline" id="line-822"><code>	// happen at this address. Avoid using the address of qcount</code></span>
+<span class="codeline" id="line-823"><code>	// or dataqsiz, because the len() and cap() builtins read</code></span>
+<span class="codeline" id="line-824"><code>	// those addresses, and we don't want them racing with</code></span>
+<span class="codeline" id="line-825"><code>	// operations like close().</code></span>
+<span class="codeline" id="line-826"><code>	return unsafe.Pointer(&amp;c.buf)</code></span>
+<span class="codeline" id="line-827"><code>}</code></span>
+<span class="codeline" id="line-828"><code></code></span>
+<span class="codeline" id="line-829"><code>func racesync(c *hchan, sg *sudog) {</code></span>
+<span class="codeline" id="line-830"><code>	racerelease(chanbuf(c, 0))</code></span>
+<span class="codeline" id="line-831"><code>	raceacquireg(sg.g, chanbuf(c, 0))</code></span>
+<span class="codeline" id="line-832"><code>	racereleaseg(sg.g, chanbuf(c, 0))</code></span>
+<span class="codeline" id="line-833"><code>	raceacquire(chanbuf(c, 0))</code></span>
+<span class="codeline" id="line-834"><code>}</code></span>
+<span class="codeline" id="line-835"><code></code></span>
+<span class="codeline" id="line-836"><code>// Notify the race detector of a send or receive involving buffer entry idx</code></span>
+<span class="codeline" id="line-837"><code>// and a channel c or its communicating partner sg.</code></span>
+<span class="codeline" id="line-838"><code>// This function handles the special case of c.elemsize==0.</code></span>
+<span class="codeline" id="line-839"><code>func racenotify(c *hchan, idx uint, sg *sudog) {</code></span>
+<span class="codeline" id="line-840"><code>	// We could have passed the unsafe.Pointer corresponding to entry idx</code></span>
+<span class="codeline" id="line-841"><code>	// instead of idx itself.  However, in a future version of this function,</code></span>
+<span class="codeline" id="line-842"><code>	// we can use idx to better handle the case of elemsize==0.</code></span>
+<span class="codeline" id="line-843"><code>	// A future improvement to the detector is to call TSan with c and idx:</code></span>
+<span class="codeline" id="line-844"><code>	// this way, Go will continue to not allocating buffer entries for channels</code></span>
+<span class="codeline" id="line-845"><code>	// of elemsize==0, yet the race detector can be made to handle multiple</code></span>
+<span class="codeline" id="line-846"><code>	// sync objects underneath the hood (one sync object per idx)</code></span>
+<span class="codeline" id="line-847"><code>	qp := chanbuf(c, idx)</code></span>
+<span class="codeline" id="line-848"><code>	// When elemsize==0, we don't allocate a full buffer for the channel.</code></span>
+<span class="codeline" id="line-849"><code>	// Instead of individual buffer entries, the race detector uses the</code></span>
+<span class="codeline" id="line-850"><code>	// c.buf as the only buffer entry.  This simplification prevents us from</code></span>
+<span class="codeline" id="line-851"><code>	// following the memory model's happens-before rules (rules that are</code></span>
+<span class="codeline" id="line-852"><code>	// implemented in racereleaseacquire).  Instead, we accumulate happens-before</code></span>
+<span class="codeline" id="line-853"><code>	// information in the synchronization object associated with c.buf.</code></span>
+<span class="codeline" id="line-854"><code>	if c.elemsize == 0 {</code></span>
+<span class="codeline" id="line-855"><code>		if sg == nil {</code></span>
+<span class="codeline" id="line-856"><code>			raceacquire(qp)</code></span>
+<span class="codeline" id="line-857"><code>			racerelease(qp)</code></span>
+<span class="codeline" id="line-858"><code>		} else {</code></span>
+<span class="codeline" id="line-859"><code>			raceacquireg(sg.g, qp)</code></span>
+<span class="codeline" id="line-860"><code>			racereleaseg(sg.g, qp)</code></span>
+<span class="codeline" id="line-861"><code>		}</code></span>
+<span class="codeline" id="line-862"><code>	} else {</code></span>
+<span class="codeline" id="line-863"><code>		if sg == nil {</code></span>
+<span class="codeline" id="line-864"><code>			racereleaseacquire(qp)</code></span>
+<span class="codeline" id="line-865"><code>		} else {</code></span>
+<span class="codeline" id="line-866"><code>			racereleaseacquireg(sg.g, qp)</code></span>
+<span class="codeline" id="line-867"><code>		}</code></span>
+<span class="codeline" id="line-868"><code>	}</code></span>
+<span class="codeline" id="line-869"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

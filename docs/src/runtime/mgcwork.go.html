@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mgcwork.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mgcwork.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-9"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-10"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>const (</code></span>
+<span class="codeline" id="line-14"><code>	_WorkbufSize = 2048 // in bytes; larger values result in less contention</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>	// workbufAlloc is the number of bytes to allocate at a time</code></span>
+<span class="codeline" id="line-17"><code>	// for new workbufs. This must be a multiple of pageSize and</code></span>
+<span class="codeline" id="line-18"><code>	// should be a multiple of _WorkbufSize.</code></span>
+<span class="codeline" id="line-19"><code>	//</code></span>
+<span class="codeline" id="line-20"><code>	// Larger values reduce workbuf allocation overhead. Smaller</code></span>
+<span class="codeline" id="line-21"><code>	// values reduce heap fragmentation.</code></span>
+<span class="codeline" id="line-22"><code>	workbufAlloc = 32 &lt;&lt; 10</code></span>
+<span class="codeline" id="line-23"><code>)</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>func init() {</code></span>
+<span class="codeline" id="line-26"><code>	if workbufAlloc%pageSize != 0 || workbufAlloc%_WorkbufSize != 0 {</code></span>
+<span class="codeline" id="line-27"><code>		throw("bad workbufAlloc")</code></span>
+<span class="codeline" id="line-28"><code>	}</code></span>
+<span class="codeline" id="line-29"><code>}</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>// Garbage collector work pool abstraction.</code></span>
+<span class="codeline" id="line-32"><code>//</code></span>
+<span class="codeline" id="line-33"><code>// This implements a producer/consumer model for pointers to grey</code></span>
+<span class="codeline" id="line-34"><code>// objects. A grey object is one that is marked and on a work</code></span>
+<span class="codeline" id="line-35"><code>// queue. A black object is marked and not on a work queue.</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// Write barriers, root discovery, stack scanning, and object scanning</code></span>
+<span class="codeline" id="line-38"><code>// produce pointers to grey objects. Scanning consumes pointers to</code></span>
+<span class="codeline" id="line-39"><code>// grey objects, thus blackening them, and then scans them,</code></span>
+<span class="codeline" id="line-40"><code>// potentially producing new pointers to grey objects.</code></span>
+<span class="codeline" id="line-41"><code></code></span>
+<span class="codeline" id="line-42"><code>// A gcWork provides the interface to produce and consume work for the</code></span>
+<span class="codeline" id="line-43"><code>// garbage collector.</code></span>
+<span class="codeline" id="line-44"><code>//</code></span>
+<span class="codeline" id="line-45"><code>// A gcWork can be used on the stack as follows:</code></span>
+<span class="codeline" id="line-46"><code>//</code></span>
+<span class="codeline" id="line-47"><code>//     (preemption must be disabled)</code></span>
+<span class="codeline" id="line-48"><code>//     gcw := &amp;getg().m.p.ptr().gcw</code></span>
+<span class="codeline" id="line-49"><code>//     .. call gcw.put() to produce and gcw.tryGet() to consume ..</code></span>
+<span class="codeline" id="line-50"><code>//</code></span>
+<span class="codeline" id="line-51"><code>// It's important that any use of gcWork during the mark phase prevent</code></span>
+<span class="codeline" id="line-52"><code>// the garbage collector from transitioning to mark termination since</code></span>
+<span class="codeline" id="line-53"><code>// gcWork may locally hold GC work buffers. This can be done by</code></span>
+<span class="codeline" id="line-54"><code>// disabling preemption (systemstack or acquirem).</code></span>
+<span class="codeline" id="line-55"><code>type gcWork struct {</code></span>
+<span class="codeline" id="line-56"><code>	// wbuf1 and wbuf2 are the primary and secondary work buffers.</code></span>
+<span class="codeline" id="line-57"><code>	//</code></span>
+<span class="codeline" id="line-58"><code>	// This can be thought of as a stack of both work buffers'</code></span>
+<span class="codeline" id="line-59"><code>	// pointers concatenated. When we pop the last pointer, we</code></span>
+<span class="codeline" id="line-60"><code>	// shift the stack up by one work buffer by bringing in a new</code></span>
+<span class="codeline" id="line-61"><code>	// full buffer and discarding an empty one. When we fill both</code></span>
+<span class="codeline" id="line-62"><code>	// buffers, we shift the stack down by one work buffer by</code></span>
+<span class="codeline" id="line-63"><code>	// bringing in a new empty buffer and discarding a full one.</code></span>
+<span class="codeline" id="line-64"><code>	// This way we have one buffer's worth of hysteresis, which</code></span>
+<span class="codeline" id="line-65"><code>	// amortizes the cost of getting or putting a work buffer over</code></span>
+<span class="codeline" id="line-66"><code>	// at least one buffer of work and reduces contention on the</code></span>
+<span class="codeline" id="line-67"><code>	// global work lists.</code></span>
+<span class="codeline" id="line-68"><code>	//</code></span>
+<span class="codeline" id="line-69"><code>	// wbuf1 is always the buffer we're currently pushing to and</code></span>
+<span class="codeline" id="line-70"><code>	// popping from and wbuf2 is the buffer that will be discarded</code></span>
+<span class="codeline" id="line-71"><code>	// next.</code></span>
+<span class="codeline" id="line-72"><code>	//</code></span>
+<span class="codeline" id="line-73"><code>	// Invariant: Both wbuf1 and wbuf2 are nil or neither are.</code></span>
+<span class="codeline" id="line-74"><code>	wbuf1, wbuf2 *workbuf</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>	// Bytes marked (blackened) on this gcWork. This is aggregated</code></span>
+<span class="codeline" id="line-77"><code>	// into work.bytesMarked by dispose.</code></span>
+<span class="codeline" id="line-78"><code>	bytesMarked uint64</code></span>
+<span class="codeline" id="line-79"><code></code></span>
+<span class="codeline" id="line-80"><code>	// Scan work performed on this gcWork. This is aggregated into</code></span>
+<span class="codeline" id="line-81"><code>	// gcController by dispose and may also be flushed by callers.</code></span>
+<span class="codeline" id="line-82"><code>	scanWork int64</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>	// flushedWork indicates that a non-empty work buffer was</code></span>
+<span class="codeline" id="line-85"><code>	// flushed to the global work list since the last gcMarkDone</code></span>
+<span class="codeline" id="line-86"><code>	// termination check. Specifically, this indicates that this</code></span>
+<span class="codeline" id="line-87"><code>	// gcWork may have communicated work to another gcWork.</code></span>
+<span class="codeline" id="line-88"><code>	flushedWork bool</code></span>
+<span class="codeline" id="line-89"><code>}</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>// Most of the methods of gcWork are go:nowritebarrierrec because the</code></span>
+<span class="codeline" id="line-92"><code>// write barrier itself can invoke gcWork methods but the methods are</code></span>
+<span class="codeline" id="line-93"><code>// not generally re-entrant. Hence, if a gcWork method invoked the</code></span>
+<span class="codeline" id="line-94"><code>// write barrier while the gcWork was in an inconsistent state, and</code></span>
+<span class="codeline" id="line-95"><code>// the write barrier in turn invoked a gcWork method, it could</code></span>
+<span class="codeline" id="line-96"><code>// permanently corrupt the gcWork.</code></span>
+<span class="codeline" id="line-97"><code></code></span>
+<span class="codeline" id="line-98"><code>func (w *gcWork) init() {</code></span>
+<span class="codeline" id="line-99"><code>	w.wbuf1 = getempty()</code></span>
+<span class="codeline" id="line-100"><code>	wbuf2 := trygetfull()</code></span>
+<span class="codeline" id="line-101"><code>	if wbuf2 == nil {</code></span>
+<span class="codeline" id="line-102"><code>		wbuf2 = getempty()</code></span>
+<span class="codeline" id="line-103"><code>	}</code></span>
+<span class="codeline" id="line-104"><code>	w.wbuf2 = wbuf2</code></span>
+<span class="codeline" id="line-105"><code>}</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>// put enqueues a pointer for the garbage collector to trace.</code></span>
+<span class="codeline" id="line-108"><code>// obj must point to the beginning of a heap object or an oblet.</code></span>
+<span class="codeline" id="line-109"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-110"><code>func (w *gcWork) put(obj uintptr) {</code></span>
+<span class="codeline" id="line-111"><code>	flushed := false</code></span>
+<span class="codeline" id="line-112"><code>	wbuf := w.wbuf1</code></span>
+<span class="codeline" id="line-113"><code>	// Record that this may acquire the wbufSpans or heap lock to</code></span>
+<span class="codeline" id="line-114"><code>	// allocate a workbuf.</code></span>
+<span class="codeline" id="line-115"><code>	lockWithRankMayAcquire(&amp;work.wbufSpans.lock, lockRankWbufSpans)</code></span>
+<span class="codeline" id="line-116"><code>	lockWithRankMayAcquire(&amp;mheap_.lock, lockRankMheap)</code></span>
+<span class="codeline" id="line-117"><code>	if wbuf == nil {</code></span>
+<span class="codeline" id="line-118"><code>		w.init()</code></span>
+<span class="codeline" id="line-119"><code>		wbuf = w.wbuf1</code></span>
+<span class="codeline" id="line-120"><code>		// wbuf is empty at this point.</code></span>
+<span class="codeline" id="line-121"><code>	} else if wbuf.nobj == len(wbuf.obj) {</code></span>
+<span class="codeline" id="line-122"><code>		w.wbuf1, w.wbuf2 = w.wbuf2, w.wbuf1</code></span>
+<span class="codeline" id="line-123"><code>		wbuf = w.wbuf1</code></span>
+<span class="codeline" id="line-124"><code>		if wbuf.nobj == len(wbuf.obj) {</code></span>
+<span class="codeline" id="line-125"><code>			putfull(wbuf)</code></span>
+<span class="codeline" id="line-126"><code>			w.flushedWork = true</code></span>
+<span class="codeline" id="line-127"><code>			wbuf = getempty()</code></span>
+<span class="codeline" id="line-128"><code>			w.wbuf1 = wbuf</code></span>
+<span class="codeline" id="line-129"><code>			flushed = true</code></span>
+<span class="codeline" id="line-130"><code>		}</code></span>
+<span class="codeline" id="line-131"><code>	}</code></span>
+<span class="codeline" id="line-132"><code></code></span>
+<span class="codeline" id="line-133"><code>	wbuf.obj[wbuf.nobj] = obj</code></span>
+<span class="codeline" id="line-134"><code>	wbuf.nobj++</code></span>
+<span class="codeline" id="line-135"><code></code></span>
+<span class="codeline" id="line-136"><code>	// If we put a buffer on full, let the GC controller know so</code></span>
+<span class="codeline" id="line-137"><code>	// it can encourage more workers to run. We delay this until</code></span>
+<span class="codeline" id="line-138"><code>	// the end of put so that w is in a consistent state, since</code></span>
+<span class="codeline" id="line-139"><code>	// enlistWorker may itself manipulate w.</code></span>
+<span class="codeline" id="line-140"><code>	if flushed &amp;&amp; gcphase == _GCmark {</code></span>
+<span class="codeline" id="line-141"><code>		gcController.enlistWorker()</code></span>
+<span class="codeline" id="line-142"><code>	}</code></span>
+<span class="codeline" id="line-143"><code>}</code></span>
+<span class="codeline" id="line-144"><code></code></span>
+<span class="codeline" id="line-145"><code>// putFast does a put and reports whether it can be done quickly</code></span>
+<span class="codeline" id="line-146"><code>// otherwise it returns false and the caller needs to call put.</code></span>
+<span class="codeline" id="line-147"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-148"><code>func (w *gcWork) putFast(obj uintptr) bool {</code></span>
+<span class="codeline" id="line-149"><code>	wbuf := w.wbuf1</code></span>
+<span class="codeline" id="line-150"><code>	if wbuf == nil {</code></span>
+<span class="codeline" id="line-151"><code>		return false</code></span>
+<span class="codeline" id="line-152"><code>	} else if wbuf.nobj == len(wbuf.obj) {</code></span>
+<span class="codeline" id="line-153"><code>		return false</code></span>
+<span class="codeline" id="line-154"><code>	}</code></span>
+<span class="codeline" id="line-155"><code></code></span>
+<span class="codeline" id="line-156"><code>	wbuf.obj[wbuf.nobj] = obj</code></span>
+<span class="codeline" id="line-157"><code>	wbuf.nobj++</code></span>
+<span class="codeline" id="line-158"><code>	return true</code></span>
+<span class="codeline" id="line-159"><code>}</code></span>
+<span class="codeline" id="line-160"><code></code></span>
+<span class="codeline" id="line-161"><code>// putBatch performs a put on every pointer in obj. See put for</code></span>
+<span class="codeline" id="line-162"><code>// constraints on these pointers.</code></span>
+<span class="codeline" id="line-163"><code>//</code></span>
+<span class="codeline" id="line-164"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-165"><code>func (w *gcWork) putBatch(obj []uintptr) {</code></span>
+<span class="codeline" id="line-166"><code>	if len(obj) == 0 {</code></span>
+<span class="codeline" id="line-167"><code>		return</code></span>
+<span class="codeline" id="line-168"><code>	}</code></span>
+<span class="codeline" id="line-169"><code></code></span>
+<span class="codeline" id="line-170"><code>	flushed := false</code></span>
+<span class="codeline" id="line-171"><code>	wbuf := w.wbuf1</code></span>
+<span class="codeline" id="line-172"><code>	if wbuf == nil {</code></span>
+<span class="codeline" id="line-173"><code>		w.init()</code></span>
+<span class="codeline" id="line-174"><code>		wbuf = w.wbuf1</code></span>
+<span class="codeline" id="line-175"><code>	}</code></span>
+<span class="codeline" id="line-176"><code></code></span>
+<span class="codeline" id="line-177"><code>	for len(obj) &gt; 0 {</code></span>
+<span class="codeline" id="line-178"><code>		for wbuf.nobj == len(wbuf.obj) {</code></span>
+<span class="codeline" id="line-179"><code>			putfull(wbuf)</code></span>
+<span class="codeline" id="line-180"><code>			w.flushedWork = true</code></span>
+<span class="codeline" id="line-181"><code>			w.wbuf1, w.wbuf2 = w.wbuf2, getempty()</code></span>
+<span class="codeline" id="line-182"><code>			wbuf = w.wbuf1</code></span>
+<span class="codeline" id="line-183"><code>			flushed = true</code></span>
+<span class="codeline" id="line-184"><code>		}</code></span>
+<span class="codeline" id="line-185"><code>		n := copy(wbuf.obj[wbuf.nobj:], obj)</code></span>
+<span class="codeline" id="line-186"><code>		wbuf.nobj += n</code></span>
+<span class="codeline" id="line-187"><code>		obj = obj[n:]</code></span>
+<span class="codeline" id="line-188"><code>	}</code></span>
+<span class="codeline" id="line-189"><code></code></span>
+<span class="codeline" id="line-190"><code>	if flushed &amp;&amp; gcphase == _GCmark {</code></span>
+<span class="codeline" id="line-191"><code>		gcController.enlistWorker()</code></span>
+<span class="codeline" id="line-192"><code>	}</code></span>
+<span class="codeline" id="line-193"><code>}</code></span>
+<span class="codeline" id="line-194"><code></code></span>
+<span class="codeline" id="line-195"><code>// tryGet dequeues a pointer for the garbage collector to trace.</code></span>
+<span class="codeline" id="line-196"><code>//</code></span>
+<span class="codeline" id="line-197"><code>// If there are no pointers remaining in this gcWork or in the global</code></span>
+<span class="codeline" id="line-198"><code>// queue, tryGet returns 0.  Note that there may still be pointers in</code></span>
+<span class="codeline" id="line-199"><code>// other gcWork instances or other caches.</code></span>
+<span class="codeline" id="line-200"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-201"><code>func (w *gcWork) tryGet() uintptr {</code></span>
+<span class="codeline" id="line-202"><code>	wbuf := w.wbuf1</code></span>
+<span class="codeline" id="line-203"><code>	if wbuf == nil {</code></span>
+<span class="codeline" id="line-204"><code>		w.init()</code></span>
+<span class="codeline" id="line-205"><code>		wbuf = w.wbuf1</code></span>
+<span class="codeline" id="line-206"><code>		// wbuf is empty at this point.</code></span>
+<span class="codeline" id="line-207"><code>	}</code></span>
+<span class="codeline" id="line-208"><code>	if wbuf.nobj == 0 {</code></span>
+<span class="codeline" id="line-209"><code>		w.wbuf1, w.wbuf2 = w.wbuf2, w.wbuf1</code></span>
+<span class="codeline" id="line-210"><code>		wbuf = w.wbuf1</code></span>
+<span class="codeline" id="line-211"><code>		if wbuf.nobj == 0 {</code></span>
+<span class="codeline" id="line-212"><code>			owbuf := wbuf</code></span>
+<span class="codeline" id="line-213"><code>			wbuf = trygetfull()</code></span>
+<span class="codeline" id="line-214"><code>			if wbuf == nil {</code></span>
+<span class="codeline" id="line-215"><code>				return 0</code></span>
+<span class="codeline" id="line-216"><code>			}</code></span>
+<span class="codeline" id="line-217"><code>			putempty(owbuf)</code></span>
+<span class="codeline" id="line-218"><code>			w.wbuf1 = wbuf</code></span>
+<span class="codeline" id="line-219"><code>		}</code></span>
+<span class="codeline" id="line-220"><code>	}</code></span>
+<span class="codeline" id="line-221"><code></code></span>
+<span class="codeline" id="line-222"><code>	wbuf.nobj--</code></span>
+<span class="codeline" id="line-223"><code>	return wbuf.obj[wbuf.nobj]</code></span>
+<span class="codeline" id="line-224"><code>}</code></span>
+<span class="codeline" id="line-225"><code></code></span>
+<span class="codeline" id="line-226"><code>// tryGetFast dequeues a pointer for the garbage collector to trace</code></span>
+<span class="codeline" id="line-227"><code>// if one is readily available. Otherwise it returns 0 and</code></span>
+<span class="codeline" id="line-228"><code>// the caller is expected to call tryGet().</code></span>
+<span class="codeline" id="line-229"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-230"><code>func (w *gcWork) tryGetFast() uintptr {</code></span>
+<span class="codeline" id="line-231"><code>	wbuf := w.wbuf1</code></span>
+<span class="codeline" id="line-232"><code>	if wbuf == nil {</code></span>
+<span class="codeline" id="line-233"><code>		return 0</code></span>
+<span class="codeline" id="line-234"><code>	}</code></span>
+<span class="codeline" id="line-235"><code>	if wbuf.nobj == 0 {</code></span>
+<span class="codeline" id="line-236"><code>		return 0</code></span>
+<span class="codeline" id="line-237"><code>	}</code></span>
+<span class="codeline" id="line-238"><code></code></span>
+<span class="codeline" id="line-239"><code>	wbuf.nobj--</code></span>
+<span class="codeline" id="line-240"><code>	return wbuf.obj[wbuf.nobj]</code></span>
+<span class="codeline" id="line-241"><code>}</code></span>
+<span class="codeline" id="line-242"><code></code></span>
+<span class="codeline" id="line-243"><code>// dispose returns any cached pointers to the global queue.</code></span>
+<span class="codeline" id="line-244"><code>// The buffers are being put on the full queue so that the</code></span>
+<span class="codeline" id="line-245"><code>// write barriers will not simply reacquire them before the</code></span>
+<span class="codeline" id="line-246"><code>// GC can inspect them. This helps reduce the mutator's</code></span>
+<span class="codeline" id="line-247"><code>// ability to hide pointers during the concurrent mark phase.</code></span>
+<span class="codeline" id="line-248"><code>//</code></span>
+<span class="codeline" id="line-249"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-250"><code>func (w *gcWork) dispose() {</code></span>
+<span class="codeline" id="line-251"><code>	if wbuf := w.wbuf1; wbuf != nil {</code></span>
+<span class="codeline" id="line-252"><code>		if wbuf.nobj == 0 {</code></span>
+<span class="codeline" id="line-253"><code>			putempty(wbuf)</code></span>
+<span class="codeline" id="line-254"><code>		} else {</code></span>
+<span class="codeline" id="line-255"><code>			putfull(wbuf)</code></span>
+<span class="codeline" id="line-256"><code>			w.flushedWork = true</code></span>
+<span class="codeline" id="line-257"><code>		}</code></span>
+<span class="codeline" id="line-258"><code>		w.wbuf1 = nil</code></span>
+<span class="codeline" id="line-259"><code></code></span>
+<span class="codeline" id="line-260"><code>		wbuf = w.wbuf2</code></span>
+<span class="codeline" id="line-261"><code>		if wbuf.nobj == 0 {</code></span>
+<span class="codeline" id="line-262"><code>			putempty(wbuf)</code></span>
+<span class="codeline" id="line-263"><code>		} else {</code></span>
+<span class="codeline" id="line-264"><code>			putfull(wbuf)</code></span>
+<span class="codeline" id="line-265"><code>			w.flushedWork = true</code></span>
+<span class="codeline" id="line-266"><code>		}</code></span>
+<span class="codeline" id="line-267"><code>		w.wbuf2 = nil</code></span>
+<span class="codeline" id="line-268"><code>	}</code></span>
+<span class="codeline" id="line-269"><code>	if w.bytesMarked != 0 {</code></span>
+<span class="codeline" id="line-270"><code>		// dispose happens relatively infrequently. If this</code></span>
+<span class="codeline" id="line-271"><code>		// atomic becomes a problem, we should first try to</code></span>
+<span class="codeline" id="line-272"><code>		// dispose less and if necessary aggregate in a per-P</code></span>
+<span class="codeline" id="line-273"><code>		// counter.</code></span>
+<span class="codeline" id="line-274"><code>		atomic.Xadd64(&amp;work.bytesMarked, int64(w.bytesMarked))</code></span>
+<span class="codeline" id="line-275"><code>		w.bytesMarked = 0</code></span>
+<span class="codeline" id="line-276"><code>	}</code></span>
+<span class="codeline" id="line-277"><code>	if w.scanWork != 0 {</code></span>
+<span class="codeline" id="line-278"><code>		atomic.Xaddint64(&amp;gcController.scanWork, w.scanWork)</code></span>
+<span class="codeline" id="line-279"><code>		w.scanWork = 0</code></span>
+<span class="codeline" id="line-280"><code>	}</code></span>
+<span class="codeline" id="line-281"><code>}</code></span>
+<span class="codeline" id="line-282"><code></code></span>
+<span class="codeline" id="line-283"><code>// balance moves some work that's cached in this gcWork back on the</code></span>
+<span class="codeline" id="line-284"><code>// global queue.</code></span>
+<span class="codeline" id="line-285"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-286"><code>func (w *gcWork) balance() {</code></span>
+<span class="codeline" id="line-287"><code>	if w.wbuf1 == nil {</code></span>
+<span class="codeline" id="line-288"><code>		return</code></span>
+<span class="codeline" id="line-289"><code>	}</code></span>
+<span class="codeline" id="line-290"><code>	if wbuf := w.wbuf2; wbuf.nobj != 0 {</code></span>
+<span class="codeline" id="line-291"><code>		putfull(wbuf)</code></span>
+<span class="codeline" id="line-292"><code>		w.flushedWork = true</code></span>
+<span class="codeline" id="line-293"><code>		w.wbuf2 = getempty()</code></span>
+<span class="codeline" id="line-294"><code>	} else if wbuf := w.wbuf1; wbuf.nobj &gt; 4 {</code></span>
+<span class="codeline" id="line-295"><code>		w.wbuf1 = handoff(wbuf)</code></span>
+<span class="codeline" id="line-296"><code>		w.flushedWork = true // handoff did putfull</code></span>
+<span class="codeline" id="line-297"><code>	} else {</code></span>
+<span class="codeline" id="line-298"><code>		return</code></span>
+<span class="codeline" id="line-299"><code>	}</code></span>
+<span class="codeline" id="line-300"><code>	// We flushed a buffer to the full list, so wake a worker.</code></span>
+<span class="codeline" id="line-301"><code>	if gcphase == _GCmark {</code></span>
+<span class="codeline" id="line-302"><code>		gcController.enlistWorker()</code></span>
+<span class="codeline" id="line-303"><code>	}</code></span>
+<span class="codeline" id="line-304"><code>}</code></span>
+<span class="codeline" id="line-305"><code></code></span>
+<span class="codeline" id="line-306"><code>// empty reports whether w has no mark work available.</code></span>
+<span class="codeline" id="line-307"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-308"><code>func (w *gcWork) empty() bool {</code></span>
+<span class="codeline" id="line-309"><code>	return w.wbuf1 == nil || (w.wbuf1.nobj == 0 &amp;&amp; w.wbuf2.nobj == 0)</code></span>
+<span class="codeline" id="line-310"><code>}</code></span>
+<span class="codeline" id="line-311"><code></code></span>
+<span class="codeline" id="line-312"><code>// Internally, the GC work pool is kept in arrays in work buffers.</code></span>
+<span class="codeline" id="line-313"><code>// The gcWork interface caches a work buffer until full (or empty) to</code></span>
+<span class="codeline" id="line-314"><code>// avoid contending on the global work buffer lists.</code></span>
+<span class="codeline" id="line-315"><code></code></span>
+<span class="codeline" id="line-316"><code>type workbufhdr struct {</code></span>
+<span class="codeline" id="line-317"><code>	node lfnode // must be first</code></span>
+<span class="codeline" id="line-318"><code>	nobj int</code></span>
+<span class="codeline" id="line-319"><code>}</code></span>
+<span class="codeline" id="line-320"><code></code></span>
+<span class="codeline" id="line-321"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-322"><code>type workbuf struct {</code></span>
+<span class="codeline" id="line-323"><code>	workbufhdr</code></span>
+<span class="codeline" id="line-324"><code>	// account for the above fields</code></span>
+<span class="codeline" id="line-325"><code>	obj [(_WorkbufSize - unsafe.Sizeof(workbufhdr{})) / sys.PtrSize]uintptr</code></span>
+<span class="codeline" id="line-326"><code>}</code></span>
+<span class="codeline" id="line-327"><code></code></span>
+<span class="codeline" id="line-328"><code>// workbuf factory routines. These funcs are used to manage the</code></span>
+<span class="codeline" id="line-329"><code>// workbufs.</code></span>
+<span class="codeline" id="line-330"><code>// If the GC asks for some work these are the only routines that</code></span>
+<span class="codeline" id="line-331"><code>// make wbufs available to the GC.</code></span>
+<span class="codeline" id="line-332"><code></code></span>
+<span class="codeline" id="line-333"><code>func (b *workbuf) checknonempty() {</code></span>
+<span class="codeline" id="line-334"><code>	if b.nobj == 0 {</code></span>
+<span class="codeline" id="line-335"><code>		throw("workbuf is empty")</code></span>
+<span class="codeline" id="line-336"><code>	}</code></span>
+<span class="codeline" id="line-337"><code>}</code></span>
+<span class="codeline" id="line-338"><code></code></span>
+<span class="codeline" id="line-339"><code>func (b *workbuf) checkempty() {</code></span>
+<span class="codeline" id="line-340"><code>	if b.nobj != 0 {</code></span>
+<span class="codeline" id="line-341"><code>		throw("workbuf is not empty")</code></span>
+<span class="codeline" id="line-342"><code>	}</code></span>
+<span class="codeline" id="line-343"><code>}</code></span>
+<span class="codeline" id="line-344"><code></code></span>
+<span class="codeline" id="line-345"><code>// getempty pops an empty work buffer off the work.empty list,</code></span>
+<span class="codeline" id="line-346"><code>// allocating new buffers if none are available.</code></span>
+<span class="codeline" id="line-347"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-348"><code>func getempty() *workbuf {</code></span>
+<span class="codeline" id="line-349"><code>	var b *workbuf</code></span>
+<span class="codeline" id="line-350"><code>	if work.empty != 0 {</code></span>
+<span class="codeline" id="line-351"><code>		b = (*workbuf)(work.empty.pop())</code></span>
+<span class="codeline" id="line-352"><code>		if b != nil {</code></span>
+<span class="codeline" id="line-353"><code>			b.checkempty()</code></span>
+<span class="codeline" id="line-354"><code>		}</code></span>
+<span class="codeline" id="line-355"><code>	}</code></span>
+<span class="codeline" id="line-356"><code>	// Record that this may acquire the wbufSpans or heap lock to</code></span>
+<span class="codeline" id="line-357"><code>	// allocate a workbuf.</code></span>
+<span class="codeline" id="line-358"><code>	lockWithRankMayAcquire(&amp;work.wbufSpans.lock, lockRankWbufSpans)</code></span>
+<span class="codeline" id="line-359"><code>	lockWithRankMayAcquire(&amp;mheap_.lock, lockRankMheap)</code></span>
+<span class="codeline" id="line-360"><code>	if b == nil {</code></span>
+<span class="codeline" id="line-361"><code>		// Allocate more workbufs.</code></span>
+<span class="codeline" id="line-362"><code>		var s *mspan</code></span>
+<span class="codeline" id="line-363"><code>		if work.wbufSpans.free.first != nil {</code></span>
+<span class="codeline" id="line-364"><code>			lock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-365"><code>			s = work.wbufSpans.free.first</code></span>
+<span class="codeline" id="line-366"><code>			if s != nil {</code></span>
+<span class="codeline" id="line-367"><code>				work.wbufSpans.free.remove(s)</code></span>
+<span class="codeline" id="line-368"><code>				work.wbufSpans.busy.insert(s)</code></span>
+<span class="codeline" id="line-369"><code>			}</code></span>
+<span class="codeline" id="line-370"><code>			unlock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-371"><code>		}</code></span>
+<span class="codeline" id="line-372"><code>		if s == nil {</code></span>
+<span class="codeline" id="line-373"><code>			systemstack(func() {</code></span>
+<span class="codeline" id="line-374"><code>				s = mheap_.allocManual(workbufAlloc/pageSize, spanAllocWorkBuf)</code></span>
+<span class="codeline" id="line-375"><code>			})</code></span>
+<span class="codeline" id="line-376"><code>			if s == nil {</code></span>
+<span class="codeline" id="line-377"><code>				throw("out of memory")</code></span>
+<span class="codeline" id="line-378"><code>			}</code></span>
+<span class="codeline" id="line-379"><code>			// Record the new span in the busy list.</code></span>
+<span class="codeline" id="line-380"><code>			lock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-381"><code>			work.wbufSpans.busy.insert(s)</code></span>
+<span class="codeline" id="line-382"><code>			unlock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-383"><code>		}</code></span>
+<span class="codeline" id="line-384"><code>		// Slice up the span into new workbufs. Return one and</code></span>
+<span class="codeline" id="line-385"><code>		// put the rest on the empty list.</code></span>
+<span class="codeline" id="line-386"><code>		for i := uintptr(0); i+_WorkbufSize &lt;= workbufAlloc; i += _WorkbufSize {</code></span>
+<span class="codeline" id="line-387"><code>			newb := (*workbuf)(unsafe.Pointer(s.base() + i))</code></span>
+<span class="codeline" id="line-388"><code>			newb.nobj = 0</code></span>
+<span class="codeline" id="line-389"><code>			lfnodeValidate(&amp;newb.node)</code></span>
+<span class="codeline" id="line-390"><code>			if i == 0 {</code></span>
+<span class="codeline" id="line-391"><code>				b = newb</code></span>
+<span class="codeline" id="line-392"><code>			} else {</code></span>
+<span class="codeline" id="line-393"><code>				putempty(newb)</code></span>
+<span class="codeline" id="line-394"><code>			}</code></span>
+<span class="codeline" id="line-395"><code>		}</code></span>
+<span class="codeline" id="line-396"><code>	}</code></span>
+<span class="codeline" id="line-397"><code>	return b</code></span>
+<span class="codeline" id="line-398"><code>}</code></span>
+<span class="codeline" id="line-399"><code></code></span>
+<span class="codeline" id="line-400"><code>// putempty puts a workbuf onto the work.empty list.</code></span>
+<span class="codeline" id="line-401"><code>// Upon entry this go routine owns b. The lfstack.push relinquishes ownership.</code></span>
+<span class="codeline" id="line-402"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-403"><code>func putempty(b *workbuf) {</code></span>
+<span class="codeline" id="line-404"><code>	b.checkempty()</code></span>
+<span class="codeline" id="line-405"><code>	work.empty.push(&amp;b.node)</code></span>
+<span class="codeline" id="line-406"><code>}</code></span>
+<span class="codeline" id="line-407"><code></code></span>
+<span class="codeline" id="line-408"><code>// putfull puts the workbuf on the work.full list for the GC.</code></span>
+<span class="codeline" id="line-409"><code>// putfull accepts partially full buffers so the GC can avoid competing</code></span>
+<span class="codeline" id="line-410"><code>// with the mutators for ownership of partially full buffers.</code></span>
+<span class="codeline" id="line-411"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-412"><code>func putfull(b *workbuf) {</code></span>
+<span class="codeline" id="line-413"><code>	b.checknonempty()</code></span>
+<span class="codeline" id="line-414"><code>	work.full.push(&amp;b.node)</code></span>
+<span class="codeline" id="line-415"><code>}</code></span>
+<span class="codeline" id="line-416"><code></code></span>
+<span class="codeline" id="line-417"><code>// trygetfull tries to get a full or partially empty workbuffer.</code></span>
+<span class="codeline" id="line-418"><code>// If one is not immediately available return nil</code></span>
+<span class="codeline" id="line-419"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-420"><code>func trygetfull() *workbuf {</code></span>
+<span class="codeline" id="line-421"><code>	b := (*workbuf)(work.full.pop())</code></span>
+<span class="codeline" id="line-422"><code>	if b != nil {</code></span>
+<span class="codeline" id="line-423"><code>		b.checknonempty()</code></span>
+<span class="codeline" id="line-424"><code>		return b</code></span>
+<span class="codeline" id="line-425"><code>	}</code></span>
+<span class="codeline" id="line-426"><code>	return b</code></span>
+<span class="codeline" id="line-427"><code>}</code></span>
+<span class="codeline" id="line-428"><code></code></span>
+<span class="codeline" id="line-429"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-430"><code>func handoff(b *workbuf) *workbuf {</code></span>
+<span class="codeline" id="line-431"><code>	// Make new buffer with half of b's pointers.</code></span>
+<span class="codeline" id="line-432"><code>	b1 := getempty()</code></span>
+<span class="codeline" id="line-433"><code>	n := b.nobj / 2</code></span>
+<span class="codeline" id="line-434"><code>	b.nobj -= n</code></span>
+<span class="codeline" id="line-435"><code>	b1.nobj = n</code></span>
+<span class="codeline" id="line-436"><code>	memmove(unsafe.Pointer(&amp;b1.obj[0]), unsafe.Pointer(&amp;b.obj[b.nobj]), uintptr(n)*unsafe.Sizeof(b1.obj[0]))</code></span>
+<span class="codeline" id="line-437"><code></code></span>
+<span class="codeline" id="line-438"><code>	// Put b on full list - let first half of b get stolen.</code></span>
+<span class="codeline" id="line-439"><code>	putfull(b)</code></span>
+<span class="codeline" id="line-440"><code>	return b1</code></span>
+<span class="codeline" id="line-441"><code>}</code></span>
+<span class="codeline" id="line-442"><code></code></span>
+<span class="codeline" id="line-443"><code>// prepareFreeWorkbufs moves busy workbuf spans to free list so they</code></span>
+<span class="codeline" id="line-444"><code>// can be freed to the heap. This must only be called when all</code></span>
+<span class="codeline" id="line-445"><code>// workbufs are on the empty list.</code></span>
+<span class="codeline" id="line-446"><code>func prepareFreeWorkbufs() {</code></span>
+<span class="codeline" id="line-447"><code>	lock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-448"><code>	if work.full != 0 {</code></span>
+<span class="codeline" id="line-449"><code>		throw("cannot free workbufs when work.full != 0")</code></span>
+<span class="codeline" id="line-450"><code>	}</code></span>
+<span class="codeline" id="line-451"><code>	// Since all workbufs are on the empty list, we don't care</code></span>
+<span class="codeline" id="line-452"><code>	// which ones are in which spans. We can wipe the entire empty</code></span>
+<span class="codeline" id="line-453"><code>	// list and move all workbuf spans to the free list.</code></span>
+<span class="codeline" id="line-454"><code>	work.empty = 0</code></span>
+<span class="codeline" id="line-455"><code>	work.wbufSpans.free.takeAll(&amp;work.wbufSpans.busy)</code></span>
+<span class="codeline" id="line-456"><code>	unlock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-457"><code>}</code></span>
+<span class="codeline" id="line-458"><code></code></span>
+<span class="codeline" id="line-459"><code>// freeSomeWbufs frees some workbufs back to the heap and returns</code></span>
+<span class="codeline" id="line-460"><code>// true if it should be called again to free more.</code></span>
+<span class="codeline" id="line-461"><code>func freeSomeWbufs(preemptible bool) bool {</code></span>
+<span class="codeline" id="line-462"><code>	const batchSize = 64 // ~1–2 µs per span.</code></span>
+<span class="codeline" id="line-463"><code>	lock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-464"><code>	if gcphase != _GCoff || work.wbufSpans.free.isEmpty() {</code></span>
+<span class="codeline" id="line-465"><code>		unlock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-466"><code>		return false</code></span>
+<span class="codeline" id="line-467"><code>	}</code></span>
+<span class="codeline" id="line-468"><code>	systemstack(func() {</code></span>
+<span class="codeline" id="line-469"><code>		gp := getg().m.curg</code></span>
+<span class="codeline" id="line-470"><code>		for i := 0; i &lt; batchSize &amp;&amp; !(preemptible &amp;&amp; gp.preempt); i++ {</code></span>
+<span class="codeline" id="line-471"><code>			span := work.wbufSpans.free.first</code></span>
+<span class="codeline" id="line-472"><code>			if span == nil {</code></span>
+<span class="codeline" id="line-473"><code>				break</code></span>
+<span class="codeline" id="line-474"><code>			}</code></span>
+<span class="codeline" id="line-475"><code>			work.wbufSpans.free.remove(span)</code></span>
+<span class="codeline" id="line-476"><code>			mheap_.freeManual(span, spanAllocWorkBuf)</code></span>
+<span class="codeline" id="line-477"><code>		}</code></span>
+<span class="codeline" id="line-478"><code>	})</code></span>
+<span class="codeline" id="line-479"><code>	more := !work.wbufSpans.free.isEmpty()</code></span>
+<span class="codeline" id="line-480"><code>	unlock(&amp;work.wbufSpans.lock)</code></span>
+<span class="codeline" id="line-481"><code>	return more</code></span>
+<span class="codeline" id="line-482"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

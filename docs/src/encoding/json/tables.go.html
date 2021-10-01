@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: tables.go in package encoding/json</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	tables.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/encoding/json.html">encoding/json</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2016 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package json</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "unicode/utf8"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// safeSet holds the value true if the ASCII character with the given array</code></span>
+<span class="codeline" id="line-10"><code>// position can be represented inside a JSON string without any further</code></span>
+<span class="codeline" id="line-11"><code>// escaping.</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>// All values are true except for the ASCII control characters (0-31), the</code></span>
+<span class="codeline" id="line-14"><code>// double quote ("), and the backslash character ("\").</code></span>
+<span class="codeline" id="line-15"><code>var safeSet = [utf8.RuneSelf]bool{</code></span>
+<span class="codeline" id="line-16"><code>	' ':      true,</code></span>
+<span class="codeline" id="line-17"><code>	'!':      true,</code></span>
+<span class="codeline" id="line-18"><code>	'"':      false,</code></span>
+<span class="codeline" id="line-19"><code>	'#':      true,</code></span>
+<span class="codeline" id="line-20"><code>	'$':      true,</code></span>
+<span class="codeline" id="line-21"><code>	'%':      true,</code></span>
+<span class="codeline" id="line-22"><code>	'&amp;':      true,</code></span>
+<span class="codeline" id="line-23"><code>	'\'':     true,</code></span>
+<span class="codeline" id="line-24"><code>	'(':      true,</code></span>
+<span class="codeline" id="line-25"><code>	')':      true,</code></span>
+<span class="codeline" id="line-26"><code>	'*':      true,</code></span>
+<span class="codeline" id="line-27"><code>	'+':      true,</code></span>
+<span class="codeline" id="line-28"><code>	',':      true,</code></span>
+<span class="codeline" id="line-29"><code>	'-':      true,</code></span>
+<span class="codeline" id="line-30"><code>	'.':      true,</code></span>
+<span class="codeline" id="line-31"><code>	'/':      true,</code></span>
+<span class="codeline" id="line-32"><code>	'0':      true,</code></span>
+<span class="codeline" id="line-33"><code>	'1':      true,</code></span>
+<span class="codeline" id="line-34"><code>	'2':      true,</code></span>
+<span class="codeline" id="line-35"><code>	'3':      true,</code></span>
+<span class="codeline" id="line-36"><code>	'4':      true,</code></span>
+<span class="codeline" id="line-37"><code>	'5':      true,</code></span>
+<span class="codeline" id="line-38"><code>	'6':      true,</code></span>
+<span class="codeline" id="line-39"><code>	'7':      true,</code></span>
+<span class="codeline" id="line-40"><code>	'8':      true,</code></span>
+<span class="codeline" id="line-41"><code>	'9':      true,</code></span>
+<span class="codeline" id="line-42"><code>	':':      true,</code></span>
+<span class="codeline" id="line-43"><code>	';':      true,</code></span>
+<span class="codeline" id="line-44"><code>	'&lt;':      true,</code></span>
+<span class="codeline" id="line-45"><code>	'=':      true,</code></span>
+<span class="codeline" id="line-46"><code>	'&gt;':      true,</code></span>
+<span class="codeline" id="line-47"><code>	'?':      true,</code></span>
+<span class="codeline" id="line-48"><code>	'@':      true,</code></span>
+<span class="codeline" id="line-49"><code>	'A':      true,</code></span>
+<span class="codeline" id="line-50"><code>	'B':      true,</code></span>
+<span class="codeline" id="line-51"><code>	'C':      true,</code></span>
+<span class="codeline" id="line-52"><code>	'D':      true,</code></span>
+<span class="codeline" id="line-53"><code>	'E':      true,</code></span>
+<span class="codeline" id="line-54"><code>	'F':      true,</code></span>
+<span class="codeline" id="line-55"><code>	'G':      true,</code></span>
+<span class="codeline" id="line-56"><code>	'H':      true,</code></span>
+<span class="codeline" id="line-57"><code>	'I':      true,</code></span>
+<span class="codeline" id="line-58"><code>	'J':      true,</code></span>
+<span class="codeline" id="line-59"><code>	'K':      true,</code></span>
+<span class="codeline" id="line-60"><code>	'L':      true,</code></span>
+<span class="codeline" id="line-61"><code>	'M':      true,</code></span>
+<span class="codeline" id="line-62"><code>	'N':      true,</code></span>
+<span class="codeline" id="line-63"><code>	'O':      true,</code></span>
+<span class="codeline" id="line-64"><code>	'P':      true,</code></span>
+<span class="codeline" id="line-65"><code>	'Q':      true,</code></span>
+<span class="codeline" id="line-66"><code>	'R':      true,</code></span>
+<span class="codeline" id="line-67"><code>	'S':      true,</code></span>
+<span class="codeline" id="line-68"><code>	'T':      true,</code></span>
+<span class="codeline" id="line-69"><code>	'U':      true,</code></span>
+<span class="codeline" id="line-70"><code>	'V':      true,</code></span>
+<span class="codeline" id="line-71"><code>	'W':      true,</code></span>
+<span class="codeline" id="line-72"><code>	'X':      true,</code></span>
+<span class="codeline" id="line-73"><code>	'Y':      true,</code></span>
+<span class="codeline" id="line-74"><code>	'Z':      true,</code></span>
+<span class="codeline" id="line-75"><code>	'[':      true,</code></span>
+<span class="codeline" id="line-76"><code>	'\\':     false,</code></span>
+<span class="codeline" id="line-77"><code>	']':      true,</code></span>
+<span class="codeline" id="line-78"><code>	'^':      true,</code></span>
+<span class="codeline" id="line-79"><code>	'_':      true,</code></span>
+<span class="codeline" id="line-80"><code>	'`':      true,</code></span>
+<span class="codeline" id="line-81"><code>	'a':      true,</code></span>
+<span class="codeline" id="line-82"><code>	'b':      true,</code></span>
+<span class="codeline" id="line-83"><code>	'c':      true,</code></span>
+<span class="codeline" id="line-84"><code>	'd':      true,</code></span>
+<span class="codeline" id="line-85"><code>	'e':      true,</code></span>
+<span class="codeline" id="line-86"><code>	'f':      true,</code></span>
+<span class="codeline" id="line-87"><code>	'g':      true,</code></span>
+<span class="codeline" id="line-88"><code>	'h':      true,</code></span>
+<span class="codeline" id="line-89"><code>	'i':      true,</code></span>
+<span class="codeline" id="line-90"><code>	'j':      true,</code></span>
+<span class="codeline" id="line-91"><code>	'k':      true,</code></span>
+<span class="codeline" id="line-92"><code>	'l':      true,</code></span>
+<span class="codeline" id="line-93"><code>	'm':      true,</code></span>
+<span class="codeline" id="line-94"><code>	'n':      true,</code></span>
+<span class="codeline" id="line-95"><code>	'o':      true,</code></span>
+<span class="codeline" id="line-96"><code>	'p':      true,</code></span>
+<span class="codeline" id="line-97"><code>	'q':      true,</code></span>
+<span class="codeline" id="line-98"><code>	'r':      true,</code></span>
+<span class="codeline" id="line-99"><code>	's':      true,</code></span>
+<span class="codeline" id="line-100"><code>	't':      true,</code></span>
+<span class="codeline" id="line-101"><code>	'u':      true,</code></span>
+<span class="codeline" id="line-102"><code>	'v':      true,</code></span>
+<span class="codeline" id="line-103"><code>	'w':      true,</code></span>
+<span class="codeline" id="line-104"><code>	'x':      true,</code></span>
+<span class="codeline" id="line-105"><code>	'y':      true,</code></span>
+<span class="codeline" id="line-106"><code>	'z':      true,</code></span>
+<span class="codeline" id="line-107"><code>	'{':      true,</code></span>
+<span class="codeline" id="line-108"><code>	'|':      true,</code></span>
+<span class="codeline" id="line-109"><code>	'}':      true,</code></span>
+<span class="codeline" id="line-110"><code>	'~':      true,</code></span>
+<span class="codeline" id="line-111"><code>	'\u007f': true,</code></span>
+<span class="codeline" id="line-112"><code>}</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>// htmlSafeSet holds the value true if the ASCII character with the given</code></span>
+<span class="codeline" id="line-115"><code>// array position can be safely represented inside a JSON string, embedded</code></span>
+<span class="codeline" id="line-116"><code>// inside of HTML &lt;script&gt; tags, without any additional escaping.</code></span>
+<span class="codeline" id="line-117"><code>//</code></span>
+<span class="codeline" id="line-118"><code>// All values are true except for the ASCII control characters (0-31), the</code></span>
+<span class="codeline" id="line-119"><code>// double quote ("), the backslash character ("\"), HTML opening and closing</code></span>
+<span class="codeline" id="line-120"><code>// tags ("&lt;" and "&gt;"), and the ampersand ("&amp;").</code></span>
+<span class="codeline" id="line-121"><code>var htmlSafeSet = [utf8.RuneSelf]bool{</code></span>
+<span class="codeline" id="line-122"><code>	' ':      true,</code></span>
+<span class="codeline" id="line-123"><code>	'!':      true,</code></span>
+<span class="codeline" id="line-124"><code>	'"':      false,</code></span>
+<span class="codeline" id="line-125"><code>	'#':      true,</code></span>
+<span class="codeline" id="line-126"><code>	'$':      true,</code></span>
+<span class="codeline" id="line-127"><code>	'%':      true,</code></span>
+<span class="codeline" id="line-128"><code>	'&amp;':      false,</code></span>
+<span class="codeline" id="line-129"><code>	'\'':     true,</code></span>
+<span class="codeline" id="line-130"><code>	'(':      true,</code></span>
+<span class="codeline" id="line-131"><code>	')':      true,</code></span>
+<span class="codeline" id="line-132"><code>	'*':      true,</code></span>
+<span class="codeline" id="line-133"><code>	'+':      true,</code></span>
+<span class="codeline" id="line-134"><code>	',':      true,</code></span>
+<span class="codeline" id="line-135"><code>	'-':      true,</code></span>
+<span class="codeline" id="line-136"><code>	'.':      true,</code></span>
+<span class="codeline" id="line-137"><code>	'/':      true,</code></span>
+<span class="codeline" id="line-138"><code>	'0':      true,</code></span>
+<span class="codeline" id="line-139"><code>	'1':      true,</code></span>
+<span class="codeline" id="line-140"><code>	'2':      true,</code></span>
+<span class="codeline" id="line-141"><code>	'3':      true,</code></span>
+<span class="codeline" id="line-142"><code>	'4':      true,</code></span>
+<span class="codeline" id="line-143"><code>	'5':      true,</code></span>
+<span class="codeline" id="line-144"><code>	'6':      true,</code></span>
+<span class="codeline" id="line-145"><code>	'7':      true,</code></span>
+<span class="codeline" id="line-146"><code>	'8':      true,</code></span>
+<span class="codeline" id="line-147"><code>	'9':      true,</code></span>
+<span class="codeline" id="line-148"><code>	':':      true,</code></span>
+<span class="codeline" id="line-149"><code>	';':      true,</code></span>
+<span class="codeline" id="line-150"><code>	'&lt;':      false,</code></span>
+<span class="codeline" id="line-151"><code>	'=':      true,</code></span>
+<span class="codeline" id="line-152"><code>	'&gt;':      false,</code></span>
+<span class="codeline" id="line-153"><code>	'?':      true,</code></span>
+<span class="codeline" id="line-154"><code>	'@':      true,</code></span>
+<span class="codeline" id="line-155"><code>	'A':      true,</code></span>
+<span class="codeline" id="line-156"><code>	'B':      true,</code></span>
+<span class="codeline" id="line-157"><code>	'C':      true,</code></span>
+<span class="codeline" id="line-158"><code>	'D':      true,</code></span>
+<span class="codeline" id="line-159"><code>	'E':      true,</code></span>
+<span class="codeline" id="line-160"><code>	'F':      true,</code></span>
+<span class="codeline" id="line-161"><code>	'G':      true,</code></span>
+<span class="codeline" id="line-162"><code>	'H':      true,</code></span>
+<span class="codeline" id="line-163"><code>	'I':      true,</code></span>
+<span class="codeline" id="line-164"><code>	'J':      true,</code></span>
+<span class="codeline" id="line-165"><code>	'K':      true,</code></span>
+<span class="codeline" id="line-166"><code>	'L':      true,</code></span>
+<span class="codeline" id="line-167"><code>	'M':      true,</code></span>
+<span class="codeline" id="line-168"><code>	'N':      true,</code></span>
+<span class="codeline" id="line-169"><code>	'O':      true,</code></span>
+<span class="codeline" id="line-170"><code>	'P':      true,</code></span>
+<span class="codeline" id="line-171"><code>	'Q':      true,</code></span>
+<span class="codeline" id="line-172"><code>	'R':      true,</code></span>
+<span class="codeline" id="line-173"><code>	'S':      true,</code></span>
+<span class="codeline" id="line-174"><code>	'T':      true,</code></span>
+<span class="codeline" id="line-175"><code>	'U':      true,</code></span>
+<span class="codeline" id="line-176"><code>	'V':      true,</code></span>
+<span class="codeline" id="line-177"><code>	'W':      true,</code></span>
+<span class="codeline" id="line-178"><code>	'X':      true,</code></span>
+<span class="codeline" id="line-179"><code>	'Y':      true,</code></span>
+<span class="codeline" id="line-180"><code>	'Z':      true,</code></span>
+<span class="codeline" id="line-181"><code>	'[':      true,</code></span>
+<span class="codeline" id="line-182"><code>	'\\':     false,</code></span>
+<span class="codeline" id="line-183"><code>	']':      true,</code></span>
+<span class="codeline" id="line-184"><code>	'^':      true,</code></span>
+<span class="codeline" id="line-185"><code>	'_':      true,</code></span>
+<span class="codeline" id="line-186"><code>	'`':      true,</code></span>
+<span class="codeline" id="line-187"><code>	'a':      true,</code></span>
+<span class="codeline" id="line-188"><code>	'b':      true,</code></span>
+<span class="codeline" id="line-189"><code>	'c':      true,</code></span>
+<span class="codeline" id="line-190"><code>	'd':      true,</code></span>
+<span class="codeline" id="line-191"><code>	'e':      true,</code></span>
+<span class="codeline" id="line-192"><code>	'f':      true,</code></span>
+<span class="codeline" id="line-193"><code>	'g':      true,</code></span>
+<span class="codeline" id="line-194"><code>	'h':      true,</code></span>
+<span class="codeline" id="line-195"><code>	'i':      true,</code></span>
+<span class="codeline" id="line-196"><code>	'j':      true,</code></span>
+<span class="codeline" id="line-197"><code>	'k':      true,</code></span>
+<span class="codeline" id="line-198"><code>	'l':      true,</code></span>
+<span class="codeline" id="line-199"><code>	'm':      true,</code></span>
+<span class="codeline" id="line-200"><code>	'n':      true,</code></span>
+<span class="codeline" id="line-201"><code>	'o':      true,</code></span>
+<span class="codeline" id="line-202"><code>	'p':      true,</code></span>
+<span class="codeline" id="line-203"><code>	'q':      true,</code></span>
+<span class="codeline" id="line-204"><code>	'r':      true,</code></span>
+<span class="codeline" id="line-205"><code>	's':      true,</code></span>
+<span class="codeline" id="line-206"><code>	't':      true,</code></span>
+<span class="codeline" id="line-207"><code>	'u':      true,</code></span>
+<span class="codeline" id="line-208"><code>	'v':      true,</code></span>
+<span class="codeline" id="line-209"><code>	'w':      true,</code></span>
+<span class="codeline" id="line-210"><code>	'x':      true,</code></span>
+<span class="codeline" id="line-211"><code>	'y':      true,</code></span>
+<span class="codeline" id="line-212"><code>	'z':      true,</code></span>
+<span class="codeline" id="line-213"><code>	'{':      true,</code></span>
+<span class="codeline" id="line-214"><code>	'|':      true,</code></span>
+<span class="codeline" id="line-215"><code>	'}':      true,</code></span>
+<span class="codeline" id="line-216"><code>	'~':      true,</code></span>
+<span class="codeline" id="line-217"><code>	'\u007f': true,</code></span>
+<span class="codeline" id="line-218"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

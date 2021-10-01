@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: const.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	const.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package math provides basic constants and mathematical functions.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// This package does not guarantee bit-identical results across architectures.</code></span></div><span class="codeline" id="line-8"><code>package math</code></span>
+<span class="codeline" id="line-9"><code></code></span>
+<span class="codeline" id="line-10"><code>// Mathematical constants.</code></span>
+<span class="codeline" id="line-11"><code>const (</code></span>
+<span class="codeline" id="line-12"><code>	E   = 2.71828182845904523536028747135266249775724709369995957496696763 // https://oeis.org/A001113</code></span>
+<span class="codeline" id="line-13"><code>	Pi  = 3.14159265358979323846264338327950288419716939937510582097494459 // https://oeis.org/A000796</code></span>
+<span class="codeline" id="line-14"><code>	Phi = 1.61803398874989484820458683436563811772030917980576286213544862 // https://oeis.org/A001622</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>	Sqrt2   = 1.41421356237309504880168872420969807856967187537694807317667974 // https://oeis.org/A002193</code></span>
+<span class="codeline" id="line-17"><code>	SqrtE   = 1.64872127070012814684865078781416357165377610071014801157507931 // https://oeis.org/A019774</code></span>
+<span class="codeline" id="line-18"><code>	SqrtPi  = 1.77245385090551602729816748334114518279754945612238712821380779 // https://oeis.org/A002161</code></span>
+<span class="codeline" id="line-19"><code>	SqrtPhi = 1.27201964951406896425242246173749149171560804184009624861664038 // https://oeis.org/A139339</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>	Ln2    = 0.693147180559945309417232121458176568075500134360255254120680009 // https://oeis.org/A002162</code></span>
+<span class="codeline" id="line-22"><code>	Log2E  = 1 / Ln2</code></span>
+<span class="codeline" id="line-23"><code>	Ln10   = 2.30258509299404568401799145468436420760110148862877297603332790 // https://oeis.org/A002392</code></span>
+<span class="codeline" id="line-24"><code>	Log10E = 1 / Ln10</code></span>
+<span class="codeline" id="line-25"><code>)</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>// Floating-point limit values.</code></span>
+<span class="codeline" id="line-28"><code>// Max is the largest finite value representable by the type.</code></span>
+<span class="codeline" id="line-29"><code>// SmallestNonzero is the smallest positive, non-zero value representable by the type.</code></span>
+<span class="codeline" id="line-30"><code>const (</code></span>
+<span class="codeline" id="line-31"><code>	MaxFloat32             = 3.40282346638528859811704183484516925440e+38  // 2**127 * (2**24 - 1) / 2**23</code></span>
+<span class="codeline" id="line-32"><code>	SmallestNonzeroFloat32 = 1.401298464324817070923729583289916131280e-45 // 1 / 2**(127 - 1 + 23)</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>	MaxFloat64             = 1.797693134862315708145274237317043567981e+308 // 2**1023 * (2**53 - 1) / 2**52</code></span>
+<span class="codeline" id="line-35"><code>	SmallestNonzeroFloat64 = 4.940656458412465441765687928682213723651e-324 // 1 / 2**(1023 - 1 + 52)</code></span>
+<span class="codeline" id="line-36"><code>)</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>// Integer limit values.</code></span>
+<span class="codeline" id="line-39"><code>const (</code></span>
+<span class="codeline" id="line-40"><code>	MaxInt8   = 1&lt;&lt;7 - 1</code></span>
+<span class="codeline" id="line-41"><code>	MinInt8   = -1 &lt;&lt; 7</code></span>
+<span class="codeline" id="line-42"><code>	MaxInt16  = 1&lt;&lt;15 - 1</code></span>
+<span class="codeline" id="line-43"><code>	MinInt16  = -1 &lt;&lt; 15</code></span>
+<span class="codeline" id="line-44"><code>	MaxInt32  = 1&lt;&lt;31 - 1</code></span>
+<span class="codeline" id="line-45"><code>	MinInt32  = -1 &lt;&lt; 31</code></span>
+<span class="codeline" id="line-46"><code>	MaxInt64  = 1&lt;&lt;63 - 1</code></span>
+<span class="codeline" id="line-47"><code>	MinInt64  = -1 &lt;&lt; 63</code></span>
+<span class="codeline" id="line-48"><code>	MaxUint8  = 1&lt;&lt;8 - 1</code></span>
+<span class="codeline" id="line-49"><code>	MaxUint16 = 1&lt;&lt;16 - 1</code></span>
+<span class="codeline" id="line-50"><code>	MaxUint32 = 1&lt;&lt;32 - 1</code></span>
+<span class="codeline" id="line-51"><code>	MaxUint64 = 1&lt;&lt;64 - 1</code></span>
+<span class="codeline" id="line-52"><code>)</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

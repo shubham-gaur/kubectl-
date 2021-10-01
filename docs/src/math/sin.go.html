@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sin.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sin.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>/*</code></span>
+<span class="codeline" id="line-8"><code>	Floating-point sine and cosine.</code></span>
+<span class="codeline" id="line-9"><code>*/</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// The original C code, the long comment, and the constants</code></span>
+<span class="codeline" id="line-12"><code>// below were from http://netlib.sandia.gov/cephes/cmath/sin.c,</code></span>
+<span class="codeline" id="line-13"><code>// available from http://www.netlib.org/cephes/cmath.tgz.</code></span>
+<span class="codeline" id="line-14"><code>// The go code is a simplified version of the original C.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>//      sin.c</code></span>
+<span class="codeline" id="line-17"><code>//</code></span>
+<span class="codeline" id="line-18"><code>//      Circular sine</code></span>
+<span class="codeline" id="line-19"><code>//</code></span>
+<span class="codeline" id="line-20"><code>// SYNOPSIS:</code></span>
+<span class="codeline" id="line-21"><code>//</code></span>
+<span class="codeline" id="line-22"><code>// double x, y, sin();</code></span>
+<span class="codeline" id="line-23"><code>// y = sin( x );</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>// DESCRIPTION:</code></span>
+<span class="codeline" id="line-26"><code>//</code></span>
+<span class="codeline" id="line-27"><code>// Range reduction is into intervals of pi/4.  The reduction error is nearly</code></span>
+<span class="codeline" id="line-28"><code>// eliminated by contriving an extended precision modular arithmetic.</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>// Two polynomial approximating functions are employed.</code></span>
+<span class="codeline" id="line-31"><code>// Between 0 and pi/4 the sine is approximated by</code></span>
+<span class="codeline" id="line-32"><code>//      x  +  x**3 P(x**2).</code></span>
+<span class="codeline" id="line-33"><code>// Between pi/4 and pi/2 the cosine is represented as</code></span>
+<span class="codeline" id="line-34"><code>//      1  -  x**2 Q(x**2).</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>// ACCURACY:</code></span>
+<span class="codeline" id="line-37"><code>//</code></span>
+<span class="codeline" id="line-38"><code>//                      Relative error:</code></span>
+<span class="codeline" id="line-39"><code>// arithmetic   domain      # trials      peak         rms</code></span>
+<span class="codeline" id="line-40"><code>//    DEC       0, 10       150000       3.0e-17     7.8e-18</code></span>
+<span class="codeline" id="line-41"><code>//    IEEE -1.07e9,+1.07e9  130000       2.1e-16     5.4e-17</code></span>
+<span class="codeline" id="line-42"><code>//</code></span>
+<span class="codeline" id="line-43"><code>// Partial loss of accuracy begins to occur at x = 2**30 = 1.074e9.  The loss</code></span>
+<span class="codeline" id="line-44"><code>// is not gradual, but jumps suddenly to about 1 part in 10e7.  Results may</code></span>
+<span class="codeline" id="line-45"><code>// be meaningless for x &gt; 2**49 = 5.6e14.</code></span>
+<span class="codeline" id="line-46"><code>//</code></span>
+<span class="codeline" id="line-47"><code>//      cos.c</code></span>
+<span class="codeline" id="line-48"><code>//</code></span>
+<span class="codeline" id="line-49"><code>//      Circular cosine</code></span>
+<span class="codeline" id="line-50"><code>//</code></span>
+<span class="codeline" id="line-51"><code>// SYNOPSIS:</code></span>
+<span class="codeline" id="line-52"><code>//</code></span>
+<span class="codeline" id="line-53"><code>// double x, y, cos();</code></span>
+<span class="codeline" id="line-54"><code>// y = cos( x );</code></span>
+<span class="codeline" id="line-55"><code>//</code></span>
+<span class="codeline" id="line-56"><code>// DESCRIPTION:</code></span>
+<span class="codeline" id="line-57"><code>//</code></span>
+<span class="codeline" id="line-58"><code>// Range reduction is into intervals of pi/4.  The reduction error is nearly</code></span>
+<span class="codeline" id="line-59"><code>// eliminated by contriving an extended precision modular arithmetic.</code></span>
+<span class="codeline" id="line-60"><code>//</code></span>
+<span class="codeline" id="line-61"><code>// Two polynomial approximating functions are employed.</code></span>
+<span class="codeline" id="line-62"><code>// Between 0 and pi/4 the cosine is approximated by</code></span>
+<span class="codeline" id="line-63"><code>//      1  -  x**2 Q(x**2).</code></span>
+<span class="codeline" id="line-64"><code>// Between pi/4 and pi/2 the sine is represented as</code></span>
+<span class="codeline" id="line-65"><code>//      x  +  x**3 P(x**2).</code></span>
+<span class="codeline" id="line-66"><code>//</code></span>
+<span class="codeline" id="line-67"><code>// ACCURACY:</code></span>
+<span class="codeline" id="line-68"><code>//</code></span>
+<span class="codeline" id="line-69"><code>//                      Relative error:</code></span>
+<span class="codeline" id="line-70"><code>// arithmetic   domain      # trials      peak         rms</code></span>
+<span class="codeline" id="line-71"><code>//    IEEE -1.07e9,+1.07e9  130000       2.1e-16     5.4e-17</code></span>
+<span class="codeline" id="line-72"><code>//    DEC        0,+1.07e9   17000       3.0e-17     7.2e-18</code></span>
+<span class="codeline" id="line-73"><code>//</code></span>
+<span class="codeline" id="line-74"><code>// Cephes Math Library Release 2.8:  June, 2000</code></span>
+<span class="codeline" id="line-75"><code>// Copyright 1984, 1987, 1989, 1992, 2000 by Stephen L. Moshier</code></span>
+<span class="codeline" id="line-76"><code>//</code></span>
+<span class="codeline" id="line-77"><code>// The readme file at http://netlib.sandia.gov/cephes/ says:</code></span>
+<span class="codeline" id="line-78"><code>//    Some software in this archive may be from the book _Methods and</code></span>
+<span class="codeline" id="line-79"><code>// Programs for Mathematical Functions_ (Prentice-Hall or Simon &amp; Schuster</code></span>
+<span class="codeline" id="line-80"><code>// International, 1989) or from the Cephes Mathematical Library, a</code></span>
+<span class="codeline" id="line-81"><code>// commercial product. In either event, it is copyrighted by the author.</code></span>
+<span class="codeline" id="line-82"><code>// What you see here may be used freely but it comes with no support or</code></span>
+<span class="codeline" id="line-83"><code>// guarantee.</code></span>
+<span class="codeline" id="line-84"><code>//</code></span>
+<span class="codeline" id="line-85"><code>//   The two known misprints in the book are repaired here in the</code></span>
+<span class="codeline" id="line-86"><code>// source listings for the gamma function and the incomplete beta</code></span>
+<span class="codeline" id="line-87"><code>// integral.</code></span>
+<span class="codeline" id="line-88"><code>//</code></span>
+<span class="codeline" id="line-89"><code>//   Stephen L. Moshier</code></span>
+<span class="codeline" id="line-90"><code>//   moshier@na-net.ornl.gov</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>// sin coefficients</code></span>
+<span class="codeline" id="line-93"><code>var _sin = [...]float64{</code></span>
+<span class="codeline" id="line-94"><code>	1.58962301576546568060e-10, // 0x3de5d8fd1fd19ccd</code></span>
+<span class="codeline" id="line-95"><code>	-2.50507477628578072866e-8, // 0xbe5ae5e5a9291f5d</code></span>
+<span class="codeline" id="line-96"><code>	2.75573136213857245213e-6,  // 0x3ec71de3567d48a1</code></span>
+<span class="codeline" id="line-97"><code>	-1.98412698295895385996e-4, // 0xbf2a01a019bfdf03</code></span>
+<span class="codeline" id="line-98"><code>	8.33333333332211858878e-3,  // 0x3f8111111110f7d0</code></span>
+<span class="codeline" id="line-99"><code>	-1.66666666666666307295e-1, // 0xbfc5555555555548</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>// cos coefficients</code></span>
+<span class="codeline" id="line-103"><code>var _cos = [...]float64{</code></span>
+<span class="codeline" id="line-104"><code>	-1.13585365213876817300e-11, // 0xbda8fa49a0861a9b</code></span>
+<span class="codeline" id="line-105"><code>	2.08757008419747316778e-9,   // 0x3e21ee9d7b4e3f05</code></span>
+<span class="codeline" id="line-106"><code>	-2.75573141792967388112e-7,  // 0xbe927e4f7eac4bc6</code></span>
+<span class="codeline" id="line-107"><code>	2.48015872888517045348e-5,   // 0x3efa01a019c844f5</code></span>
+<span class="codeline" id="line-108"><code>	-1.38888888888730564116e-3,  // 0xbf56c16c16c14f91</code></span>
+<span class="codeline" id="line-109"><code>	4.16666666666665929218e-2,   // 0x3fa555555555554b</code></span>
+<span class="codeline" id="line-110"><code>}</code></span>
+<span class="codeline" id="line-111"><code></code></span>
+<span class="codeline" id="line-112"><code>// Cos returns the cosine of the radian argument x.</code></span>
+<span class="codeline" id="line-113"><code>//</code></span>
+<span class="codeline" id="line-114"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-115"><code>//	Cos(±Inf) = NaN</code></span>
+<span class="codeline" id="line-116"><code>//	Cos(NaN) = NaN</code></span>
+<span class="codeline" id="line-117"><code>func Cos(x float64) float64</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>func cos(x float64) float64 {</code></span>
+<span class="codeline" id="line-120"><code>	const (</code></span>
+<span class="codeline" id="line-121"><code>		PI4A = 7.85398125648498535156e-1  // 0x3fe921fb40000000, Pi/4 split into three parts</code></span>
+<span class="codeline" id="line-122"><code>		PI4B = 3.77489470793079817668e-8  // 0x3e64442d00000000,</code></span>
+<span class="codeline" id="line-123"><code>		PI4C = 2.69515142907905952645e-15 // 0x3ce8469898cc5170,</code></span>
+<span class="codeline" id="line-124"><code>	)</code></span>
+<span class="codeline" id="line-125"><code>	// special cases</code></span>
+<span class="codeline" id="line-126"><code>	switch {</code></span>
+<span class="codeline" id="line-127"><code>	case IsNaN(x) || IsInf(x, 0):</code></span>
+<span class="codeline" id="line-128"><code>		return NaN()</code></span>
+<span class="codeline" id="line-129"><code>	}</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>	// make argument positive</code></span>
+<span class="codeline" id="line-132"><code>	sign := false</code></span>
+<span class="codeline" id="line-133"><code>	x = Abs(x)</code></span>
+<span class="codeline" id="line-134"><code></code></span>
+<span class="codeline" id="line-135"><code>	var j uint64</code></span>
+<span class="codeline" id="line-136"><code>	var y, z float64</code></span>
+<span class="codeline" id="line-137"><code>	if x &gt;= reduceThreshold {</code></span>
+<span class="codeline" id="line-138"><code>		j, z = trigReduce(x)</code></span>
+<span class="codeline" id="line-139"><code>	} else {</code></span>
+<span class="codeline" id="line-140"><code>		j = uint64(x * (4 / Pi)) // integer part of x/(Pi/4), as integer for tests on the phase angle</code></span>
+<span class="codeline" id="line-141"><code>		y = float64(j)           // integer part of x/(Pi/4), as float</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>		// map zeros to origin</code></span>
+<span class="codeline" id="line-144"><code>		if j&amp;1 == 1 {</code></span>
+<span class="codeline" id="line-145"><code>			j++</code></span>
+<span class="codeline" id="line-146"><code>			y++</code></span>
+<span class="codeline" id="line-147"><code>		}</code></span>
+<span class="codeline" id="line-148"><code>		j &amp;= 7                               // octant modulo 2Pi radians (360 degrees)</code></span>
+<span class="codeline" id="line-149"><code>		z = ((x - y*PI4A) - y*PI4B) - y*PI4C // Extended precision modular arithmetic</code></span>
+<span class="codeline" id="line-150"><code>	}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>	if j &gt; 3 {</code></span>
+<span class="codeline" id="line-153"><code>		j -= 4</code></span>
+<span class="codeline" id="line-154"><code>		sign = !sign</code></span>
+<span class="codeline" id="line-155"><code>	}</code></span>
+<span class="codeline" id="line-156"><code>	if j &gt; 1 {</code></span>
+<span class="codeline" id="line-157"><code>		sign = !sign</code></span>
+<span class="codeline" id="line-158"><code>	}</code></span>
+<span class="codeline" id="line-159"><code></code></span>
+<span class="codeline" id="line-160"><code>	zz := z * z</code></span>
+<span class="codeline" id="line-161"><code>	if j == 1 || j == 2 {</code></span>
+<span class="codeline" id="line-162"><code>		y = z + z*zz*((((((_sin[0]*zz)+_sin[1])*zz+_sin[2])*zz+_sin[3])*zz+_sin[4])*zz+_sin[5])</code></span>
+<span class="codeline" id="line-163"><code>	} else {</code></span>
+<span class="codeline" id="line-164"><code>		y = 1.0 - 0.5*zz + zz*zz*((((((_cos[0]*zz)+_cos[1])*zz+_cos[2])*zz+_cos[3])*zz+_cos[4])*zz+_cos[5])</code></span>
+<span class="codeline" id="line-165"><code>	}</code></span>
+<span class="codeline" id="line-166"><code>	if sign {</code></span>
+<span class="codeline" id="line-167"><code>		y = -y</code></span>
+<span class="codeline" id="line-168"><code>	}</code></span>
+<span class="codeline" id="line-169"><code>	return y</code></span>
+<span class="codeline" id="line-170"><code>}</code></span>
+<span class="codeline" id="line-171"><code></code></span>
+<span class="codeline" id="line-172"><code>// Sin returns the sine of the radian argument x.</code></span>
+<span class="codeline" id="line-173"><code>//</code></span>
+<span class="codeline" id="line-174"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-175"><code>//	Sin(±0) = ±0</code></span>
+<span class="codeline" id="line-176"><code>//	Sin(±Inf) = NaN</code></span>
+<span class="codeline" id="line-177"><code>//	Sin(NaN) = NaN</code></span>
+<span class="codeline" id="line-178"><code>func Sin(x float64) float64</code></span>
+<span class="codeline" id="line-179"><code></code></span>
+<span class="codeline" id="line-180"><code>func sin(x float64) float64 {</code></span>
+<span class="codeline" id="line-181"><code>	const (</code></span>
+<span class="codeline" id="line-182"><code>		PI4A = 7.85398125648498535156e-1  // 0x3fe921fb40000000, Pi/4 split into three parts</code></span>
+<span class="codeline" id="line-183"><code>		PI4B = 3.77489470793079817668e-8  // 0x3e64442d00000000,</code></span>
+<span class="codeline" id="line-184"><code>		PI4C = 2.69515142907905952645e-15 // 0x3ce8469898cc5170,</code></span>
+<span class="codeline" id="line-185"><code>	)</code></span>
+<span class="codeline" id="line-186"><code>	// special cases</code></span>
+<span class="codeline" id="line-187"><code>	switch {</code></span>
+<span class="codeline" id="line-188"><code>	case x == 0 || IsNaN(x):</code></span>
+<span class="codeline" id="line-189"><code>		return x // return ±0 || NaN()</code></span>
+<span class="codeline" id="line-190"><code>	case IsInf(x, 0):</code></span>
+<span class="codeline" id="line-191"><code>		return NaN()</code></span>
+<span class="codeline" id="line-192"><code>	}</code></span>
+<span class="codeline" id="line-193"><code></code></span>
+<span class="codeline" id="line-194"><code>	// make argument positive but save the sign</code></span>
+<span class="codeline" id="line-195"><code>	sign := false</code></span>
+<span class="codeline" id="line-196"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-197"><code>		x = -x</code></span>
+<span class="codeline" id="line-198"><code>		sign = true</code></span>
+<span class="codeline" id="line-199"><code>	}</code></span>
+<span class="codeline" id="line-200"><code></code></span>
+<span class="codeline" id="line-201"><code>	var j uint64</code></span>
+<span class="codeline" id="line-202"><code>	var y, z float64</code></span>
+<span class="codeline" id="line-203"><code>	if x &gt;= reduceThreshold {</code></span>
+<span class="codeline" id="line-204"><code>		j, z = trigReduce(x)</code></span>
+<span class="codeline" id="line-205"><code>	} else {</code></span>
+<span class="codeline" id="line-206"><code>		j = uint64(x * (4 / Pi)) // integer part of x/(Pi/4), as integer for tests on the phase angle</code></span>
+<span class="codeline" id="line-207"><code>		y = float64(j)           // integer part of x/(Pi/4), as float</code></span>
+<span class="codeline" id="line-208"><code></code></span>
+<span class="codeline" id="line-209"><code>		// map zeros to origin</code></span>
+<span class="codeline" id="line-210"><code>		if j&amp;1 == 1 {</code></span>
+<span class="codeline" id="line-211"><code>			j++</code></span>
+<span class="codeline" id="line-212"><code>			y++</code></span>
+<span class="codeline" id="line-213"><code>		}</code></span>
+<span class="codeline" id="line-214"><code>		j &amp;= 7                               // octant modulo 2Pi radians (360 degrees)</code></span>
+<span class="codeline" id="line-215"><code>		z = ((x - y*PI4A) - y*PI4B) - y*PI4C // Extended precision modular arithmetic</code></span>
+<span class="codeline" id="line-216"><code>	}</code></span>
+<span class="codeline" id="line-217"><code>	// reflect in x axis</code></span>
+<span class="codeline" id="line-218"><code>	if j &gt; 3 {</code></span>
+<span class="codeline" id="line-219"><code>		sign = !sign</code></span>
+<span class="codeline" id="line-220"><code>		j -= 4</code></span>
+<span class="codeline" id="line-221"><code>	}</code></span>
+<span class="codeline" id="line-222"><code>	zz := z * z</code></span>
+<span class="codeline" id="line-223"><code>	if j == 1 || j == 2 {</code></span>
+<span class="codeline" id="line-224"><code>		y = 1.0 - 0.5*zz + zz*zz*((((((_cos[0]*zz)+_cos[1])*zz+_cos[2])*zz+_cos[3])*zz+_cos[4])*zz+_cos[5])</code></span>
+<span class="codeline" id="line-225"><code>	} else {</code></span>
+<span class="codeline" id="line-226"><code>		y = z + z*zz*((((((_sin[0]*zz)+_sin[1])*zz+_sin[2])*zz+_sin[3])*zz+_sin[4])*zz+_sin[5])</code></span>
+<span class="codeline" id="line-227"><code>	}</code></span>
+<span class="codeline" id="line-228"><code>	if sign {</code></span>
+<span class="codeline" id="line-229"><code>		y = -y</code></span>
+<span class="codeline" id="line-230"><code>	}</code></span>
+<span class="codeline" id="line-231"><code>	return y</code></span>
+<span class="codeline" id="line-232"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

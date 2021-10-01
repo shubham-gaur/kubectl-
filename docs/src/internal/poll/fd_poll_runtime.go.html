@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: fd_poll_runtime.go in package internal/poll</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	fd_poll_runtime.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/poll.html">internal/poll</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2013 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd linux netbsd openbsd windows solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package poll</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"errors"</code></span>
+<span class="codeline" id="line-11"><code>	"sync"</code></span>
+<span class="codeline" id="line-12"><code>	"syscall"</code></span>
+<span class="codeline" id="line-13"><code>	"time"</code></span>
+<span class="codeline" id="line-14"><code>	_ "unsafe" // for go:linkname</code></span>
+<span class="codeline" id="line-15"><code>)</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// runtimeNano returns the current value of the runtime clock in nanoseconds.</code></span>
+<span class="codeline" id="line-18"><code>//go:linkname runtimeNano runtime.nanotime</code></span>
+<span class="codeline" id="line-19"><code>func runtimeNano() int64</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>func runtime_pollServerInit()</code></span>
+<span class="codeline" id="line-22"><code>func runtime_pollOpen(fd uintptr) (uintptr, int)</code></span>
+<span class="codeline" id="line-23"><code>func runtime_pollClose(ctx uintptr)</code></span>
+<span class="codeline" id="line-24"><code>func runtime_pollWait(ctx uintptr, mode int) int</code></span>
+<span class="codeline" id="line-25"><code>func runtime_pollWaitCanceled(ctx uintptr, mode int) int</code></span>
+<span class="codeline" id="line-26"><code>func runtime_pollReset(ctx uintptr, mode int) int</code></span>
+<span class="codeline" id="line-27"><code>func runtime_pollSetDeadline(ctx uintptr, d int64, mode int)</code></span>
+<span class="codeline" id="line-28"><code>func runtime_pollUnblock(ctx uintptr)</code></span>
+<span class="codeline" id="line-29"><code>func runtime_isPollServerDescriptor(fd uintptr) bool</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>type pollDesc struct {</code></span>
+<span class="codeline" id="line-32"><code>	runtimeCtx uintptr</code></span>
+<span class="codeline" id="line-33"><code>}</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>var serverInit sync.Once</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>func (pd *pollDesc) init(fd *FD) error {</code></span>
+<span class="codeline" id="line-38"><code>	serverInit.Do(runtime_pollServerInit)</code></span>
+<span class="codeline" id="line-39"><code>	ctx, errno := runtime_pollOpen(uintptr(fd.Sysfd))</code></span>
+<span class="codeline" id="line-40"><code>	if errno != 0 {</code></span>
+<span class="codeline" id="line-41"><code>		if ctx != 0 {</code></span>
+<span class="codeline" id="line-42"><code>			runtime_pollUnblock(ctx)</code></span>
+<span class="codeline" id="line-43"><code>			runtime_pollClose(ctx)</code></span>
+<span class="codeline" id="line-44"><code>		}</code></span>
+<span class="codeline" id="line-45"><code>		return errnoErr(syscall.Errno(errno))</code></span>
+<span class="codeline" id="line-46"><code>	}</code></span>
+<span class="codeline" id="line-47"><code>	pd.runtimeCtx = ctx</code></span>
+<span class="codeline" id="line-48"><code>	return nil</code></span>
+<span class="codeline" id="line-49"><code>}</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>func (pd *pollDesc) close() {</code></span>
+<span class="codeline" id="line-52"><code>	if pd.runtimeCtx == 0 {</code></span>
+<span class="codeline" id="line-53"><code>		return</code></span>
+<span class="codeline" id="line-54"><code>	}</code></span>
+<span class="codeline" id="line-55"><code>	runtime_pollClose(pd.runtimeCtx)</code></span>
+<span class="codeline" id="line-56"><code>	pd.runtimeCtx = 0</code></span>
+<span class="codeline" id="line-57"><code>}</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>// Evict evicts fd from the pending list, unblocking any I/O running on fd.</code></span>
+<span class="codeline" id="line-60"><code>func (pd *pollDesc) evict() {</code></span>
+<span class="codeline" id="line-61"><code>	if pd.runtimeCtx == 0 {</code></span>
+<span class="codeline" id="line-62"><code>		return</code></span>
+<span class="codeline" id="line-63"><code>	}</code></span>
+<span class="codeline" id="line-64"><code>	runtime_pollUnblock(pd.runtimeCtx)</code></span>
+<span class="codeline" id="line-65"><code>}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>func (pd *pollDesc) prepare(mode int, isFile bool) error {</code></span>
+<span class="codeline" id="line-68"><code>	if pd.runtimeCtx == 0 {</code></span>
+<span class="codeline" id="line-69"><code>		return nil</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code>	res := runtime_pollReset(pd.runtimeCtx, mode)</code></span>
+<span class="codeline" id="line-72"><code>	return convertErr(res, isFile)</code></span>
+<span class="codeline" id="line-73"><code>}</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>func (pd *pollDesc) prepareRead(isFile bool) error {</code></span>
+<span class="codeline" id="line-76"><code>	return pd.prepare('r', isFile)</code></span>
+<span class="codeline" id="line-77"><code>}</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>func (pd *pollDesc) prepareWrite(isFile bool) error {</code></span>
+<span class="codeline" id="line-80"><code>	return pd.prepare('w', isFile)</code></span>
+<span class="codeline" id="line-81"><code>}</code></span>
+<span class="codeline" id="line-82"><code></code></span>
+<span class="codeline" id="line-83"><code>func (pd *pollDesc) wait(mode int, isFile bool) error {</code></span>
+<span class="codeline" id="line-84"><code>	if pd.runtimeCtx == 0 {</code></span>
+<span class="codeline" id="line-85"><code>		return errors.New("waiting for unsupported file type")</code></span>
+<span class="codeline" id="line-86"><code>	}</code></span>
+<span class="codeline" id="line-87"><code>	res := runtime_pollWait(pd.runtimeCtx, mode)</code></span>
+<span class="codeline" id="line-88"><code>	return convertErr(res, isFile)</code></span>
+<span class="codeline" id="line-89"><code>}</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>func (pd *pollDesc) waitRead(isFile bool) error {</code></span>
+<span class="codeline" id="line-92"><code>	return pd.wait('r', isFile)</code></span>
+<span class="codeline" id="line-93"><code>}</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>func (pd *pollDesc) waitWrite(isFile bool) error {</code></span>
+<span class="codeline" id="line-96"><code>	return pd.wait('w', isFile)</code></span>
+<span class="codeline" id="line-97"><code>}</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>func (pd *pollDesc) waitCanceled(mode int) {</code></span>
+<span class="codeline" id="line-100"><code>	if pd.runtimeCtx == 0 {</code></span>
+<span class="codeline" id="line-101"><code>		return</code></span>
+<span class="codeline" id="line-102"><code>	}</code></span>
+<span class="codeline" id="line-103"><code>	runtime_pollWaitCanceled(pd.runtimeCtx, mode)</code></span>
+<span class="codeline" id="line-104"><code>}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>func (pd *pollDesc) pollable() bool {</code></span>
+<span class="codeline" id="line-107"><code>	return pd.runtimeCtx != 0</code></span>
+<span class="codeline" id="line-108"><code>}</code></span>
+<span class="codeline" id="line-109"><code></code></span>
+<span class="codeline" id="line-110"><code>// Error values returned by runtime_pollReset and runtime_pollWait.</code></span>
+<span class="codeline" id="line-111"><code>// These must match the values in runtime/netpoll.go.</code></span>
+<span class="codeline" id="line-112"><code>const (</code></span>
+<span class="codeline" id="line-113"><code>	pollNoError        = 0</code></span>
+<span class="codeline" id="line-114"><code>	pollErrClosing     = 1</code></span>
+<span class="codeline" id="line-115"><code>	pollErrTimeout     = 2</code></span>
+<span class="codeline" id="line-116"><code>	pollErrNotPollable = 3</code></span>
+<span class="codeline" id="line-117"><code>)</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>func convertErr(res int, isFile bool) error {</code></span>
+<span class="codeline" id="line-120"><code>	switch res {</code></span>
+<span class="codeline" id="line-121"><code>	case pollNoError:</code></span>
+<span class="codeline" id="line-122"><code>		return nil</code></span>
+<span class="codeline" id="line-123"><code>	case pollErrClosing:</code></span>
+<span class="codeline" id="line-124"><code>		return errClosing(isFile)</code></span>
+<span class="codeline" id="line-125"><code>	case pollErrTimeout:</code></span>
+<span class="codeline" id="line-126"><code>		return ErrDeadlineExceeded</code></span>
+<span class="codeline" id="line-127"><code>	case pollErrNotPollable:</code></span>
+<span class="codeline" id="line-128"><code>		return ErrNotPollable</code></span>
+<span class="codeline" id="line-129"><code>	}</code></span>
+<span class="codeline" id="line-130"><code>	println("unreachable: ", res)</code></span>
+<span class="codeline" id="line-131"><code>	panic("unreachable")</code></span>
+<span class="codeline" id="line-132"><code>}</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>// SetDeadline sets the read and write deadlines associated with fd.</code></span>
+<span class="codeline" id="line-135"><code>func (fd *FD) SetDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-136"><code>	return setDeadlineImpl(fd, t, 'r'+'w')</code></span>
+<span class="codeline" id="line-137"><code>}</code></span>
+<span class="codeline" id="line-138"><code></code></span>
+<span class="codeline" id="line-139"><code>// SetReadDeadline sets the read deadline associated with fd.</code></span>
+<span class="codeline" id="line-140"><code>func (fd *FD) SetReadDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-141"><code>	return setDeadlineImpl(fd, t, 'r')</code></span>
+<span class="codeline" id="line-142"><code>}</code></span>
+<span class="codeline" id="line-143"><code></code></span>
+<span class="codeline" id="line-144"><code>// SetWriteDeadline sets the write deadline associated with fd.</code></span>
+<span class="codeline" id="line-145"><code>func (fd *FD) SetWriteDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-146"><code>	return setDeadlineImpl(fd, t, 'w')</code></span>
+<span class="codeline" id="line-147"><code>}</code></span>
+<span class="codeline" id="line-148"><code></code></span>
+<span class="codeline" id="line-149"><code>func setDeadlineImpl(fd *FD, t time.Time, mode int) error {</code></span>
+<span class="codeline" id="line-150"><code>	var d int64</code></span>
+<span class="codeline" id="line-151"><code>	if !t.IsZero() {</code></span>
+<span class="codeline" id="line-152"><code>		d = int64(time.Until(t))</code></span>
+<span class="codeline" id="line-153"><code>		if d == 0 {</code></span>
+<span class="codeline" id="line-154"><code>			d = -1 // don't confuse deadline right now with no deadline</code></span>
+<span class="codeline" id="line-155"><code>		}</code></span>
+<span class="codeline" id="line-156"><code>	}</code></span>
+<span class="codeline" id="line-157"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-158"><code>		return err</code></span>
+<span class="codeline" id="line-159"><code>	}</code></span>
+<span class="codeline" id="line-160"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-161"><code>	if fd.pd.runtimeCtx == 0 {</code></span>
+<span class="codeline" id="line-162"><code>		return ErrNoDeadline</code></span>
+<span class="codeline" id="line-163"><code>	}</code></span>
+<span class="codeline" id="line-164"><code>	runtime_pollSetDeadline(fd.pd.runtimeCtx, d, mode)</code></span>
+<span class="codeline" id="line-165"><code>	return nil</code></span>
+<span class="codeline" id="line-166"><code>}</code></span>
+<span class="codeline" id="line-167"><code></code></span>
+<span class="codeline" id="line-168"><code>// IsPollDescriptor reports whether fd is the descriptor being used by the poller.</code></span>
+<span class="codeline" id="line-169"><code>// This is only used for testing.</code></span>
+<span class="codeline" id="line-170"><code>func IsPollDescriptor(fd uintptr) bool {</code></span>
+<span class="codeline" id="line-171"><code>	return runtime_isPollServerDescriptor(fd)</code></span>
+<span class="codeline" id="line-172"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

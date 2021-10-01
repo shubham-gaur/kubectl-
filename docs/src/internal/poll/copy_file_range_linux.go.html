@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: copy_file_range_linux.go in package internal/poll</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	copy_file_range_linux.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/poll.html">internal/poll</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2020 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package poll</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/syscall/unix"</code></span>
+<span class="codeline" id="line-9"><code>	"sync/atomic"</code></span>
+<span class="codeline" id="line-10"><code>	"syscall"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>var copyFileRangeSupported int32 = -1 // accessed atomically</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>const maxCopyFileRangeRound = 1 &lt;&lt; 30</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>func kernelVersion() (major int, minor int) {</code></span>
+<span class="codeline" id="line-18"><code>	var uname syscall.Utsname</code></span>
+<span class="codeline" id="line-19"><code>	if err := syscall.Uname(&amp;uname); err != nil {</code></span>
+<span class="codeline" id="line-20"><code>		return</code></span>
+<span class="codeline" id="line-21"><code>	}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>	rl := uname.Release</code></span>
+<span class="codeline" id="line-24"><code>	var values [2]int</code></span>
+<span class="codeline" id="line-25"><code>	vi := 0</code></span>
+<span class="codeline" id="line-26"><code>	value := 0</code></span>
+<span class="codeline" id="line-27"><code>	for _, c := range rl {</code></span>
+<span class="codeline" id="line-28"><code>		if '0' &lt;= c &amp;&amp; c &lt;= '9' {</code></span>
+<span class="codeline" id="line-29"><code>			value = (value * 10) + int(c-'0')</code></span>
+<span class="codeline" id="line-30"><code>		} else {</code></span>
+<span class="codeline" id="line-31"><code>			// Note that we're assuming N.N.N here.  If we see anything else we are likely to</code></span>
+<span class="codeline" id="line-32"><code>			// mis-parse it.</code></span>
+<span class="codeline" id="line-33"><code>			values[vi] = value</code></span>
+<span class="codeline" id="line-34"><code>			vi++</code></span>
+<span class="codeline" id="line-35"><code>			if vi &gt;= len(values) {</code></span>
+<span class="codeline" id="line-36"><code>				break</code></span>
+<span class="codeline" id="line-37"><code>			}</code></span>
+<span class="codeline" id="line-38"><code>			value = 0</code></span>
+<span class="codeline" id="line-39"><code>		}</code></span>
+<span class="codeline" id="line-40"><code>	}</code></span>
+<span class="codeline" id="line-41"><code>	switch vi {</code></span>
+<span class="codeline" id="line-42"><code>	case 0:</code></span>
+<span class="codeline" id="line-43"><code>		return 0, 0</code></span>
+<span class="codeline" id="line-44"><code>	case 1:</code></span>
+<span class="codeline" id="line-45"><code>		return values[0], 0</code></span>
+<span class="codeline" id="line-46"><code>	case 2:</code></span>
+<span class="codeline" id="line-47"><code>		return values[0], values[1]</code></span>
+<span class="codeline" id="line-48"><code>	}</code></span>
+<span class="codeline" id="line-49"><code>	return</code></span>
+<span class="codeline" id="line-50"><code>}</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>// CopyFileRange copies at most remain bytes of data from src to dst, using</code></span>
+<span class="codeline" id="line-53"><code>// the copy_file_range system call. dst and src must refer to regular files.</code></span>
+<span class="codeline" id="line-54"><code>func CopyFileRange(dst, src *FD, remain int64) (written int64, handled bool, err error) {</code></span>
+<span class="codeline" id="line-55"><code>	if supported := atomic.LoadInt32(&amp;copyFileRangeSupported); supported == 0 {</code></span>
+<span class="codeline" id="line-56"><code>		return 0, false, nil</code></span>
+<span class="codeline" id="line-57"><code>	} else if supported == -1 {</code></span>
+<span class="codeline" id="line-58"><code>		major, minor := kernelVersion()</code></span>
+<span class="codeline" id="line-59"><code>		if major &gt; 5 || (major == 5 &amp;&amp; minor &gt;= 3) {</code></span>
+<span class="codeline" id="line-60"><code>			atomic.StoreInt32(&amp;copyFileRangeSupported, 1)</code></span>
+<span class="codeline" id="line-61"><code>		} else {</code></span>
+<span class="codeline" id="line-62"><code>			// copy_file_range(2) is broken in various ways on kernels older than 5.3,</code></span>
+<span class="codeline" id="line-63"><code>			// see issue #42400 and</code></span>
+<span class="codeline" id="line-64"><code>			// https://man7.org/linux/man-pages/man2/copy_file_range.2.html#VERSIONS</code></span>
+<span class="codeline" id="line-65"><code>			atomic.StoreInt32(&amp;copyFileRangeSupported, 0)</code></span>
+<span class="codeline" id="line-66"><code>			return 0, false, nil</code></span>
+<span class="codeline" id="line-67"><code>		}</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code>	for remain &gt; 0 {</code></span>
+<span class="codeline" id="line-70"><code>		max := remain</code></span>
+<span class="codeline" id="line-71"><code>		if max &gt; maxCopyFileRangeRound {</code></span>
+<span class="codeline" id="line-72"><code>			max = maxCopyFileRangeRound</code></span>
+<span class="codeline" id="line-73"><code>		}</code></span>
+<span class="codeline" id="line-74"><code>		n, err := copyFileRange(dst, src, int(max))</code></span>
+<span class="codeline" id="line-75"><code>		switch err {</code></span>
+<span class="codeline" id="line-76"><code>		case syscall.ENOSYS:</code></span>
+<span class="codeline" id="line-77"><code>			// copy_file_range(2) was introduced in Linux 4.5.</code></span>
+<span class="codeline" id="line-78"><code>			// Go supports Linux &gt;= 2.6.33, so the system call</code></span>
+<span class="codeline" id="line-79"><code>			// may not be present.</code></span>
+<span class="codeline" id="line-80"><code>			//</code></span>
+<span class="codeline" id="line-81"><code>			// If we see ENOSYS, we have certainly not transfered</code></span>
+<span class="codeline" id="line-82"><code>			// any data, so we can tell the caller that we</code></span>
+<span class="codeline" id="line-83"><code>			// couldn't handle the transfer and let them fall</code></span>
+<span class="codeline" id="line-84"><code>			// back to more generic code.</code></span>
+<span class="codeline" id="line-85"><code>			//</code></span>
+<span class="codeline" id="line-86"><code>			// Seeing ENOSYS also means that we will not try to</code></span>
+<span class="codeline" id="line-87"><code>			// use copy_file_range(2) again.</code></span>
+<span class="codeline" id="line-88"><code>			atomic.StoreInt32(&amp;copyFileRangeSupported, 0)</code></span>
+<span class="codeline" id="line-89"><code>			return 0, false, nil</code></span>
+<span class="codeline" id="line-90"><code>		case syscall.EXDEV, syscall.EINVAL, syscall.EIO, syscall.EOPNOTSUPP, syscall.EPERM:</code></span>
+<span class="codeline" id="line-91"><code>			// Prior to Linux 5.3, it was not possible to</code></span>
+<span class="codeline" id="line-92"><code>			// copy_file_range across file systems. Similarly to</code></span>
+<span class="codeline" id="line-93"><code>			// the ENOSYS case above, if we see EXDEV, we have</code></span>
+<span class="codeline" id="line-94"><code>			// not transfered any data, and we can let the caller</code></span>
+<span class="codeline" id="line-95"><code>			// fall back to generic code.</code></span>
+<span class="codeline" id="line-96"><code>			//</code></span>
+<span class="codeline" id="line-97"><code>			// As for EINVAL, that is what we see if, for example,</code></span>
+<span class="codeline" id="line-98"><code>			// dst or src refer to a pipe rather than a regular</code></span>
+<span class="codeline" id="line-99"><code>			// file. This is another case where no data has been</code></span>
+<span class="codeline" id="line-100"><code>			// transfered, so we consider it unhandled.</code></span>
+<span class="codeline" id="line-101"><code>			//</code></span>
+<span class="codeline" id="line-102"><code>			// If src and dst are on CIFS, we can see EIO.</code></span>
+<span class="codeline" id="line-103"><code>			// See issue #42334.</code></span>
+<span class="codeline" id="line-104"><code>			//</code></span>
+<span class="codeline" id="line-105"><code>			// If the file is on NFS, we can see EOPNOTSUPP.</code></span>
+<span class="codeline" id="line-106"><code>			// See issue #40731.</code></span>
+<span class="codeline" id="line-107"><code>			//</code></span>
+<span class="codeline" id="line-108"><code>			// If the process is running inside a Docker container,</code></span>
+<span class="codeline" id="line-109"><code>			// we might see EPERM instead of ENOSYS. See issue</code></span>
+<span class="codeline" id="line-110"><code>			// #40893. Since EPERM might also be a legitimate error,</code></span>
+<span class="codeline" id="line-111"><code>			// don't mark copy_file_range(2) as unsupported.</code></span>
+<span class="codeline" id="line-112"><code>			return 0, false, nil</code></span>
+<span class="codeline" id="line-113"><code>		case nil:</code></span>
+<span class="codeline" id="line-114"><code>			if n == 0 {</code></span>
+<span class="codeline" id="line-115"><code>				// If we did not read any bytes at all,</code></span>
+<span class="codeline" id="line-116"><code>				// then this file may be in a file system</code></span>
+<span class="codeline" id="line-117"><code>				// where copy_file_range silently fails.</code></span>
+<span class="codeline" id="line-118"><code>				// https://lore.kernel.org/linux-fsdevel/20210126233840.GG4626@dread.disaster.area/T/#m05753578c7f7882f6e9ffe01f981bc223edef2b0</code></span>
+<span class="codeline" id="line-119"><code>				if written == 0 {</code></span>
+<span class="codeline" id="line-120"><code>					return 0, false, nil</code></span>
+<span class="codeline" id="line-121"><code>				}</code></span>
+<span class="codeline" id="line-122"><code>				// Otherwise src is at EOF, which means</code></span>
+<span class="codeline" id="line-123"><code>				// we are done.</code></span>
+<span class="codeline" id="line-124"><code>				return written, true, nil</code></span>
+<span class="codeline" id="line-125"><code>			}</code></span>
+<span class="codeline" id="line-126"><code>			remain -= n</code></span>
+<span class="codeline" id="line-127"><code>			written += n</code></span>
+<span class="codeline" id="line-128"><code>		default:</code></span>
+<span class="codeline" id="line-129"><code>			return written, true, err</code></span>
+<span class="codeline" id="line-130"><code>		}</code></span>
+<span class="codeline" id="line-131"><code>	}</code></span>
+<span class="codeline" id="line-132"><code>	return written, true, nil</code></span>
+<span class="codeline" id="line-133"><code>}</code></span>
+<span class="codeline" id="line-134"><code></code></span>
+<span class="codeline" id="line-135"><code>// copyFileRange performs one round of copy_file_range(2).</code></span>
+<span class="codeline" id="line-136"><code>func copyFileRange(dst, src *FD, max int) (written int64, err error) {</code></span>
+<span class="codeline" id="line-137"><code>	// The signature of copy_file_range(2) is:</code></span>
+<span class="codeline" id="line-138"><code>	//</code></span>
+<span class="codeline" id="line-139"><code>	// ssize_t copy_file_range(int fd_in, loff_t *off_in,</code></span>
+<span class="codeline" id="line-140"><code>	//                         int fd_out, loff_t *off_out,</code></span>
+<span class="codeline" id="line-141"><code>	//                         size_t len, unsigned int flags);</code></span>
+<span class="codeline" id="line-142"><code>	//</code></span>
+<span class="codeline" id="line-143"><code>	// Note that in the call to unix.CopyFileRange below, we use nil</code></span>
+<span class="codeline" id="line-144"><code>	// values for off_in and off_out. For the system call, this means</code></span>
+<span class="codeline" id="line-145"><code>	// "use and update the file offsets". That is why we must acquire</code></span>
+<span class="codeline" id="line-146"><code>	// locks for both file descriptors (and why this whole machinery is</code></span>
+<span class="codeline" id="line-147"><code>	// in the internal/poll package to begin with).</code></span>
+<span class="codeline" id="line-148"><code>	if err := dst.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-149"><code>		return 0, err</code></span>
+<span class="codeline" id="line-150"><code>	}</code></span>
+<span class="codeline" id="line-151"><code>	defer dst.writeUnlock()</code></span>
+<span class="codeline" id="line-152"><code>	if err := src.readLock(); err != nil {</code></span>
+<span class="codeline" id="line-153"><code>		return 0, err</code></span>
+<span class="codeline" id="line-154"><code>	}</code></span>
+<span class="codeline" id="line-155"><code>	defer src.readUnlock()</code></span>
+<span class="codeline" id="line-156"><code>	var n int</code></span>
+<span class="codeline" id="line-157"><code>	for {</code></span>
+<span class="codeline" id="line-158"><code>		n, err = unix.CopyFileRange(src.Sysfd, nil, dst.Sysfd, nil, max, 0)</code></span>
+<span class="codeline" id="line-159"><code>		if err != syscall.EINTR {</code></span>
+<span class="codeline" id="line-160"><code>			break</code></span>
+<span class="codeline" id="line-161"><code>		}</code></span>
+<span class="codeline" id="line-162"><code>	}</code></span>
+<span class="codeline" id="line-163"><code>	return int64(n), err</code></span>
+<span class="codeline" id="line-164"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

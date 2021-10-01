@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mcheckmark.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mcheckmark.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2020 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// GC checkmarks</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// In a concurrent garbage collector, one worries about failing to mark</code></span>
+<span class="codeline" id="line-8"><code>// a live object due to mutations without write barriers or bugs in the</code></span>
+<span class="codeline" id="line-9"><code>// collector implementation. As a sanity check, the GC has a 'checkmark'</code></span>
+<span class="codeline" id="line-10"><code>// mode that retraverses the object graph with the world stopped, to make</code></span>
+<span class="codeline" id="line-11"><code>// sure that everything that should be marked is marked.</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>package runtime</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>import (</code></span>
+<span class="codeline" id="line-16"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-17"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-18"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-19"><code>)</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>// A checkmarksMap stores the GC marks in "checkmarks" mode. It is a</code></span>
+<span class="codeline" id="line-22"><code>// per-arena bitmap with a bit for every word in the arena. The mark</code></span>
+<span class="codeline" id="line-23"><code>// is stored on the bit corresponding to the first word of the marked</code></span>
+<span class="codeline" id="line-24"><code>// allocation.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-27"><code>type checkmarksMap [heapArenaBytes / sys.PtrSize / 8]uint8</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>// If useCheckmark is true, marking of an object uses the checkmark</code></span>
+<span class="codeline" id="line-30"><code>// bits instead of the standard mark bits.</code></span>
+<span class="codeline" id="line-31"><code>var useCheckmark = false</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>// startCheckmarks prepares for the checkmarks phase.</code></span>
+<span class="codeline" id="line-34"><code>//</code></span>
+<span class="codeline" id="line-35"><code>// The world must be stopped.</code></span>
+<span class="codeline" id="line-36"><code>func startCheckmarks() {</code></span>
+<span class="codeline" id="line-37"><code>	assertWorldStopped()</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>	// Clear all checkmarks.</code></span>
+<span class="codeline" id="line-40"><code>	for _, ai := range mheap_.allArenas {</code></span>
+<span class="codeline" id="line-41"><code>		arena := mheap_.arenas[ai.l1()][ai.l2()]</code></span>
+<span class="codeline" id="line-42"><code>		bitmap := arena.checkmarks</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>		if bitmap == nil {</code></span>
+<span class="codeline" id="line-45"><code>			// Allocate bitmap on first use.</code></span>
+<span class="codeline" id="line-46"><code>			bitmap = (*checkmarksMap)(persistentalloc(unsafe.Sizeof(*bitmap), 0, &amp;memstats.gcMiscSys))</code></span>
+<span class="codeline" id="line-47"><code>			if bitmap == nil {</code></span>
+<span class="codeline" id="line-48"><code>				throw("out of memory allocating checkmarks bitmap")</code></span>
+<span class="codeline" id="line-49"><code>			}</code></span>
+<span class="codeline" id="line-50"><code>			arena.checkmarks = bitmap</code></span>
+<span class="codeline" id="line-51"><code>		} else {</code></span>
+<span class="codeline" id="line-52"><code>			// Otherwise clear the existing bitmap.</code></span>
+<span class="codeline" id="line-53"><code>			for i := range bitmap {</code></span>
+<span class="codeline" id="line-54"><code>				bitmap[i] = 0</code></span>
+<span class="codeline" id="line-55"><code>			}</code></span>
+<span class="codeline" id="line-56"><code>		}</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code>	// Enable checkmarking.</code></span>
+<span class="codeline" id="line-59"><code>	useCheckmark = true</code></span>
+<span class="codeline" id="line-60"><code>}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>// endCheckmarks ends the checkmarks phase.</code></span>
+<span class="codeline" id="line-63"><code>func endCheckmarks() {</code></span>
+<span class="codeline" id="line-64"><code>	if gcMarkWorkAvailable(nil) {</code></span>
+<span class="codeline" id="line-65"><code>		throw("GC work not flushed")</code></span>
+<span class="codeline" id="line-66"><code>	}</code></span>
+<span class="codeline" id="line-67"><code>	useCheckmark = false</code></span>
+<span class="codeline" id="line-68"><code>}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>// setCheckmark throws if marking object is a checkmarks violation,</code></span>
+<span class="codeline" id="line-71"><code>// and otherwise sets obj's checkmark. It returns true if obj was</code></span>
+<span class="codeline" id="line-72"><code>// already checkmarked.</code></span>
+<span class="codeline" id="line-73"><code>func setCheckmark(obj, base, off uintptr, mbits markBits) bool {</code></span>
+<span class="codeline" id="line-74"><code>	if !mbits.isMarked() {</code></span>
+<span class="codeline" id="line-75"><code>		printlock()</code></span>
+<span class="codeline" id="line-76"><code>		print("runtime: checkmarks found unexpected unmarked object obj=", hex(obj), "\n")</code></span>
+<span class="codeline" id="line-77"><code>		print("runtime: found obj at *(", hex(base), "+", hex(off), ")\n")</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>		// Dump the source (base) object</code></span>
+<span class="codeline" id="line-80"><code>		gcDumpObject("base", base, off)</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>		// Dump the object</code></span>
+<span class="codeline" id="line-83"><code>		gcDumpObject("obj", obj, ^uintptr(0))</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>		getg().m.traceback = 2</code></span>
+<span class="codeline" id="line-86"><code>		throw("checkmark found unmarked object")</code></span>
+<span class="codeline" id="line-87"><code>	}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>	ai := arenaIndex(obj)</code></span>
+<span class="codeline" id="line-90"><code>	arena := mheap_.arenas[ai.l1()][ai.l2()]</code></span>
+<span class="codeline" id="line-91"><code>	arenaWord := (obj / heapArenaBytes / 8) % uintptr(len(arena.checkmarks))</code></span>
+<span class="codeline" id="line-92"><code>	mask := byte(1 &lt;&lt; ((obj / heapArenaBytes) % 8))</code></span>
+<span class="codeline" id="line-93"><code>	bytep := &amp;arena.checkmarks[arenaWord]</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>	if atomic.Load8(bytep)&amp;mask != 0 {</code></span>
+<span class="codeline" id="line-96"><code>		// Already checkmarked.</code></span>
+<span class="codeline" id="line-97"><code>		return true</code></span>
+<span class="codeline" id="line-98"><code>	}</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>	atomic.Or8(bytep, mask)</code></span>
+<span class="codeline" id="line-101"><code>	return false</code></span>
+<span class="codeline" id="line-102"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

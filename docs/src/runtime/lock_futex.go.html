@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: lock_futex.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	lock_futex.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build dragonfly freebsd linux</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package runtime</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-11"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>// This implementation depends on OS-specific implementations of</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>//	futexsleep(addr *uint32, val uint32, ns int64)</code></span>
+<span class="codeline" id="line-17"><code>//		Atomically,</code></span>
+<span class="codeline" id="line-18"><code>//			if *addr == val { sleep }</code></span>
+<span class="codeline" id="line-19"><code>//		Might be woken up spuriously; that's allowed.</code></span>
+<span class="codeline" id="line-20"><code>//		Don't sleep longer than ns; ns &lt; 0 means forever.</code></span>
+<span class="codeline" id="line-21"><code>//</code></span>
+<span class="codeline" id="line-22"><code>//	futexwakeup(addr *uint32, cnt uint32)</code></span>
+<span class="codeline" id="line-23"><code>//		If any procs are sleeping on addr, wake up at most cnt.</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>const (</code></span>
+<span class="codeline" id="line-26"><code>	mutex_unlocked = 0</code></span>
+<span class="codeline" id="line-27"><code>	mutex_locked   = 1</code></span>
+<span class="codeline" id="line-28"><code>	mutex_sleeping = 2</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>	active_spin     = 4</code></span>
+<span class="codeline" id="line-31"><code>	active_spin_cnt = 30</code></span>
+<span class="codeline" id="line-32"><code>	passive_spin    = 1</code></span>
+<span class="codeline" id="line-33"><code>)</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>// Possible lock states are mutex_unlocked, mutex_locked and mutex_sleeping.</code></span>
+<span class="codeline" id="line-36"><code>// mutex_sleeping means that there is presumably at least one sleeping thread.</code></span>
+<span class="codeline" id="line-37"><code>// Note that there can be spinning threads during all states - they do not</code></span>
+<span class="codeline" id="line-38"><code>// affect mutex's state.</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>// We use the uintptr mutex.key and note.key as a uint32.</code></span>
+<span class="codeline" id="line-41"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-42"><code>func key32(p *uintptr) *uint32 {</code></span>
+<span class="codeline" id="line-43"><code>	return (*uint32)(unsafe.Pointer(p))</code></span>
+<span class="codeline" id="line-44"><code>}</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>func lock(l *mutex) {</code></span>
+<span class="codeline" id="line-47"><code>	lockWithRank(l, getLockRank(l))</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>func lock2(l *mutex) {</code></span>
+<span class="codeline" id="line-51"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>	if gp.m.locks &lt; 0 {</code></span>
+<span class="codeline" id="line-54"><code>		throw("runtime·lock: lock count")</code></span>
+<span class="codeline" id="line-55"><code>	}</code></span>
+<span class="codeline" id="line-56"><code>	gp.m.locks++</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>	// Speculative grab for lock.</code></span>
+<span class="codeline" id="line-59"><code>	v := atomic.Xchg(key32(&amp;l.key), mutex_locked)</code></span>
+<span class="codeline" id="line-60"><code>	if v == mutex_unlocked {</code></span>
+<span class="codeline" id="line-61"><code>		return</code></span>
+<span class="codeline" id="line-62"><code>	}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>	// wait is either MUTEX_LOCKED or MUTEX_SLEEPING</code></span>
+<span class="codeline" id="line-65"><code>	// depending on whether there is a thread sleeping</code></span>
+<span class="codeline" id="line-66"><code>	// on this mutex. If we ever change l-&gt;key from</code></span>
+<span class="codeline" id="line-67"><code>	// MUTEX_SLEEPING to some other value, we must be</code></span>
+<span class="codeline" id="line-68"><code>	// careful to change it back to MUTEX_SLEEPING before</code></span>
+<span class="codeline" id="line-69"><code>	// returning, to ensure that the sleeping thread gets</code></span>
+<span class="codeline" id="line-70"><code>	// its wakeup call.</code></span>
+<span class="codeline" id="line-71"><code>	wait := v</code></span>
+<span class="codeline" id="line-72"><code></code></span>
+<span class="codeline" id="line-73"><code>	// On uniprocessors, no point spinning.</code></span>
+<span class="codeline" id="line-74"><code>	// On multiprocessors, spin for ACTIVE_SPIN attempts.</code></span>
+<span class="codeline" id="line-75"><code>	spin := 0</code></span>
+<span class="codeline" id="line-76"><code>	if ncpu &gt; 1 {</code></span>
+<span class="codeline" id="line-77"><code>		spin = active_spin</code></span>
+<span class="codeline" id="line-78"><code>	}</code></span>
+<span class="codeline" id="line-79"><code>	for {</code></span>
+<span class="codeline" id="line-80"><code>		// Try for lock, spinning.</code></span>
+<span class="codeline" id="line-81"><code>		for i := 0; i &lt; spin; i++ {</code></span>
+<span class="codeline" id="line-82"><code>			for l.key == mutex_unlocked {</code></span>
+<span class="codeline" id="line-83"><code>				if atomic.Cas(key32(&amp;l.key), mutex_unlocked, wait) {</code></span>
+<span class="codeline" id="line-84"><code>					return</code></span>
+<span class="codeline" id="line-85"><code>				}</code></span>
+<span class="codeline" id="line-86"><code>			}</code></span>
+<span class="codeline" id="line-87"><code>			procyield(active_spin_cnt)</code></span>
+<span class="codeline" id="line-88"><code>		}</code></span>
+<span class="codeline" id="line-89"><code></code></span>
+<span class="codeline" id="line-90"><code>		// Try for lock, rescheduling.</code></span>
+<span class="codeline" id="line-91"><code>		for i := 0; i &lt; passive_spin; i++ {</code></span>
+<span class="codeline" id="line-92"><code>			for l.key == mutex_unlocked {</code></span>
+<span class="codeline" id="line-93"><code>				if atomic.Cas(key32(&amp;l.key), mutex_unlocked, wait) {</code></span>
+<span class="codeline" id="line-94"><code>					return</code></span>
+<span class="codeline" id="line-95"><code>				}</code></span>
+<span class="codeline" id="line-96"><code>			}</code></span>
+<span class="codeline" id="line-97"><code>			osyield()</code></span>
+<span class="codeline" id="line-98"><code>		}</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>		// Sleep.</code></span>
+<span class="codeline" id="line-101"><code>		v = atomic.Xchg(key32(&amp;l.key), mutex_sleeping)</code></span>
+<span class="codeline" id="line-102"><code>		if v == mutex_unlocked {</code></span>
+<span class="codeline" id="line-103"><code>			return</code></span>
+<span class="codeline" id="line-104"><code>		}</code></span>
+<span class="codeline" id="line-105"><code>		wait = mutex_sleeping</code></span>
+<span class="codeline" id="line-106"><code>		futexsleep(key32(&amp;l.key), mutex_sleeping, -1)</code></span>
+<span class="codeline" id="line-107"><code>	}</code></span>
+<span class="codeline" id="line-108"><code>}</code></span>
+<span class="codeline" id="line-109"><code></code></span>
+<span class="codeline" id="line-110"><code>func unlock(l *mutex) {</code></span>
+<span class="codeline" id="line-111"><code>	unlockWithRank(l)</code></span>
+<span class="codeline" id="line-112"><code>}</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>func unlock2(l *mutex) {</code></span>
+<span class="codeline" id="line-115"><code>	v := atomic.Xchg(key32(&amp;l.key), mutex_unlocked)</code></span>
+<span class="codeline" id="line-116"><code>	if v == mutex_unlocked {</code></span>
+<span class="codeline" id="line-117"><code>		throw("unlock of unlocked lock")</code></span>
+<span class="codeline" id="line-118"><code>	}</code></span>
+<span class="codeline" id="line-119"><code>	if v == mutex_sleeping {</code></span>
+<span class="codeline" id="line-120"><code>		futexwakeup(key32(&amp;l.key), 1)</code></span>
+<span class="codeline" id="line-121"><code>	}</code></span>
+<span class="codeline" id="line-122"><code></code></span>
+<span class="codeline" id="line-123"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-124"><code>	gp.m.locks--</code></span>
+<span class="codeline" id="line-125"><code>	if gp.m.locks &lt; 0 {</code></span>
+<span class="codeline" id="line-126"><code>		throw("runtime·unlock: lock count")</code></span>
+<span class="codeline" id="line-127"><code>	}</code></span>
+<span class="codeline" id="line-128"><code>	if gp.m.locks == 0 &amp;&amp; gp.preempt { // restore the preemption request in case we've cleared it in newstack</code></span>
+<span class="codeline" id="line-129"><code>		gp.stackguard0 = stackPreempt</code></span>
+<span class="codeline" id="line-130"><code>	}</code></span>
+<span class="codeline" id="line-131"><code>}</code></span>
+<span class="codeline" id="line-132"><code></code></span>
+<span class="codeline" id="line-133"><code>// One-time notifications.</code></span>
+<span class="codeline" id="line-134"><code>func noteclear(n *note) {</code></span>
+<span class="codeline" id="line-135"><code>	n.key = 0</code></span>
+<span class="codeline" id="line-136"><code>}</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>func notewakeup(n *note) {</code></span>
+<span class="codeline" id="line-139"><code>	old := atomic.Xchg(key32(&amp;n.key), 1)</code></span>
+<span class="codeline" id="line-140"><code>	if old != 0 {</code></span>
+<span class="codeline" id="line-141"><code>		print("notewakeup - double wakeup (", old, ")\n")</code></span>
+<span class="codeline" id="line-142"><code>		throw("notewakeup - double wakeup")</code></span>
+<span class="codeline" id="line-143"><code>	}</code></span>
+<span class="codeline" id="line-144"><code>	futexwakeup(key32(&amp;n.key), 1)</code></span>
+<span class="codeline" id="line-145"><code>}</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>func notesleep(n *note) {</code></span>
+<span class="codeline" id="line-148"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-149"><code>	if gp != gp.m.g0 {</code></span>
+<span class="codeline" id="line-150"><code>		throw("notesleep not on g0")</code></span>
+<span class="codeline" id="line-151"><code>	}</code></span>
+<span class="codeline" id="line-152"><code>	ns := int64(-1)</code></span>
+<span class="codeline" id="line-153"><code>	if *cgo_yield != nil {</code></span>
+<span class="codeline" id="line-154"><code>		// Sleep for an arbitrary-but-moderate interval to poll libc interceptors.</code></span>
+<span class="codeline" id="line-155"><code>		ns = 10e6</code></span>
+<span class="codeline" id="line-156"><code>	}</code></span>
+<span class="codeline" id="line-157"><code>	for atomic.Load(key32(&amp;n.key)) == 0 {</code></span>
+<span class="codeline" id="line-158"><code>		gp.m.blocked = true</code></span>
+<span class="codeline" id="line-159"><code>		futexsleep(key32(&amp;n.key), 0, ns)</code></span>
+<span class="codeline" id="line-160"><code>		if *cgo_yield != nil {</code></span>
+<span class="codeline" id="line-161"><code>			asmcgocall(*cgo_yield, nil)</code></span>
+<span class="codeline" id="line-162"><code>		}</code></span>
+<span class="codeline" id="line-163"><code>		gp.m.blocked = false</code></span>
+<span class="codeline" id="line-164"><code>	}</code></span>
+<span class="codeline" id="line-165"><code>}</code></span>
+<span class="codeline" id="line-166"><code></code></span>
+<span class="codeline" id="line-167"><code>// May run with m.p==nil if called from notetsleep, so write barriers</code></span>
+<span class="codeline" id="line-168"><code>// are not allowed.</code></span>
+<span class="codeline" id="line-169"><code>//</code></span>
+<span class="codeline" id="line-170"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-171"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-172"><code>func notetsleep_internal(n *note, ns int64) bool {</code></span>
+<span class="codeline" id="line-173"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-174"><code></code></span>
+<span class="codeline" id="line-175"><code>	if ns &lt; 0 {</code></span>
+<span class="codeline" id="line-176"><code>		if *cgo_yield != nil {</code></span>
+<span class="codeline" id="line-177"><code>			// Sleep for an arbitrary-but-moderate interval to poll libc interceptors.</code></span>
+<span class="codeline" id="line-178"><code>			ns = 10e6</code></span>
+<span class="codeline" id="line-179"><code>		}</code></span>
+<span class="codeline" id="line-180"><code>		for atomic.Load(key32(&amp;n.key)) == 0 {</code></span>
+<span class="codeline" id="line-181"><code>			gp.m.blocked = true</code></span>
+<span class="codeline" id="line-182"><code>			futexsleep(key32(&amp;n.key), 0, ns)</code></span>
+<span class="codeline" id="line-183"><code>			if *cgo_yield != nil {</code></span>
+<span class="codeline" id="line-184"><code>				asmcgocall(*cgo_yield, nil)</code></span>
+<span class="codeline" id="line-185"><code>			}</code></span>
+<span class="codeline" id="line-186"><code>			gp.m.blocked = false</code></span>
+<span class="codeline" id="line-187"><code>		}</code></span>
+<span class="codeline" id="line-188"><code>		return true</code></span>
+<span class="codeline" id="line-189"><code>	}</code></span>
+<span class="codeline" id="line-190"><code></code></span>
+<span class="codeline" id="line-191"><code>	if atomic.Load(key32(&amp;n.key)) != 0 {</code></span>
+<span class="codeline" id="line-192"><code>		return true</code></span>
+<span class="codeline" id="line-193"><code>	}</code></span>
+<span class="codeline" id="line-194"><code></code></span>
+<span class="codeline" id="line-195"><code>	deadline := nanotime() + ns</code></span>
+<span class="codeline" id="line-196"><code>	for {</code></span>
+<span class="codeline" id="line-197"><code>		if *cgo_yield != nil &amp;&amp; ns &gt; 10e6 {</code></span>
+<span class="codeline" id="line-198"><code>			ns = 10e6</code></span>
+<span class="codeline" id="line-199"><code>		}</code></span>
+<span class="codeline" id="line-200"><code>		gp.m.blocked = true</code></span>
+<span class="codeline" id="line-201"><code>		futexsleep(key32(&amp;n.key), 0, ns)</code></span>
+<span class="codeline" id="line-202"><code>		if *cgo_yield != nil {</code></span>
+<span class="codeline" id="line-203"><code>			asmcgocall(*cgo_yield, nil)</code></span>
+<span class="codeline" id="line-204"><code>		}</code></span>
+<span class="codeline" id="line-205"><code>		gp.m.blocked = false</code></span>
+<span class="codeline" id="line-206"><code>		if atomic.Load(key32(&amp;n.key)) != 0 {</code></span>
+<span class="codeline" id="line-207"><code>			break</code></span>
+<span class="codeline" id="line-208"><code>		}</code></span>
+<span class="codeline" id="line-209"><code>		now := nanotime()</code></span>
+<span class="codeline" id="line-210"><code>		if now &gt;= deadline {</code></span>
+<span class="codeline" id="line-211"><code>			break</code></span>
+<span class="codeline" id="line-212"><code>		}</code></span>
+<span class="codeline" id="line-213"><code>		ns = deadline - now</code></span>
+<span class="codeline" id="line-214"><code>	}</code></span>
+<span class="codeline" id="line-215"><code>	return atomic.Load(key32(&amp;n.key)) != 0</code></span>
+<span class="codeline" id="line-216"><code>}</code></span>
+<span class="codeline" id="line-217"><code></code></span>
+<span class="codeline" id="line-218"><code>func notetsleep(n *note, ns int64) bool {</code></span>
+<span class="codeline" id="line-219"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-220"><code>	if gp != gp.m.g0 &amp;&amp; gp.m.preemptoff != "" {</code></span>
+<span class="codeline" id="line-221"><code>		throw("notetsleep not on g0")</code></span>
+<span class="codeline" id="line-222"><code>	}</code></span>
+<span class="codeline" id="line-223"><code></code></span>
+<span class="codeline" id="line-224"><code>	return notetsleep_internal(n, ns)</code></span>
+<span class="codeline" id="line-225"><code>}</code></span>
+<span class="codeline" id="line-226"><code></code></span>
+<span class="codeline" id="line-227"><code>// same as runtime·notetsleep, but called on user g (not g0)</code></span>
+<span class="codeline" id="line-228"><code>// calls only nosplit functions between entersyscallblock/exitsyscall</code></span>
+<span class="codeline" id="line-229"><code>func notetsleepg(n *note, ns int64) bool {</code></span>
+<span class="codeline" id="line-230"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-231"><code>	if gp == gp.m.g0 {</code></span>
+<span class="codeline" id="line-232"><code>		throw("notetsleepg on g0")</code></span>
+<span class="codeline" id="line-233"><code>	}</code></span>
+<span class="codeline" id="line-234"><code></code></span>
+<span class="codeline" id="line-235"><code>	entersyscallblock()</code></span>
+<span class="codeline" id="line-236"><code>	ok := notetsleep_internal(n, ns)</code></span>
+<span class="codeline" id="line-237"><code>	exitsyscall()</code></span>
+<span class="codeline" id="line-238"><code>	return ok</code></span>
+<span class="codeline" id="line-239"><code>}</code></span>
+<span class="codeline" id="line-240"><code></code></span>
+<span class="codeline" id="line-241"><code>func beforeIdle(int64) (*g, bool) {</code></span>
+<span class="codeline" id="line-242"><code>	return nil, false</code></span>
+<span class="codeline" id="line-243"><code>}</code></span>
+<span class="codeline" id="line-244"><code></code></span>
+<span class="codeline" id="line-245"><code>func checkTimeouts() {}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

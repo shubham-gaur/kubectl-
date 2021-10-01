@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: scanner.go in package encoding/json</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	scanner.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/encoding/json.html">encoding/json</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package json</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// JSON value parser state machine.</code></span>
+<span class="codeline" id="line-8"><code>// Just about at the limit of what is reasonable to write by hand.</code></span>
+<span class="codeline" id="line-9"><code>// Some parts are a bit tedious, but overall it nicely factors out the</code></span>
+<span class="codeline" id="line-10"><code>// otherwise common code from the multiple scanning functions</code></span>
+<span class="codeline" id="line-11"><code>// in this package (Compact, Indent, checkValid, etc).</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>// This file starts with two simple examples using the scanner</code></span>
+<span class="codeline" id="line-14"><code>// before diving into the scanner itself.</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>import (</code></span>
+<span class="codeline" id="line-17"><code>	"strconv"</code></span>
+<span class="codeline" id="line-18"><code>	"sync"</code></span>
+<span class="codeline" id="line-19"><code>)</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>// Valid reports whether data is a valid JSON encoding.</code></span>
+<span class="codeline" id="line-22"><code>func Valid(data []byte) bool {</code></span>
+<span class="codeline" id="line-23"><code>	scan := newScanner()</code></span>
+<span class="codeline" id="line-24"><code>	defer freeScanner(scan)</code></span>
+<span class="codeline" id="line-25"><code>	return checkValid(data, scan) == nil</code></span>
+<span class="codeline" id="line-26"><code>}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>// checkValid verifies that data is valid JSON-encoded data.</code></span>
+<span class="codeline" id="line-29"><code>// scan is passed in for use by checkValid to avoid an allocation.</code></span>
+<span class="codeline" id="line-30"><code>func checkValid(data []byte, scan *scanner) error {</code></span>
+<span class="codeline" id="line-31"><code>	scan.reset()</code></span>
+<span class="codeline" id="line-32"><code>	for _, c := range data {</code></span>
+<span class="codeline" id="line-33"><code>		scan.bytes++</code></span>
+<span class="codeline" id="line-34"><code>		if scan.step(scan, c) == scanError {</code></span>
+<span class="codeline" id="line-35"><code>			return scan.err</code></span>
+<span class="codeline" id="line-36"><code>		}</code></span>
+<span class="codeline" id="line-37"><code>	}</code></span>
+<span class="codeline" id="line-38"><code>	if scan.eof() == scanError {</code></span>
+<span class="codeline" id="line-39"><code>		return scan.err</code></span>
+<span class="codeline" id="line-40"><code>	}</code></span>
+<span class="codeline" id="line-41"><code>	return nil</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>// A SyntaxError is a description of a JSON syntax error.</code></span>
+<span class="codeline" id="line-45"><code>type SyntaxError struct {</code></span>
+<span class="codeline" id="line-46"><code>	msg    string // description of error</code></span>
+<span class="codeline" id="line-47"><code>	Offset int64  // error occurred after reading Offset bytes</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>func (e *SyntaxError) Error() string { return e.msg }</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>// A scanner is a JSON scanning state machine.</code></span>
+<span class="codeline" id="line-53"><code>// Callers call scan.reset and then pass bytes in one at a time</code></span>
+<span class="codeline" id="line-54"><code>// by calling scan.step(&amp;scan, c) for each byte.</code></span>
+<span class="codeline" id="line-55"><code>// The return value, referred to as an opcode, tells the</code></span>
+<span class="codeline" id="line-56"><code>// caller about significant parsing events like beginning</code></span>
+<span class="codeline" id="line-57"><code>// and ending literals, objects, and arrays, so that the</code></span>
+<span class="codeline" id="line-58"><code>// caller can follow along if it wishes.</code></span>
+<span class="codeline" id="line-59"><code>// The return value scanEnd indicates that a single top-level</code></span>
+<span class="codeline" id="line-60"><code>// JSON value has been completed, *before* the byte that</code></span>
+<span class="codeline" id="line-61"><code>// just got passed in.  (The indication must be delayed in order</code></span>
+<span class="codeline" id="line-62"><code>// to recognize the end of numbers: is 123 a whole value or</code></span>
+<span class="codeline" id="line-63"><code>// the beginning of 12345e+6?).</code></span>
+<span class="codeline" id="line-64"><code>type scanner struct {</code></span>
+<span class="codeline" id="line-65"><code>	// The step is a func to be called to execute the next transition.</code></span>
+<span class="codeline" id="line-66"><code>	// Also tried using an integer constant and a single func</code></span>
+<span class="codeline" id="line-67"><code>	// with a switch, but using the func directly was 10% faster</code></span>
+<span class="codeline" id="line-68"><code>	// on a 64-bit Mac Mini, and it's nicer to read.</code></span>
+<span class="codeline" id="line-69"><code>	step func(*scanner, byte) int</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>	// Reached end of top-level value.</code></span>
+<span class="codeline" id="line-72"><code>	endTop bool</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>	// Stack of what we're in the middle of - array values, object keys, object values.</code></span>
+<span class="codeline" id="line-75"><code>	parseState []int</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>	// Error that happened, if any.</code></span>
+<span class="codeline" id="line-78"><code>	err error</code></span>
+<span class="codeline" id="line-79"><code></code></span>
+<span class="codeline" id="line-80"><code>	// total bytes consumed, updated by decoder.Decode (and deliberately</code></span>
+<span class="codeline" id="line-81"><code>	// not set to zero by scan.reset)</code></span>
+<span class="codeline" id="line-82"><code>	bytes int64</code></span>
+<span class="codeline" id="line-83"><code>}</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>var scannerPool = sync.Pool{</code></span>
+<span class="codeline" id="line-86"><code>	New: func() interface{} {</code></span>
+<span class="codeline" id="line-87"><code>		return &amp;scanner{}</code></span>
+<span class="codeline" id="line-88"><code>	},</code></span>
+<span class="codeline" id="line-89"><code>}</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>func newScanner() *scanner {</code></span>
+<span class="codeline" id="line-92"><code>	scan := scannerPool.Get().(*scanner)</code></span>
+<span class="codeline" id="line-93"><code>	// scan.reset by design doesn't set bytes to zero</code></span>
+<span class="codeline" id="line-94"><code>	scan.bytes = 0</code></span>
+<span class="codeline" id="line-95"><code>	scan.reset()</code></span>
+<span class="codeline" id="line-96"><code>	return scan</code></span>
+<span class="codeline" id="line-97"><code>}</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>func freeScanner(scan *scanner) {</code></span>
+<span class="codeline" id="line-100"><code>	// Avoid hanging on to too much memory in extreme cases.</code></span>
+<span class="codeline" id="line-101"><code>	if len(scan.parseState) &gt; 1024 {</code></span>
+<span class="codeline" id="line-102"><code>		scan.parseState = nil</code></span>
+<span class="codeline" id="line-103"><code>	}</code></span>
+<span class="codeline" id="line-104"><code>	scannerPool.Put(scan)</code></span>
+<span class="codeline" id="line-105"><code>}</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>// These values are returned by the state transition functions</code></span>
+<span class="codeline" id="line-108"><code>// assigned to scanner.state and the method scanner.eof.</code></span>
+<span class="codeline" id="line-109"><code>// They give details about the current state of the scan that</code></span>
+<span class="codeline" id="line-110"><code>// callers might be interested to know about.</code></span>
+<span class="codeline" id="line-111"><code>// It is okay to ignore the return value of any particular</code></span>
+<span class="codeline" id="line-112"><code>// call to scanner.state: if one call returns scanError,</code></span>
+<span class="codeline" id="line-113"><code>// every subsequent call will return scanError too.</code></span>
+<span class="codeline" id="line-114"><code>const (</code></span>
+<span class="codeline" id="line-115"><code>	// Continue.</code></span>
+<span class="codeline" id="line-116"><code>	scanContinue     = iota // uninteresting byte</code></span>
+<span class="codeline" id="line-117"><code>	scanBeginLiteral        // end implied by next result != scanContinue</code></span>
+<span class="codeline" id="line-118"><code>	scanBeginObject         // begin object</code></span>
+<span class="codeline" id="line-119"><code>	scanObjectKey           // just finished object key (string)</code></span>
+<span class="codeline" id="line-120"><code>	scanObjectValue         // just finished non-last object value</code></span>
+<span class="codeline" id="line-121"><code>	scanEndObject           // end object (implies scanObjectValue if possible)</code></span>
+<span class="codeline" id="line-122"><code>	scanBeginArray          // begin array</code></span>
+<span class="codeline" id="line-123"><code>	scanArrayValue          // just finished array value</code></span>
+<span class="codeline" id="line-124"><code>	scanEndArray            // end array (implies scanArrayValue if possible)</code></span>
+<span class="codeline" id="line-125"><code>	scanSkipSpace           // space byte; can skip; known to be last "continue" result</code></span>
+<span class="codeline" id="line-126"><code></code></span>
+<span class="codeline" id="line-127"><code>	// Stop.</code></span>
+<span class="codeline" id="line-128"><code>	scanEnd   // top-level value ended *before* this byte; known to be first "stop" result</code></span>
+<span class="codeline" id="line-129"><code>	scanError // hit an error, scanner.err.</code></span>
+<span class="codeline" id="line-130"><code>)</code></span>
+<span class="codeline" id="line-131"><code></code></span>
+<span class="codeline" id="line-132"><code>// These values are stored in the parseState stack.</code></span>
+<span class="codeline" id="line-133"><code>// They give the current state of a composite value</code></span>
+<span class="codeline" id="line-134"><code>// being scanned. If the parser is inside a nested value</code></span>
+<span class="codeline" id="line-135"><code>// the parseState describes the nested state, outermost at entry 0.</code></span>
+<span class="codeline" id="line-136"><code>const (</code></span>
+<span class="codeline" id="line-137"><code>	parseObjectKey   = iota // parsing object key (before colon)</code></span>
+<span class="codeline" id="line-138"><code>	parseObjectValue        // parsing object value (after colon)</code></span>
+<span class="codeline" id="line-139"><code>	parseArrayValue         // parsing array value</code></span>
+<span class="codeline" id="line-140"><code>)</code></span>
+<span class="codeline" id="line-141"><code></code></span>
+<span class="codeline" id="line-142"><code>// This limits the max nesting depth to prevent stack overflow.</code></span>
+<span class="codeline" id="line-143"><code>// This is permitted by https://tools.ietf.org/html/rfc7159#section-9</code></span>
+<span class="codeline" id="line-144"><code>const maxNestingDepth = 10000</code></span>
+<span class="codeline" id="line-145"><code></code></span>
+<span class="codeline" id="line-146"><code>// reset prepares the scanner for use.</code></span>
+<span class="codeline" id="line-147"><code>// It must be called before calling s.step.</code></span>
+<span class="codeline" id="line-148"><code>func (s *scanner) reset() {</code></span>
+<span class="codeline" id="line-149"><code>	s.step = stateBeginValue</code></span>
+<span class="codeline" id="line-150"><code>	s.parseState = s.parseState[0:0]</code></span>
+<span class="codeline" id="line-151"><code>	s.err = nil</code></span>
+<span class="codeline" id="line-152"><code>	s.endTop = false</code></span>
+<span class="codeline" id="line-153"><code>}</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>// eof tells the scanner that the end of input has been reached.</code></span>
+<span class="codeline" id="line-156"><code>// It returns a scan status just as s.step does.</code></span>
+<span class="codeline" id="line-157"><code>func (s *scanner) eof() int {</code></span>
+<span class="codeline" id="line-158"><code>	if s.err != nil {</code></span>
+<span class="codeline" id="line-159"><code>		return scanError</code></span>
+<span class="codeline" id="line-160"><code>	}</code></span>
+<span class="codeline" id="line-161"><code>	if s.endTop {</code></span>
+<span class="codeline" id="line-162"><code>		return scanEnd</code></span>
+<span class="codeline" id="line-163"><code>	}</code></span>
+<span class="codeline" id="line-164"><code>	s.step(s, ' ')</code></span>
+<span class="codeline" id="line-165"><code>	if s.endTop {</code></span>
+<span class="codeline" id="line-166"><code>		return scanEnd</code></span>
+<span class="codeline" id="line-167"><code>	}</code></span>
+<span class="codeline" id="line-168"><code>	if s.err == nil {</code></span>
+<span class="codeline" id="line-169"><code>		s.err = &amp;SyntaxError{"unexpected end of JSON input", s.bytes}</code></span>
+<span class="codeline" id="line-170"><code>	}</code></span>
+<span class="codeline" id="line-171"><code>	return scanError</code></span>
+<span class="codeline" id="line-172"><code>}</code></span>
+<span class="codeline" id="line-173"><code></code></span>
+<span class="codeline" id="line-174"><code>// pushParseState pushes a new parse state p onto the parse stack.</code></span>
+<span class="codeline" id="line-175"><code>// an error state is returned if maxNestingDepth was exceeded, otherwise successState is returned.</code></span>
+<span class="codeline" id="line-176"><code>func (s *scanner) pushParseState(c byte, newParseState int, successState int) int {</code></span>
+<span class="codeline" id="line-177"><code>	s.parseState = append(s.parseState, newParseState)</code></span>
+<span class="codeline" id="line-178"><code>	if len(s.parseState) &lt;= maxNestingDepth {</code></span>
+<span class="codeline" id="line-179"><code>		return successState</code></span>
+<span class="codeline" id="line-180"><code>	}</code></span>
+<span class="codeline" id="line-181"><code>	return s.error(c, "exceeded max depth")</code></span>
+<span class="codeline" id="line-182"><code>}</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>// popParseState pops a parse state (already obtained) off the stack</code></span>
+<span class="codeline" id="line-185"><code>// and updates s.step accordingly.</code></span>
+<span class="codeline" id="line-186"><code>func (s *scanner) popParseState() {</code></span>
+<span class="codeline" id="line-187"><code>	n := len(s.parseState) - 1</code></span>
+<span class="codeline" id="line-188"><code>	s.parseState = s.parseState[0:n]</code></span>
+<span class="codeline" id="line-189"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-190"><code>		s.step = stateEndTop</code></span>
+<span class="codeline" id="line-191"><code>		s.endTop = true</code></span>
+<span class="codeline" id="line-192"><code>	} else {</code></span>
+<span class="codeline" id="line-193"><code>		s.step = stateEndValue</code></span>
+<span class="codeline" id="line-194"><code>	}</code></span>
+<span class="codeline" id="line-195"><code>}</code></span>
+<span class="codeline" id="line-196"><code></code></span>
+<span class="codeline" id="line-197"><code>func isSpace(c byte) bool {</code></span>
+<span class="codeline" id="line-198"><code>	return c &lt;= ' ' &amp;&amp; (c == ' ' || c == '\t' || c == '\r' || c == '\n')</code></span>
+<span class="codeline" id="line-199"><code>}</code></span>
+<span class="codeline" id="line-200"><code></code></span>
+<span class="codeline" id="line-201"><code>// stateBeginValueOrEmpty is the state after reading `[`.</code></span>
+<span class="codeline" id="line-202"><code>func stateBeginValueOrEmpty(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-203"><code>	if isSpace(c) {</code></span>
+<span class="codeline" id="line-204"><code>		return scanSkipSpace</code></span>
+<span class="codeline" id="line-205"><code>	}</code></span>
+<span class="codeline" id="line-206"><code>	if c == ']' {</code></span>
+<span class="codeline" id="line-207"><code>		return stateEndValue(s, c)</code></span>
+<span class="codeline" id="line-208"><code>	}</code></span>
+<span class="codeline" id="line-209"><code>	return stateBeginValue(s, c)</code></span>
+<span class="codeline" id="line-210"><code>}</code></span>
+<span class="codeline" id="line-211"><code></code></span>
+<span class="codeline" id="line-212"><code>// stateBeginValue is the state at the beginning of the input.</code></span>
+<span class="codeline" id="line-213"><code>func stateBeginValue(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-214"><code>	if isSpace(c) {</code></span>
+<span class="codeline" id="line-215"><code>		return scanSkipSpace</code></span>
+<span class="codeline" id="line-216"><code>	}</code></span>
+<span class="codeline" id="line-217"><code>	switch c {</code></span>
+<span class="codeline" id="line-218"><code>	case '{':</code></span>
+<span class="codeline" id="line-219"><code>		s.step = stateBeginStringOrEmpty</code></span>
+<span class="codeline" id="line-220"><code>		return s.pushParseState(c, parseObjectKey, scanBeginObject)</code></span>
+<span class="codeline" id="line-221"><code>	case '[':</code></span>
+<span class="codeline" id="line-222"><code>		s.step = stateBeginValueOrEmpty</code></span>
+<span class="codeline" id="line-223"><code>		return s.pushParseState(c, parseArrayValue, scanBeginArray)</code></span>
+<span class="codeline" id="line-224"><code>	case '"':</code></span>
+<span class="codeline" id="line-225"><code>		s.step = stateInString</code></span>
+<span class="codeline" id="line-226"><code>		return scanBeginLiteral</code></span>
+<span class="codeline" id="line-227"><code>	case '-':</code></span>
+<span class="codeline" id="line-228"><code>		s.step = stateNeg</code></span>
+<span class="codeline" id="line-229"><code>		return scanBeginLiteral</code></span>
+<span class="codeline" id="line-230"><code>	case '0': // beginning of 0.123</code></span>
+<span class="codeline" id="line-231"><code>		s.step = state0</code></span>
+<span class="codeline" id="line-232"><code>		return scanBeginLiteral</code></span>
+<span class="codeline" id="line-233"><code>	case 't': // beginning of true</code></span>
+<span class="codeline" id="line-234"><code>		s.step = stateT</code></span>
+<span class="codeline" id="line-235"><code>		return scanBeginLiteral</code></span>
+<span class="codeline" id="line-236"><code>	case 'f': // beginning of false</code></span>
+<span class="codeline" id="line-237"><code>		s.step = stateF</code></span>
+<span class="codeline" id="line-238"><code>		return scanBeginLiteral</code></span>
+<span class="codeline" id="line-239"><code>	case 'n': // beginning of null</code></span>
+<span class="codeline" id="line-240"><code>		s.step = stateN</code></span>
+<span class="codeline" id="line-241"><code>		return scanBeginLiteral</code></span>
+<span class="codeline" id="line-242"><code>	}</code></span>
+<span class="codeline" id="line-243"><code>	if '1' &lt;= c &amp;&amp; c &lt;= '9' { // beginning of 1234.5</code></span>
+<span class="codeline" id="line-244"><code>		s.step = state1</code></span>
+<span class="codeline" id="line-245"><code>		return scanBeginLiteral</code></span>
+<span class="codeline" id="line-246"><code>	}</code></span>
+<span class="codeline" id="line-247"><code>	return s.error(c, "looking for beginning of value")</code></span>
+<span class="codeline" id="line-248"><code>}</code></span>
+<span class="codeline" id="line-249"><code></code></span>
+<span class="codeline" id="line-250"><code>// stateBeginStringOrEmpty is the state after reading `{`.</code></span>
+<span class="codeline" id="line-251"><code>func stateBeginStringOrEmpty(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-252"><code>	if isSpace(c) {</code></span>
+<span class="codeline" id="line-253"><code>		return scanSkipSpace</code></span>
+<span class="codeline" id="line-254"><code>	}</code></span>
+<span class="codeline" id="line-255"><code>	if c == '}' {</code></span>
+<span class="codeline" id="line-256"><code>		n := len(s.parseState)</code></span>
+<span class="codeline" id="line-257"><code>		s.parseState[n-1] = parseObjectValue</code></span>
+<span class="codeline" id="line-258"><code>		return stateEndValue(s, c)</code></span>
+<span class="codeline" id="line-259"><code>	}</code></span>
+<span class="codeline" id="line-260"><code>	return stateBeginString(s, c)</code></span>
+<span class="codeline" id="line-261"><code>}</code></span>
+<span class="codeline" id="line-262"><code></code></span>
+<span class="codeline" id="line-263"><code>// stateBeginString is the state after reading `{"key": value,`.</code></span>
+<span class="codeline" id="line-264"><code>func stateBeginString(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-265"><code>	if isSpace(c) {</code></span>
+<span class="codeline" id="line-266"><code>		return scanSkipSpace</code></span>
+<span class="codeline" id="line-267"><code>	}</code></span>
+<span class="codeline" id="line-268"><code>	if c == '"' {</code></span>
+<span class="codeline" id="line-269"><code>		s.step = stateInString</code></span>
+<span class="codeline" id="line-270"><code>		return scanBeginLiteral</code></span>
+<span class="codeline" id="line-271"><code>	}</code></span>
+<span class="codeline" id="line-272"><code>	return s.error(c, "looking for beginning of object key string")</code></span>
+<span class="codeline" id="line-273"><code>}</code></span>
+<span class="codeline" id="line-274"><code></code></span>
+<span class="codeline" id="line-275"><code>// stateEndValue is the state after completing a value,</code></span>
+<span class="codeline" id="line-276"><code>// such as after reading `{}` or `true` or `["x"`.</code></span>
+<span class="codeline" id="line-277"><code>func stateEndValue(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-278"><code>	n := len(s.parseState)</code></span>
+<span class="codeline" id="line-279"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-280"><code>		// Completed top-level before the current byte.</code></span>
+<span class="codeline" id="line-281"><code>		s.step = stateEndTop</code></span>
+<span class="codeline" id="line-282"><code>		s.endTop = true</code></span>
+<span class="codeline" id="line-283"><code>		return stateEndTop(s, c)</code></span>
+<span class="codeline" id="line-284"><code>	}</code></span>
+<span class="codeline" id="line-285"><code>	if isSpace(c) {</code></span>
+<span class="codeline" id="line-286"><code>		s.step = stateEndValue</code></span>
+<span class="codeline" id="line-287"><code>		return scanSkipSpace</code></span>
+<span class="codeline" id="line-288"><code>	}</code></span>
+<span class="codeline" id="line-289"><code>	ps := s.parseState[n-1]</code></span>
+<span class="codeline" id="line-290"><code>	switch ps {</code></span>
+<span class="codeline" id="line-291"><code>	case parseObjectKey:</code></span>
+<span class="codeline" id="line-292"><code>		if c == ':' {</code></span>
+<span class="codeline" id="line-293"><code>			s.parseState[n-1] = parseObjectValue</code></span>
+<span class="codeline" id="line-294"><code>			s.step = stateBeginValue</code></span>
+<span class="codeline" id="line-295"><code>			return scanObjectKey</code></span>
+<span class="codeline" id="line-296"><code>		}</code></span>
+<span class="codeline" id="line-297"><code>		return s.error(c, "after object key")</code></span>
+<span class="codeline" id="line-298"><code>	case parseObjectValue:</code></span>
+<span class="codeline" id="line-299"><code>		if c == ',' {</code></span>
+<span class="codeline" id="line-300"><code>			s.parseState[n-1] = parseObjectKey</code></span>
+<span class="codeline" id="line-301"><code>			s.step = stateBeginString</code></span>
+<span class="codeline" id="line-302"><code>			return scanObjectValue</code></span>
+<span class="codeline" id="line-303"><code>		}</code></span>
+<span class="codeline" id="line-304"><code>		if c == '}' {</code></span>
+<span class="codeline" id="line-305"><code>			s.popParseState()</code></span>
+<span class="codeline" id="line-306"><code>			return scanEndObject</code></span>
+<span class="codeline" id="line-307"><code>		}</code></span>
+<span class="codeline" id="line-308"><code>		return s.error(c, "after object key:value pair")</code></span>
+<span class="codeline" id="line-309"><code>	case parseArrayValue:</code></span>
+<span class="codeline" id="line-310"><code>		if c == ',' {</code></span>
+<span class="codeline" id="line-311"><code>			s.step = stateBeginValue</code></span>
+<span class="codeline" id="line-312"><code>			return scanArrayValue</code></span>
+<span class="codeline" id="line-313"><code>		}</code></span>
+<span class="codeline" id="line-314"><code>		if c == ']' {</code></span>
+<span class="codeline" id="line-315"><code>			s.popParseState()</code></span>
+<span class="codeline" id="line-316"><code>			return scanEndArray</code></span>
+<span class="codeline" id="line-317"><code>		}</code></span>
+<span class="codeline" id="line-318"><code>		return s.error(c, "after array element")</code></span>
+<span class="codeline" id="line-319"><code>	}</code></span>
+<span class="codeline" id="line-320"><code>	return s.error(c, "")</code></span>
+<span class="codeline" id="line-321"><code>}</code></span>
+<span class="codeline" id="line-322"><code></code></span>
+<span class="codeline" id="line-323"><code>// stateEndTop is the state after finishing the top-level value,</code></span>
+<span class="codeline" id="line-324"><code>// such as after reading `{}` or `[1,2,3]`.</code></span>
+<span class="codeline" id="line-325"><code>// Only space characters should be seen now.</code></span>
+<span class="codeline" id="line-326"><code>func stateEndTop(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-327"><code>	if !isSpace(c) {</code></span>
+<span class="codeline" id="line-328"><code>		// Complain about non-space byte on next call.</code></span>
+<span class="codeline" id="line-329"><code>		s.error(c, "after top-level value")</code></span>
+<span class="codeline" id="line-330"><code>	}</code></span>
+<span class="codeline" id="line-331"><code>	return scanEnd</code></span>
+<span class="codeline" id="line-332"><code>}</code></span>
+<span class="codeline" id="line-333"><code></code></span>
+<span class="codeline" id="line-334"><code>// stateInString is the state after reading `"`.</code></span>
+<span class="codeline" id="line-335"><code>func stateInString(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-336"><code>	if c == '"' {</code></span>
+<span class="codeline" id="line-337"><code>		s.step = stateEndValue</code></span>
+<span class="codeline" id="line-338"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-339"><code>	}</code></span>
+<span class="codeline" id="line-340"><code>	if c == '\\' {</code></span>
+<span class="codeline" id="line-341"><code>		s.step = stateInStringEsc</code></span>
+<span class="codeline" id="line-342"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-343"><code>	}</code></span>
+<span class="codeline" id="line-344"><code>	if c &lt; 0x20 {</code></span>
+<span class="codeline" id="line-345"><code>		return s.error(c, "in string literal")</code></span>
+<span class="codeline" id="line-346"><code>	}</code></span>
+<span class="codeline" id="line-347"><code>	return scanContinue</code></span>
+<span class="codeline" id="line-348"><code>}</code></span>
+<span class="codeline" id="line-349"><code></code></span>
+<span class="codeline" id="line-350"><code>// stateInStringEsc is the state after reading `"\` during a quoted string.</code></span>
+<span class="codeline" id="line-351"><code>func stateInStringEsc(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-352"><code>	switch c {</code></span>
+<span class="codeline" id="line-353"><code>	case 'b', 'f', 'n', 'r', 't', '\\', '/', '"':</code></span>
+<span class="codeline" id="line-354"><code>		s.step = stateInString</code></span>
+<span class="codeline" id="line-355"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-356"><code>	case 'u':</code></span>
+<span class="codeline" id="line-357"><code>		s.step = stateInStringEscU</code></span>
+<span class="codeline" id="line-358"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-359"><code>	}</code></span>
+<span class="codeline" id="line-360"><code>	return s.error(c, "in string escape code")</code></span>
+<span class="codeline" id="line-361"><code>}</code></span>
+<span class="codeline" id="line-362"><code></code></span>
+<span class="codeline" id="line-363"><code>// stateInStringEscU is the state after reading `"\u` during a quoted string.</code></span>
+<span class="codeline" id="line-364"><code>func stateInStringEscU(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-365"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' || 'a' &lt;= c &amp;&amp; c &lt;= 'f' || 'A' &lt;= c &amp;&amp; c &lt;= 'F' {</code></span>
+<span class="codeline" id="line-366"><code>		s.step = stateInStringEscU1</code></span>
+<span class="codeline" id="line-367"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-368"><code>	}</code></span>
+<span class="codeline" id="line-369"><code>	// numbers</code></span>
+<span class="codeline" id="line-370"><code>	return s.error(c, "in \\u hexadecimal character escape")</code></span>
+<span class="codeline" id="line-371"><code>}</code></span>
+<span class="codeline" id="line-372"><code></code></span>
+<span class="codeline" id="line-373"><code>// stateInStringEscU1 is the state after reading `"\u1` during a quoted string.</code></span>
+<span class="codeline" id="line-374"><code>func stateInStringEscU1(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-375"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' || 'a' &lt;= c &amp;&amp; c &lt;= 'f' || 'A' &lt;= c &amp;&amp; c &lt;= 'F' {</code></span>
+<span class="codeline" id="line-376"><code>		s.step = stateInStringEscU12</code></span>
+<span class="codeline" id="line-377"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-378"><code>	}</code></span>
+<span class="codeline" id="line-379"><code>	// numbers</code></span>
+<span class="codeline" id="line-380"><code>	return s.error(c, "in \\u hexadecimal character escape")</code></span>
+<span class="codeline" id="line-381"><code>}</code></span>
+<span class="codeline" id="line-382"><code></code></span>
+<span class="codeline" id="line-383"><code>// stateInStringEscU12 is the state after reading `"\u12` during a quoted string.</code></span>
+<span class="codeline" id="line-384"><code>func stateInStringEscU12(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-385"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' || 'a' &lt;= c &amp;&amp; c &lt;= 'f' || 'A' &lt;= c &amp;&amp; c &lt;= 'F' {</code></span>
+<span class="codeline" id="line-386"><code>		s.step = stateInStringEscU123</code></span>
+<span class="codeline" id="line-387"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-388"><code>	}</code></span>
+<span class="codeline" id="line-389"><code>	// numbers</code></span>
+<span class="codeline" id="line-390"><code>	return s.error(c, "in \\u hexadecimal character escape")</code></span>
+<span class="codeline" id="line-391"><code>}</code></span>
+<span class="codeline" id="line-392"><code></code></span>
+<span class="codeline" id="line-393"><code>// stateInStringEscU123 is the state after reading `"\u123` during a quoted string.</code></span>
+<span class="codeline" id="line-394"><code>func stateInStringEscU123(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-395"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' || 'a' &lt;= c &amp;&amp; c &lt;= 'f' || 'A' &lt;= c &amp;&amp; c &lt;= 'F' {</code></span>
+<span class="codeline" id="line-396"><code>		s.step = stateInString</code></span>
+<span class="codeline" id="line-397"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-398"><code>	}</code></span>
+<span class="codeline" id="line-399"><code>	// numbers</code></span>
+<span class="codeline" id="line-400"><code>	return s.error(c, "in \\u hexadecimal character escape")</code></span>
+<span class="codeline" id="line-401"><code>}</code></span>
+<span class="codeline" id="line-402"><code></code></span>
+<span class="codeline" id="line-403"><code>// stateNeg is the state after reading `-` during a number.</code></span>
+<span class="codeline" id="line-404"><code>func stateNeg(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-405"><code>	if c == '0' {</code></span>
+<span class="codeline" id="line-406"><code>		s.step = state0</code></span>
+<span class="codeline" id="line-407"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-408"><code>	}</code></span>
+<span class="codeline" id="line-409"><code>	if '1' &lt;= c &amp;&amp; c &lt;= '9' {</code></span>
+<span class="codeline" id="line-410"><code>		s.step = state1</code></span>
+<span class="codeline" id="line-411"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-412"><code>	}</code></span>
+<span class="codeline" id="line-413"><code>	return s.error(c, "in numeric literal")</code></span>
+<span class="codeline" id="line-414"><code>}</code></span>
+<span class="codeline" id="line-415"><code></code></span>
+<span class="codeline" id="line-416"><code>// state1 is the state after reading a non-zero integer during a number,</code></span>
+<span class="codeline" id="line-417"><code>// such as after reading `1` or `100` but not `0`.</code></span>
+<span class="codeline" id="line-418"><code>func state1(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-419"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' {</code></span>
+<span class="codeline" id="line-420"><code>		s.step = state1</code></span>
+<span class="codeline" id="line-421"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-422"><code>	}</code></span>
+<span class="codeline" id="line-423"><code>	return state0(s, c)</code></span>
+<span class="codeline" id="line-424"><code>}</code></span>
+<span class="codeline" id="line-425"><code></code></span>
+<span class="codeline" id="line-426"><code>// state0 is the state after reading `0` during a number.</code></span>
+<span class="codeline" id="line-427"><code>func state0(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-428"><code>	if c == '.' {</code></span>
+<span class="codeline" id="line-429"><code>		s.step = stateDot</code></span>
+<span class="codeline" id="line-430"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-431"><code>	}</code></span>
+<span class="codeline" id="line-432"><code>	if c == 'e' || c == 'E' {</code></span>
+<span class="codeline" id="line-433"><code>		s.step = stateE</code></span>
+<span class="codeline" id="line-434"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-435"><code>	}</code></span>
+<span class="codeline" id="line-436"><code>	return stateEndValue(s, c)</code></span>
+<span class="codeline" id="line-437"><code>}</code></span>
+<span class="codeline" id="line-438"><code></code></span>
+<span class="codeline" id="line-439"><code>// stateDot is the state after reading the integer and decimal point in a number,</code></span>
+<span class="codeline" id="line-440"><code>// such as after reading `1.`.</code></span>
+<span class="codeline" id="line-441"><code>func stateDot(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-442"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' {</code></span>
+<span class="codeline" id="line-443"><code>		s.step = stateDot0</code></span>
+<span class="codeline" id="line-444"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-445"><code>	}</code></span>
+<span class="codeline" id="line-446"><code>	return s.error(c, "after decimal point in numeric literal")</code></span>
+<span class="codeline" id="line-447"><code>}</code></span>
+<span class="codeline" id="line-448"><code></code></span>
+<span class="codeline" id="line-449"><code>// stateDot0 is the state after reading the integer, decimal point, and subsequent</code></span>
+<span class="codeline" id="line-450"><code>// digits of a number, such as after reading `3.14`.</code></span>
+<span class="codeline" id="line-451"><code>func stateDot0(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-452"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' {</code></span>
+<span class="codeline" id="line-453"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-454"><code>	}</code></span>
+<span class="codeline" id="line-455"><code>	if c == 'e' || c == 'E' {</code></span>
+<span class="codeline" id="line-456"><code>		s.step = stateE</code></span>
+<span class="codeline" id="line-457"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-458"><code>	}</code></span>
+<span class="codeline" id="line-459"><code>	return stateEndValue(s, c)</code></span>
+<span class="codeline" id="line-460"><code>}</code></span>
+<span class="codeline" id="line-461"><code></code></span>
+<span class="codeline" id="line-462"><code>// stateE is the state after reading the mantissa and e in a number,</code></span>
+<span class="codeline" id="line-463"><code>// such as after reading `314e` or `0.314e`.</code></span>
+<span class="codeline" id="line-464"><code>func stateE(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-465"><code>	if c == '+' || c == '-' {</code></span>
+<span class="codeline" id="line-466"><code>		s.step = stateESign</code></span>
+<span class="codeline" id="line-467"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-468"><code>	}</code></span>
+<span class="codeline" id="line-469"><code>	return stateESign(s, c)</code></span>
+<span class="codeline" id="line-470"><code>}</code></span>
+<span class="codeline" id="line-471"><code></code></span>
+<span class="codeline" id="line-472"><code>// stateESign is the state after reading the mantissa, e, and sign in a number,</code></span>
+<span class="codeline" id="line-473"><code>// such as after reading `314e-` or `0.314e+`.</code></span>
+<span class="codeline" id="line-474"><code>func stateESign(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-475"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' {</code></span>
+<span class="codeline" id="line-476"><code>		s.step = stateE0</code></span>
+<span class="codeline" id="line-477"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-478"><code>	}</code></span>
+<span class="codeline" id="line-479"><code>	return s.error(c, "in exponent of numeric literal")</code></span>
+<span class="codeline" id="line-480"><code>}</code></span>
+<span class="codeline" id="line-481"><code></code></span>
+<span class="codeline" id="line-482"><code>// stateE0 is the state after reading the mantissa, e, optional sign,</code></span>
+<span class="codeline" id="line-483"><code>// and at least one digit of the exponent in a number,</code></span>
+<span class="codeline" id="line-484"><code>// such as after reading `314e-2` or `0.314e+1` or `3.14e0`.</code></span>
+<span class="codeline" id="line-485"><code>func stateE0(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-486"><code>	if '0' &lt;= c &amp;&amp; c &lt;= '9' {</code></span>
+<span class="codeline" id="line-487"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-488"><code>	}</code></span>
+<span class="codeline" id="line-489"><code>	return stateEndValue(s, c)</code></span>
+<span class="codeline" id="line-490"><code>}</code></span>
+<span class="codeline" id="line-491"><code></code></span>
+<span class="codeline" id="line-492"><code>// stateT is the state after reading `t`.</code></span>
+<span class="codeline" id="line-493"><code>func stateT(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-494"><code>	if c == 'r' {</code></span>
+<span class="codeline" id="line-495"><code>		s.step = stateTr</code></span>
+<span class="codeline" id="line-496"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-497"><code>	}</code></span>
+<span class="codeline" id="line-498"><code>	return s.error(c, "in literal true (expecting 'r')")</code></span>
+<span class="codeline" id="line-499"><code>}</code></span>
+<span class="codeline" id="line-500"><code></code></span>
+<span class="codeline" id="line-501"><code>// stateTr is the state after reading `tr`.</code></span>
+<span class="codeline" id="line-502"><code>func stateTr(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-503"><code>	if c == 'u' {</code></span>
+<span class="codeline" id="line-504"><code>		s.step = stateTru</code></span>
+<span class="codeline" id="line-505"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-506"><code>	}</code></span>
+<span class="codeline" id="line-507"><code>	return s.error(c, "in literal true (expecting 'u')")</code></span>
+<span class="codeline" id="line-508"><code>}</code></span>
+<span class="codeline" id="line-509"><code></code></span>
+<span class="codeline" id="line-510"><code>// stateTru is the state after reading `tru`.</code></span>
+<span class="codeline" id="line-511"><code>func stateTru(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-512"><code>	if c == 'e' {</code></span>
+<span class="codeline" id="line-513"><code>		s.step = stateEndValue</code></span>
+<span class="codeline" id="line-514"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-515"><code>	}</code></span>
+<span class="codeline" id="line-516"><code>	return s.error(c, "in literal true (expecting 'e')")</code></span>
+<span class="codeline" id="line-517"><code>}</code></span>
+<span class="codeline" id="line-518"><code></code></span>
+<span class="codeline" id="line-519"><code>// stateF is the state after reading `f`.</code></span>
+<span class="codeline" id="line-520"><code>func stateF(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-521"><code>	if c == 'a' {</code></span>
+<span class="codeline" id="line-522"><code>		s.step = stateFa</code></span>
+<span class="codeline" id="line-523"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-524"><code>	}</code></span>
+<span class="codeline" id="line-525"><code>	return s.error(c, "in literal false (expecting 'a')")</code></span>
+<span class="codeline" id="line-526"><code>}</code></span>
+<span class="codeline" id="line-527"><code></code></span>
+<span class="codeline" id="line-528"><code>// stateFa is the state after reading `fa`.</code></span>
+<span class="codeline" id="line-529"><code>func stateFa(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-530"><code>	if c == 'l' {</code></span>
+<span class="codeline" id="line-531"><code>		s.step = stateFal</code></span>
+<span class="codeline" id="line-532"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-533"><code>	}</code></span>
+<span class="codeline" id="line-534"><code>	return s.error(c, "in literal false (expecting 'l')")</code></span>
+<span class="codeline" id="line-535"><code>}</code></span>
+<span class="codeline" id="line-536"><code></code></span>
+<span class="codeline" id="line-537"><code>// stateFal is the state after reading `fal`.</code></span>
+<span class="codeline" id="line-538"><code>func stateFal(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-539"><code>	if c == 's' {</code></span>
+<span class="codeline" id="line-540"><code>		s.step = stateFals</code></span>
+<span class="codeline" id="line-541"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-542"><code>	}</code></span>
+<span class="codeline" id="line-543"><code>	return s.error(c, "in literal false (expecting 's')")</code></span>
+<span class="codeline" id="line-544"><code>}</code></span>
+<span class="codeline" id="line-545"><code></code></span>
+<span class="codeline" id="line-546"><code>// stateFals is the state after reading `fals`.</code></span>
+<span class="codeline" id="line-547"><code>func stateFals(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-548"><code>	if c == 'e' {</code></span>
+<span class="codeline" id="line-549"><code>		s.step = stateEndValue</code></span>
+<span class="codeline" id="line-550"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-551"><code>	}</code></span>
+<span class="codeline" id="line-552"><code>	return s.error(c, "in literal false (expecting 'e')")</code></span>
+<span class="codeline" id="line-553"><code>}</code></span>
+<span class="codeline" id="line-554"><code></code></span>
+<span class="codeline" id="line-555"><code>// stateN is the state after reading `n`.</code></span>
+<span class="codeline" id="line-556"><code>func stateN(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-557"><code>	if c == 'u' {</code></span>
+<span class="codeline" id="line-558"><code>		s.step = stateNu</code></span>
+<span class="codeline" id="line-559"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-560"><code>	}</code></span>
+<span class="codeline" id="line-561"><code>	return s.error(c, "in literal null (expecting 'u')")</code></span>
+<span class="codeline" id="line-562"><code>}</code></span>
+<span class="codeline" id="line-563"><code></code></span>
+<span class="codeline" id="line-564"><code>// stateNu is the state after reading `nu`.</code></span>
+<span class="codeline" id="line-565"><code>func stateNu(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-566"><code>	if c == 'l' {</code></span>
+<span class="codeline" id="line-567"><code>		s.step = stateNul</code></span>
+<span class="codeline" id="line-568"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-569"><code>	}</code></span>
+<span class="codeline" id="line-570"><code>	return s.error(c, "in literal null (expecting 'l')")</code></span>
+<span class="codeline" id="line-571"><code>}</code></span>
+<span class="codeline" id="line-572"><code></code></span>
+<span class="codeline" id="line-573"><code>// stateNul is the state after reading `nul`.</code></span>
+<span class="codeline" id="line-574"><code>func stateNul(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-575"><code>	if c == 'l' {</code></span>
+<span class="codeline" id="line-576"><code>		s.step = stateEndValue</code></span>
+<span class="codeline" id="line-577"><code>		return scanContinue</code></span>
+<span class="codeline" id="line-578"><code>	}</code></span>
+<span class="codeline" id="line-579"><code>	return s.error(c, "in literal null (expecting 'l')")</code></span>
+<span class="codeline" id="line-580"><code>}</code></span>
+<span class="codeline" id="line-581"><code></code></span>
+<span class="codeline" id="line-582"><code>// stateError is the state after reaching a syntax error,</code></span>
+<span class="codeline" id="line-583"><code>// such as after reading `[1}` or `5.1.2`.</code></span>
+<span class="codeline" id="line-584"><code>func stateError(s *scanner, c byte) int {</code></span>
+<span class="codeline" id="line-585"><code>	return scanError</code></span>
+<span class="codeline" id="line-586"><code>}</code></span>
+<span class="codeline" id="line-587"><code></code></span>
+<span class="codeline" id="line-588"><code>// error records an error and switches to the error state.</code></span>
+<span class="codeline" id="line-589"><code>func (s *scanner) error(c byte, context string) int {</code></span>
+<span class="codeline" id="line-590"><code>	s.step = stateError</code></span>
+<span class="codeline" id="line-591"><code>	s.err = &amp;SyntaxError{"invalid character " + quoteChar(c) + " " + context, s.bytes}</code></span>
+<span class="codeline" id="line-592"><code>	return scanError</code></span>
+<span class="codeline" id="line-593"><code>}</code></span>
+<span class="codeline" id="line-594"><code></code></span>
+<span class="codeline" id="line-595"><code>// quoteChar formats c as a quoted character literal</code></span>
+<span class="codeline" id="line-596"><code>func quoteChar(c byte) string {</code></span>
+<span class="codeline" id="line-597"><code>	// special cases - different from quoted strings</code></span>
+<span class="codeline" id="line-598"><code>	if c == '\'' {</code></span>
+<span class="codeline" id="line-599"><code>		return `'\''`</code></span>
+<span class="codeline" id="line-600"><code>	}</code></span>
+<span class="codeline" id="line-601"><code>	if c == '"' {</code></span>
+<span class="codeline" id="line-602"><code>		return `'"'`</code></span>
+<span class="codeline" id="line-603"><code>	}</code></span>
+<span class="codeline" id="line-604"><code></code></span>
+<span class="codeline" id="line-605"><code>	// use quoted string with different quotation marks</code></span>
+<span class="codeline" id="line-606"><code>	s := strconv.Quote(string(c))</code></span>
+<span class="codeline" id="line-607"><code>	return "'" + s[1:len(s)-1] + "'"</code></span>
+<span class="codeline" id="line-608"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

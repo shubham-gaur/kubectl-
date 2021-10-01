@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: syscall_unix.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	syscall_unix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package syscall</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"internal/oserror"</code></span>
+<span class="codeline" id="line-11"><code>	"internal/race"</code></span>
+<span class="codeline" id="line-12"><code>	"internal/unsafeheader"</code></span>
+<span class="codeline" id="line-13"><code>	"runtime"</code></span>
+<span class="codeline" id="line-14"><code>	"sync"</code></span>
+<span class="codeline" id="line-15"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-16"><code>)</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>var (</code></span>
+<span class="codeline" id="line-19"><code>	Stdin  = 0</code></span>
+<span class="codeline" id="line-20"><code>	Stdout = 1</code></span>
+<span class="codeline" id="line-21"><code>	Stderr = 2</code></span>
+<span class="codeline" id="line-22"><code>)</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>const (</code></span>
+<span class="codeline" id="line-25"><code>	darwin64Bit = (runtime.GOOS == "darwin" || runtime.GOOS == "ios") &amp;&amp; sizeofPtr == 8</code></span>
+<span class="codeline" id="line-26"><code>	netbsd32Bit = runtime.GOOS == "netbsd" &amp;&amp; sizeofPtr == 4</code></span>
+<span class="codeline" id="line-27"><code>)</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno)</code></span>
+<span class="codeline" id="line-30"><code>func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)</code></span>
+<span class="codeline" id="line-31"><code>func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno)</code></span>
+<span class="codeline" id="line-32"><code>func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>// clen returns the index of the first NULL byte in n or len(n) if n contains no NULL byte.</code></span>
+<span class="codeline" id="line-35"><code>func clen(n []byte) int {</code></span>
+<span class="codeline" id="line-36"><code>	for i := 0; i &lt; len(n); i++ {</code></span>
+<span class="codeline" id="line-37"><code>		if n[i] == 0 {</code></span>
+<span class="codeline" id="line-38"><code>			return i</code></span>
+<span class="codeline" id="line-39"><code>		}</code></span>
+<span class="codeline" id="line-40"><code>	}</code></span>
+<span class="codeline" id="line-41"><code>	return len(n)</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>// Mmap manager, for use by operating system-specific implementations.</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>type mmapper struct {</code></span>
+<span class="codeline" id="line-47"><code>	sync.Mutex</code></span>
+<span class="codeline" id="line-48"><code>	active map[*byte][]byte // active mappings; key is last byte in mapping</code></span>
+<span class="codeline" id="line-49"><code>	mmap   func(addr, length uintptr, prot, flags, fd int, offset int64) (uintptr, error)</code></span>
+<span class="codeline" id="line-50"><code>	munmap func(addr uintptr, length uintptr) error</code></span>
+<span class="codeline" id="line-51"><code>}</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>func (m *mmapper) Mmap(fd int, offset int64, length int, prot int, flags int) (data []byte, err error) {</code></span>
+<span class="codeline" id="line-54"><code>	if length &lt;= 0 {</code></span>
+<span class="codeline" id="line-55"><code>		return nil, EINVAL</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>	// Map the requested memory.</code></span>
+<span class="codeline" id="line-59"><code>	addr, errno := m.mmap(0, uintptr(length), prot, flags, fd, offset)</code></span>
+<span class="codeline" id="line-60"><code>	if errno != nil {</code></span>
+<span class="codeline" id="line-61"><code>		return nil, errno</code></span>
+<span class="codeline" id="line-62"><code>	}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>	// Use unsafe to turn addr into a []byte.</code></span>
+<span class="codeline" id="line-65"><code>	var b []byte</code></span>
+<span class="codeline" id="line-66"><code>	hdr := (*unsafeheader.Slice)(unsafe.Pointer(&amp;b))</code></span>
+<span class="codeline" id="line-67"><code>	hdr.Data = unsafe.Pointer(addr)</code></span>
+<span class="codeline" id="line-68"><code>	hdr.Cap = length</code></span>
+<span class="codeline" id="line-69"><code>	hdr.Len = length</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>	// Register mapping in m and return it.</code></span>
+<span class="codeline" id="line-72"><code>	p := &amp;b[cap(b)-1]</code></span>
+<span class="codeline" id="line-73"><code>	m.Lock()</code></span>
+<span class="codeline" id="line-74"><code>	defer m.Unlock()</code></span>
+<span class="codeline" id="line-75"><code>	m.active[p] = b</code></span>
+<span class="codeline" id="line-76"><code>	return b, nil</code></span>
+<span class="codeline" id="line-77"><code>}</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>func (m *mmapper) Munmap(data []byte) (err error) {</code></span>
+<span class="codeline" id="line-80"><code>	if len(data) == 0 || len(data) != cap(data) {</code></span>
+<span class="codeline" id="line-81"><code>		return EINVAL</code></span>
+<span class="codeline" id="line-82"><code>	}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>	// Find the base of the mapping.</code></span>
+<span class="codeline" id="line-85"><code>	p := &amp;data[cap(data)-1]</code></span>
+<span class="codeline" id="line-86"><code>	m.Lock()</code></span>
+<span class="codeline" id="line-87"><code>	defer m.Unlock()</code></span>
+<span class="codeline" id="line-88"><code>	b := m.active[p]</code></span>
+<span class="codeline" id="line-89"><code>	if b == nil || &amp;b[0] != &amp;data[0] {</code></span>
+<span class="codeline" id="line-90"><code>		return EINVAL</code></span>
+<span class="codeline" id="line-91"><code>	}</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>	// Unmap the memory and update m.</code></span>
+<span class="codeline" id="line-94"><code>	if errno := m.munmap(uintptr(unsafe.Pointer(&amp;b[0])), uintptr(len(b))); errno != nil {</code></span>
+<span class="codeline" id="line-95"><code>		return errno</code></span>
+<span class="codeline" id="line-96"><code>	}</code></span>
+<span class="codeline" id="line-97"><code>	delete(m.active, p)</code></span>
+<span class="codeline" id="line-98"><code>	return nil</code></span>
+<span class="codeline" id="line-99"><code>}</code></span>
+<span class="codeline" id="line-100"><code></code></span>
+<span class="codeline" id="line-101"><code>// An Errno is an unsigned number describing an error condition.</code></span>
+<span class="codeline" id="line-102"><code>// It implements the error interface. The zero Errno is by convention</code></span>
+<span class="codeline" id="line-103"><code>// a non-error, so code to convert from Errno to error should use:</code></span>
+<span class="codeline" id="line-104"><code>//	err = nil</code></span>
+<span class="codeline" id="line-105"><code>//	if errno != 0 {</code></span>
+<span class="codeline" id="line-106"><code>//		err = errno</code></span>
+<span class="codeline" id="line-107"><code>//	}</code></span>
+<span class="codeline" id="line-108"><code>//</code></span>
+<span class="codeline" id="line-109"><code>// Errno values can be tested against error values from the os package</code></span>
+<span class="codeline" id="line-110"><code>// using errors.Is. For example:</code></span>
+<span class="codeline" id="line-111"><code>//</code></span>
+<span class="codeline" id="line-112"><code>//	_, _, err := syscall.Syscall(...)</code></span>
+<span class="codeline" id="line-113"><code>//	if errors.Is(err, fs.ErrNotExist) ...</code></span>
+<span class="codeline" id="line-114"><code>type Errno uintptr</code></span>
+<span class="codeline" id="line-115"><code></code></span>
+<span class="codeline" id="line-116"><code>func (e Errno) Error() string {</code></span>
+<span class="codeline" id="line-117"><code>	if 0 &lt;= int(e) &amp;&amp; int(e) &lt; len(errors) {</code></span>
+<span class="codeline" id="line-118"><code>		s := errors[e]</code></span>
+<span class="codeline" id="line-119"><code>		if s != "" {</code></span>
+<span class="codeline" id="line-120"><code>			return s</code></span>
+<span class="codeline" id="line-121"><code>		}</code></span>
+<span class="codeline" id="line-122"><code>	}</code></span>
+<span class="codeline" id="line-123"><code>	return "errno " + itoa(int(e))</code></span>
+<span class="codeline" id="line-124"><code>}</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>func (e Errno) Is(target error) bool {</code></span>
+<span class="codeline" id="line-127"><code>	switch target {</code></span>
+<span class="codeline" id="line-128"><code>	case oserror.ErrPermission:</code></span>
+<span class="codeline" id="line-129"><code>		return e == EACCES || e == EPERM</code></span>
+<span class="codeline" id="line-130"><code>	case oserror.ErrExist:</code></span>
+<span class="codeline" id="line-131"><code>		return e == EEXIST || e == ENOTEMPTY</code></span>
+<span class="codeline" id="line-132"><code>	case oserror.ErrNotExist:</code></span>
+<span class="codeline" id="line-133"><code>		return e == ENOENT</code></span>
+<span class="codeline" id="line-134"><code>	}</code></span>
+<span class="codeline" id="line-135"><code>	return false</code></span>
+<span class="codeline" id="line-136"><code>}</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>func (e Errno) Temporary() bool {</code></span>
+<span class="codeline" id="line-139"><code>	return e == EINTR || e == EMFILE || e == ENFILE || e.Timeout()</code></span>
+<span class="codeline" id="line-140"><code>}</code></span>
+<span class="codeline" id="line-141"><code></code></span>
+<span class="codeline" id="line-142"><code>func (e Errno) Timeout() bool {</code></span>
+<span class="codeline" id="line-143"><code>	return e == EAGAIN || e == EWOULDBLOCK || e == ETIMEDOUT</code></span>
+<span class="codeline" id="line-144"><code>}</code></span>
+<span class="codeline" id="line-145"><code></code></span>
+<span class="codeline" id="line-146"><code>// Do the interface allocations only once for common</code></span>
+<span class="codeline" id="line-147"><code>// Errno values.</code></span>
+<span class="codeline" id="line-148"><code>var (</code></span>
+<span class="codeline" id="line-149"><code>	errEAGAIN error = EAGAIN</code></span>
+<span class="codeline" id="line-150"><code>	errEINVAL error = EINVAL</code></span>
+<span class="codeline" id="line-151"><code>	errENOENT error = ENOENT</code></span>
+<span class="codeline" id="line-152"><code>)</code></span>
+<span class="codeline" id="line-153"><code></code></span>
+<span class="codeline" id="line-154"><code>// errnoErr returns common boxed Errno values, to prevent</code></span>
+<span class="codeline" id="line-155"><code>// allocations at runtime.</code></span>
+<span class="codeline" id="line-156"><code>func errnoErr(e Errno) error {</code></span>
+<span class="codeline" id="line-157"><code>	switch e {</code></span>
+<span class="codeline" id="line-158"><code>	case 0:</code></span>
+<span class="codeline" id="line-159"><code>		return nil</code></span>
+<span class="codeline" id="line-160"><code>	case EAGAIN:</code></span>
+<span class="codeline" id="line-161"><code>		return errEAGAIN</code></span>
+<span class="codeline" id="line-162"><code>	case EINVAL:</code></span>
+<span class="codeline" id="line-163"><code>		return errEINVAL</code></span>
+<span class="codeline" id="line-164"><code>	case ENOENT:</code></span>
+<span class="codeline" id="line-165"><code>		return errENOENT</code></span>
+<span class="codeline" id="line-166"><code>	}</code></span>
+<span class="codeline" id="line-167"><code>	return e</code></span>
+<span class="codeline" id="line-168"><code>}</code></span>
+<span class="codeline" id="line-169"><code></code></span>
+<span class="codeline" id="line-170"><code>// A Signal is a number describing a process signal.</code></span>
+<span class="codeline" id="line-171"><code>// It implements the os.Signal interface.</code></span>
+<span class="codeline" id="line-172"><code>type Signal int</code></span>
+<span class="codeline" id="line-173"><code></code></span>
+<span class="codeline" id="line-174"><code>func (s Signal) Signal() {}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>func (s Signal) String() string {</code></span>
+<span class="codeline" id="line-177"><code>	if 0 &lt;= s &amp;&amp; int(s) &lt; len(signals) {</code></span>
+<span class="codeline" id="line-178"><code>		str := signals[s]</code></span>
+<span class="codeline" id="line-179"><code>		if str != "" {</code></span>
+<span class="codeline" id="line-180"><code>			return str</code></span>
+<span class="codeline" id="line-181"><code>		}</code></span>
+<span class="codeline" id="line-182"><code>	}</code></span>
+<span class="codeline" id="line-183"><code>	return "signal " + itoa(int(s))</code></span>
+<span class="codeline" id="line-184"><code>}</code></span>
+<span class="codeline" id="line-185"><code></code></span>
+<span class="codeline" id="line-186"><code>func Read(fd int, p []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-187"><code>	n, err = read(fd, p)</code></span>
+<span class="codeline" id="line-188"><code>	if race.Enabled {</code></span>
+<span class="codeline" id="line-189"><code>		if n &gt; 0 {</code></span>
+<span class="codeline" id="line-190"><code>			race.WriteRange(unsafe.Pointer(&amp;p[0]), n)</code></span>
+<span class="codeline" id="line-191"><code>		}</code></span>
+<span class="codeline" id="line-192"><code>		if err == nil {</code></span>
+<span class="codeline" id="line-193"><code>			race.Acquire(unsafe.Pointer(&amp;ioSync))</code></span>
+<span class="codeline" id="line-194"><code>		}</code></span>
+<span class="codeline" id="line-195"><code>	}</code></span>
+<span class="codeline" id="line-196"><code>	if msanenabled &amp;&amp; n &gt; 0 {</code></span>
+<span class="codeline" id="line-197"><code>		msanWrite(unsafe.Pointer(&amp;p[0]), n)</code></span>
+<span class="codeline" id="line-198"><code>	}</code></span>
+<span class="codeline" id="line-199"><code>	return</code></span>
+<span class="codeline" id="line-200"><code>}</code></span>
+<span class="codeline" id="line-201"><code></code></span>
+<span class="codeline" id="line-202"><code>func Write(fd int, p []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-203"><code>	if race.Enabled {</code></span>
+<span class="codeline" id="line-204"><code>		race.ReleaseMerge(unsafe.Pointer(&amp;ioSync))</code></span>
+<span class="codeline" id="line-205"><code>	}</code></span>
+<span class="codeline" id="line-206"><code>	if faketime &amp;&amp; (fd == 1 || fd == 2) {</code></span>
+<span class="codeline" id="line-207"><code>		n = faketimeWrite(fd, p)</code></span>
+<span class="codeline" id="line-208"><code>		if n &lt; 0 {</code></span>
+<span class="codeline" id="line-209"><code>			n, err = 0, errnoErr(Errno(-n))</code></span>
+<span class="codeline" id="line-210"><code>		}</code></span>
+<span class="codeline" id="line-211"><code>	} else {</code></span>
+<span class="codeline" id="line-212"><code>		n, err = write(fd, p)</code></span>
+<span class="codeline" id="line-213"><code>	}</code></span>
+<span class="codeline" id="line-214"><code>	if race.Enabled &amp;&amp; n &gt; 0 {</code></span>
+<span class="codeline" id="line-215"><code>		race.ReadRange(unsafe.Pointer(&amp;p[0]), n)</code></span>
+<span class="codeline" id="line-216"><code>	}</code></span>
+<span class="codeline" id="line-217"><code>	if msanenabled &amp;&amp; n &gt; 0 {</code></span>
+<span class="codeline" id="line-218"><code>		msanRead(unsafe.Pointer(&amp;p[0]), n)</code></span>
+<span class="codeline" id="line-219"><code>	}</code></span>
+<span class="codeline" id="line-220"><code>	return</code></span>
+<span class="codeline" id="line-221"><code>}</code></span>
+<span class="codeline" id="line-222"><code></code></span>
+<span class="codeline" id="line-223"><code>// For testing: clients can set this flag to force</code></span>
+<span class="codeline" id="line-224"><code>// creation of IPv6 sockets to return EAFNOSUPPORT.</code></span>
+<span class="codeline" id="line-225"><code>var SocketDisableIPv6 bool</code></span>
+<span class="codeline" id="line-226"><code></code></span>
+<span class="codeline" id="line-227"><code>type Sockaddr interface {</code></span>
+<span class="codeline" id="line-228"><code>	sockaddr() (ptr unsafe.Pointer, len _Socklen, err error) // lowercase; only we can define Sockaddrs</code></span>
+<span class="codeline" id="line-229"><code>}</code></span>
+<span class="codeline" id="line-230"><code></code></span>
+<span class="codeline" id="line-231"><code>type SockaddrInet4 struct {</code></span>
+<span class="codeline" id="line-232"><code>	Port int</code></span>
+<span class="codeline" id="line-233"><code>	Addr [4]byte</code></span>
+<span class="codeline" id="line-234"><code>	raw  RawSockaddrInet4</code></span>
+<span class="codeline" id="line-235"><code>}</code></span>
+<span class="codeline" id="line-236"><code></code></span>
+<span class="codeline" id="line-237"><code>type SockaddrInet6 struct {</code></span>
+<span class="codeline" id="line-238"><code>	Port   int</code></span>
+<span class="codeline" id="line-239"><code>	ZoneId uint32</code></span>
+<span class="codeline" id="line-240"><code>	Addr   [16]byte</code></span>
+<span class="codeline" id="line-241"><code>	raw    RawSockaddrInet6</code></span>
+<span class="codeline" id="line-242"><code>}</code></span>
+<span class="codeline" id="line-243"><code></code></span>
+<span class="codeline" id="line-244"><code>type SockaddrUnix struct {</code></span>
+<span class="codeline" id="line-245"><code>	Name string</code></span>
+<span class="codeline" id="line-246"><code>	raw  RawSockaddrUnix</code></span>
+<span class="codeline" id="line-247"><code>}</code></span>
+<span class="codeline" id="line-248"><code></code></span>
+<span class="codeline" id="line-249"><code>func Bind(fd int, sa Sockaddr) (err error) {</code></span>
+<span class="codeline" id="line-250"><code>	ptr, n, err := sa.sockaddr()</code></span>
+<span class="codeline" id="line-251"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-252"><code>		return err</code></span>
+<span class="codeline" id="line-253"><code>	}</code></span>
+<span class="codeline" id="line-254"><code>	return bind(fd, ptr, n)</code></span>
+<span class="codeline" id="line-255"><code>}</code></span>
+<span class="codeline" id="line-256"><code></code></span>
+<span class="codeline" id="line-257"><code>func Connect(fd int, sa Sockaddr) (err error) {</code></span>
+<span class="codeline" id="line-258"><code>	ptr, n, err := sa.sockaddr()</code></span>
+<span class="codeline" id="line-259"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-260"><code>		return err</code></span>
+<span class="codeline" id="line-261"><code>	}</code></span>
+<span class="codeline" id="line-262"><code>	return connect(fd, ptr, n)</code></span>
+<span class="codeline" id="line-263"><code>}</code></span>
+<span class="codeline" id="line-264"><code></code></span>
+<span class="codeline" id="line-265"><code>func Getpeername(fd int) (sa Sockaddr, err error) {</code></span>
+<span class="codeline" id="line-266"><code>	var rsa RawSockaddrAny</code></span>
+<span class="codeline" id="line-267"><code>	var len _Socklen = SizeofSockaddrAny</code></span>
+<span class="codeline" id="line-268"><code>	if err = getpeername(fd, &amp;rsa, &amp;len); err != nil {</code></span>
+<span class="codeline" id="line-269"><code>		return</code></span>
+<span class="codeline" id="line-270"><code>	}</code></span>
+<span class="codeline" id="line-271"><code>	return anyToSockaddr(&amp;rsa)</code></span>
+<span class="codeline" id="line-272"><code>}</code></span>
+<span class="codeline" id="line-273"><code></code></span>
+<span class="codeline" id="line-274"><code>func GetsockoptInt(fd, level, opt int) (value int, err error) {</code></span>
+<span class="codeline" id="line-275"><code>	var n int32</code></span>
+<span class="codeline" id="line-276"><code>	vallen := _Socklen(4)</code></span>
+<span class="codeline" id="line-277"><code>	err = getsockopt(fd, level, opt, unsafe.Pointer(&amp;n), &amp;vallen)</code></span>
+<span class="codeline" id="line-278"><code>	return int(n), err</code></span>
+<span class="codeline" id="line-279"><code>}</code></span>
+<span class="codeline" id="line-280"><code></code></span>
+<span class="codeline" id="line-281"><code>func Recvfrom(fd int, p []byte, flags int) (n int, from Sockaddr, err error) {</code></span>
+<span class="codeline" id="line-282"><code>	var rsa RawSockaddrAny</code></span>
+<span class="codeline" id="line-283"><code>	var len _Socklen = SizeofSockaddrAny</code></span>
+<span class="codeline" id="line-284"><code>	if n, err = recvfrom(fd, p, flags, &amp;rsa, &amp;len); err != nil {</code></span>
+<span class="codeline" id="line-285"><code>		return</code></span>
+<span class="codeline" id="line-286"><code>	}</code></span>
+<span class="codeline" id="line-287"><code>	if rsa.Addr.Family != AF_UNSPEC {</code></span>
+<span class="codeline" id="line-288"><code>		from, err = anyToSockaddr(&amp;rsa)</code></span>
+<span class="codeline" id="line-289"><code>	}</code></span>
+<span class="codeline" id="line-290"><code>	return</code></span>
+<span class="codeline" id="line-291"><code>}</code></span>
+<span class="codeline" id="line-292"><code></code></span>
+<span class="codeline" id="line-293"><code>func Sendto(fd int, p []byte, flags int, to Sockaddr) (err error) {</code></span>
+<span class="codeline" id="line-294"><code>	ptr, n, err := to.sockaddr()</code></span>
+<span class="codeline" id="line-295"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-296"><code>		return err</code></span>
+<span class="codeline" id="line-297"><code>	}</code></span>
+<span class="codeline" id="line-298"><code>	return sendto(fd, p, flags, ptr, n)</code></span>
+<span class="codeline" id="line-299"><code>}</code></span>
+<span class="codeline" id="line-300"><code></code></span>
+<span class="codeline" id="line-301"><code>func SetsockoptByte(fd, level, opt int, value byte) (err error) {</code></span>
+<span class="codeline" id="line-302"><code>	return setsockopt(fd, level, opt, unsafe.Pointer(&amp;value), 1)</code></span>
+<span class="codeline" id="line-303"><code>}</code></span>
+<span class="codeline" id="line-304"><code></code></span>
+<span class="codeline" id="line-305"><code>func SetsockoptInt(fd, level, opt int, value int) (err error) {</code></span>
+<span class="codeline" id="line-306"><code>	var n = int32(value)</code></span>
+<span class="codeline" id="line-307"><code>	return setsockopt(fd, level, opt, unsafe.Pointer(&amp;n), 4)</code></span>
+<span class="codeline" id="line-308"><code>}</code></span>
+<span class="codeline" id="line-309"><code></code></span>
+<span class="codeline" id="line-310"><code>func SetsockoptInet4Addr(fd, level, opt int, value [4]byte) (err error) {</code></span>
+<span class="codeline" id="line-311"><code>	return setsockopt(fd, level, opt, unsafe.Pointer(&amp;value[0]), 4)</code></span>
+<span class="codeline" id="line-312"><code>}</code></span>
+<span class="codeline" id="line-313"><code></code></span>
+<span class="codeline" id="line-314"><code>func SetsockoptIPMreq(fd, level, opt int, mreq *IPMreq) (err error) {</code></span>
+<span class="codeline" id="line-315"><code>	return setsockopt(fd, level, opt, unsafe.Pointer(mreq), SizeofIPMreq)</code></span>
+<span class="codeline" id="line-316"><code>}</code></span>
+<span class="codeline" id="line-317"><code></code></span>
+<span class="codeline" id="line-318"><code>func SetsockoptIPv6Mreq(fd, level, opt int, mreq *IPv6Mreq) (err error) {</code></span>
+<span class="codeline" id="line-319"><code>	return setsockopt(fd, level, opt, unsafe.Pointer(mreq), SizeofIPv6Mreq)</code></span>
+<span class="codeline" id="line-320"><code>}</code></span>
+<span class="codeline" id="line-321"><code></code></span>
+<span class="codeline" id="line-322"><code>func SetsockoptICMPv6Filter(fd, level, opt int, filter *ICMPv6Filter) error {</code></span>
+<span class="codeline" id="line-323"><code>	return setsockopt(fd, level, opt, unsafe.Pointer(filter), SizeofICMPv6Filter)</code></span>
+<span class="codeline" id="line-324"><code>}</code></span>
+<span class="codeline" id="line-325"><code></code></span>
+<span class="codeline" id="line-326"><code>func SetsockoptLinger(fd, level, opt int, l *Linger) (err error) {</code></span>
+<span class="codeline" id="line-327"><code>	return setsockopt(fd, level, opt, unsafe.Pointer(l), SizeofLinger)</code></span>
+<span class="codeline" id="line-328"><code>}</code></span>
+<span class="codeline" id="line-329"><code></code></span>
+<span class="codeline" id="line-330"><code>func SetsockoptString(fd, level, opt int, s string) (err error) {</code></span>
+<span class="codeline" id="line-331"><code>	var p unsafe.Pointer</code></span>
+<span class="codeline" id="line-332"><code>	if len(s) &gt; 0 {</code></span>
+<span class="codeline" id="line-333"><code>		p = unsafe.Pointer(&amp;[]byte(s)[0])</code></span>
+<span class="codeline" id="line-334"><code>	}</code></span>
+<span class="codeline" id="line-335"><code>	return setsockopt(fd, level, opt, p, uintptr(len(s)))</code></span>
+<span class="codeline" id="line-336"><code>}</code></span>
+<span class="codeline" id="line-337"><code></code></span>
+<span class="codeline" id="line-338"><code>func SetsockoptTimeval(fd, level, opt int, tv *Timeval) (err error) {</code></span>
+<span class="codeline" id="line-339"><code>	return setsockopt(fd, level, opt, unsafe.Pointer(tv), unsafe.Sizeof(*tv))</code></span>
+<span class="codeline" id="line-340"><code>}</code></span>
+<span class="codeline" id="line-341"><code></code></span>
+<span class="codeline" id="line-342"><code>func Socket(domain, typ, proto int) (fd int, err error) {</code></span>
+<span class="codeline" id="line-343"><code>	if domain == AF_INET6 &amp;&amp; SocketDisableIPv6 {</code></span>
+<span class="codeline" id="line-344"><code>		return -1, EAFNOSUPPORT</code></span>
+<span class="codeline" id="line-345"><code>	}</code></span>
+<span class="codeline" id="line-346"><code>	fd, err = socket(domain, typ, proto)</code></span>
+<span class="codeline" id="line-347"><code>	return</code></span>
+<span class="codeline" id="line-348"><code>}</code></span>
+<span class="codeline" id="line-349"><code></code></span>
+<span class="codeline" id="line-350"><code>func Socketpair(domain, typ, proto int) (fd [2]int, err error) {</code></span>
+<span class="codeline" id="line-351"><code>	var fdx [2]int32</code></span>
+<span class="codeline" id="line-352"><code>	err = socketpair(domain, typ, proto, &amp;fdx)</code></span>
+<span class="codeline" id="line-353"><code>	if err == nil {</code></span>
+<span class="codeline" id="line-354"><code>		fd[0] = int(fdx[0])</code></span>
+<span class="codeline" id="line-355"><code>		fd[1] = int(fdx[1])</code></span>
+<span class="codeline" id="line-356"><code>	}</code></span>
+<span class="codeline" id="line-357"><code>	return</code></span>
+<span class="codeline" id="line-358"><code>}</code></span>
+<span class="codeline" id="line-359"><code></code></span>
+<span class="codeline" id="line-360"><code>func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {</code></span>
+<span class="codeline" id="line-361"><code>	if race.Enabled {</code></span>
+<span class="codeline" id="line-362"><code>		race.ReleaseMerge(unsafe.Pointer(&amp;ioSync))</code></span>
+<span class="codeline" id="line-363"><code>	}</code></span>
+<span class="codeline" id="line-364"><code>	return sendfile(outfd, infd, offset, count)</code></span>
+<span class="codeline" id="line-365"><code>}</code></span>
+<span class="codeline" id="line-366"><code></code></span>
+<span class="codeline" id="line-367"><code>var ioSync int64</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

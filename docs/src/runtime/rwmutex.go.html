@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: rwmutex.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	rwmutex.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// This is a copy of sync/rwmutex.go rewritten to work in the runtime.</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// A rwmutex is a reader/writer mutual exclusion lock.</code></span>
+<span class="codeline" id="line-14"><code>// The lock can be held by an arbitrary number of readers or a single writer.</code></span>
+<span class="codeline" id="line-15"><code>// This is a variant of sync.RWMutex, for the runtime package.</code></span>
+<span class="codeline" id="line-16"><code>// Like mutex, rwmutex blocks the calling M.</code></span>
+<span class="codeline" id="line-17"><code>// It does not interact with the goroutine scheduler.</code></span>
+<span class="codeline" id="line-18"><code>type rwmutex struct {</code></span>
+<span class="codeline" id="line-19"><code>	rLock      mutex    // protects readers, readerPass, writer</code></span>
+<span class="codeline" id="line-20"><code>	readers    muintptr // list of pending readers</code></span>
+<span class="codeline" id="line-21"><code>	readerPass uint32   // number of pending readers to skip readers list</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>	wLock  mutex    // serializes writers</code></span>
+<span class="codeline" id="line-24"><code>	writer muintptr // pending writer waiting for completing readers</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>	readerCount uint32 // number of pending readers</code></span>
+<span class="codeline" id="line-27"><code>	readerWait  uint32 // number of departing readers</code></span>
+<span class="codeline" id="line-28"><code>}</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>const rwmutexMaxReaders = 1 &lt;&lt; 30</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>// rlock locks rw for reading.</code></span>
+<span class="codeline" id="line-33"><code>func (rw *rwmutex) rlock() {</code></span>
+<span class="codeline" id="line-34"><code>	// The reader must not be allowed to lose its P or else other</code></span>
+<span class="codeline" id="line-35"><code>	// things blocking on the lock may consume all of the Ps and</code></span>
+<span class="codeline" id="line-36"><code>	// deadlock (issue #20903). Alternatively, we could drop the P</code></span>
+<span class="codeline" id="line-37"><code>	// while sleeping.</code></span>
+<span class="codeline" id="line-38"><code>	acquirem()</code></span>
+<span class="codeline" id="line-39"><code>	if int32(atomic.Xadd(&amp;rw.readerCount, 1)) &lt; 0 {</code></span>
+<span class="codeline" id="line-40"><code>		// A writer is pending. Park on the reader queue.</code></span>
+<span class="codeline" id="line-41"><code>		systemstack(func() {</code></span>
+<span class="codeline" id="line-42"><code>			lockWithRank(&amp;rw.rLock, lockRankRwmutexR)</code></span>
+<span class="codeline" id="line-43"><code>			if rw.readerPass &gt; 0 {</code></span>
+<span class="codeline" id="line-44"><code>				// Writer finished.</code></span>
+<span class="codeline" id="line-45"><code>				rw.readerPass -= 1</code></span>
+<span class="codeline" id="line-46"><code>				unlock(&amp;rw.rLock)</code></span>
+<span class="codeline" id="line-47"><code>			} else {</code></span>
+<span class="codeline" id="line-48"><code>				// Queue this reader to be woken by</code></span>
+<span class="codeline" id="line-49"><code>				// the writer.</code></span>
+<span class="codeline" id="line-50"><code>				m := getg().m</code></span>
+<span class="codeline" id="line-51"><code>				m.schedlink = rw.readers</code></span>
+<span class="codeline" id="line-52"><code>				rw.readers.set(m)</code></span>
+<span class="codeline" id="line-53"><code>				unlock(&amp;rw.rLock)</code></span>
+<span class="codeline" id="line-54"><code>				notesleep(&amp;m.park)</code></span>
+<span class="codeline" id="line-55"><code>				noteclear(&amp;m.park)</code></span>
+<span class="codeline" id="line-56"><code>			}</code></span>
+<span class="codeline" id="line-57"><code>		})</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>// runlock undoes a single rlock call on rw.</code></span>
+<span class="codeline" id="line-62"><code>func (rw *rwmutex) runlock() {</code></span>
+<span class="codeline" id="line-63"><code>	if r := int32(atomic.Xadd(&amp;rw.readerCount, -1)); r &lt; 0 {</code></span>
+<span class="codeline" id="line-64"><code>		if r+1 == 0 || r+1 == -rwmutexMaxReaders {</code></span>
+<span class="codeline" id="line-65"><code>			throw("runlock of unlocked rwmutex")</code></span>
+<span class="codeline" id="line-66"><code>		}</code></span>
+<span class="codeline" id="line-67"><code>		// A writer is pending.</code></span>
+<span class="codeline" id="line-68"><code>		if atomic.Xadd(&amp;rw.readerWait, -1) == 0 {</code></span>
+<span class="codeline" id="line-69"><code>			// The last reader unblocks the writer.</code></span>
+<span class="codeline" id="line-70"><code>			lockWithRank(&amp;rw.rLock, lockRankRwmutexR)</code></span>
+<span class="codeline" id="line-71"><code>			w := rw.writer.ptr()</code></span>
+<span class="codeline" id="line-72"><code>			if w != nil {</code></span>
+<span class="codeline" id="line-73"><code>				notewakeup(&amp;w.park)</code></span>
+<span class="codeline" id="line-74"><code>			}</code></span>
+<span class="codeline" id="line-75"><code>			unlock(&amp;rw.rLock)</code></span>
+<span class="codeline" id="line-76"><code>		}</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>	releasem(getg().m)</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+<span class="codeline" id="line-80"><code></code></span>
+<span class="codeline" id="line-81"><code>// lock locks rw for writing.</code></span>
+<span class="codeline" id="line-82"><code>func (rw *rwmutex) lock() {</code></span>
+<span class="codeline" id="line-83"><code>	// Resolve competition with other writers and stick to our P.</code></span>
+<span class="codeline" id="line-84"><code>	lockWithRank(&amp;rw.wLock, lockRankRwmutexW)</code></span>
+<span class="codeline" id="line-85"><code>	m := getg().m</code></span>
+<span class="codeline" id="line-86"><code>	// Announce that there is a pending writer.</code></span>
+<span class="codeline" id="line-87"><code>	r := int32(atomic.Xadd(&amp;rw.readerCount, -rwmutexMaxReaders)) + rwmutexMaxReaders</code></span>
+<span class="codeline" id="line-88"><code>	// Wait for any active readers to complete.</code></span>
+<span class="codeline" id="line-89"><code>	lockWithRank(&amp;rw.rLock, lockRankRwmutexR)</code></span>
+<span class="codeline" id="line-90"><code>	if r != 0 &amp;&amp; atomic.Xadd(&amp;rw.readerWait, r) != 0 {</code></span>
+<span class="codeline" id="line-91"><code>		// Wait for reader to wake us up.</code></span>
+<span class="codeline" id="line-92"><code>		systemstack(func() {</code></span>
+<span class="codeline" id="line-93"><code>			rw.writer.set(m)</code></span>
+<span class="codeline" id="line-94"><code>			unlock(&amp;rw.rLock)</code></span>
+<span class="codeline" id="line-95"><code>			notesleep(&amp;m.park)</code></span>
+<span class="codeline" id="line-96"><code>			noteclear(&amp;m.park)</code></span>
+<span class="codeline" id="line-97"><code>		})</code></span>
+<span class="codeline" id="line-98"><code>	} else {</code></span>
+<span class="codeline" id="line-99"><code>		unlock(&amp;rw.rLock)</code></span>
+<span class="codeline" id="line-100"><code>	}</code></span>
+<span class="codeline" id="line-101"><code>}</code></span>
+<span class="codeline" id="line-102"><code></code></span>
+<span class="codeline" id="line-103"><code>// unlock unlocks rw for writing.</code></span>
+<span class="codeline" id="line-104"><code>func (rw *rwmutex) unlock() {</code></span>
+<span class="codeline" id="line-105"><code>	// Announce to readers that there is no active writer.</code></span>
+<span class="codeline" id="line-106"><code>	r := int32(atomic.Xadd(&amp;rw.readerCount, rwmutexMaxReaders))</code></span>
+<span class="codeline" id="line-107"><code>	if r &gt;= rwmutexMaxReaders {</code></span>
+<span class="codeline" id="line-108"><code>		throw("unlock of unlocked rwmutex")</code></span>
+<span class="codeline" id="line-109"><code>	}</code></span>
+<span class="codeline" id="line-110"><code>	// Unblock blocked readers.</code></span>
+<span class="codeline" id="line-111"><code>	lockWithRank(&amp;rw.rLock, lockRankRwmutexR)</code></span>
+<span class="codeline" id="line-112"><code>	for rw.readers.ptr() != nil {</code></span>
+<span class="codeline" id="line-113"><code>		reader := rw.readers.ptr()</code></span>
+<span class="codeline" id="line-114"><code>		rw.readers = reader.schedlink</code></span>
+<span class="codeline" id="line-115"><code>		reader.schedlink.set(nil)</code></span>
+<span class="codeline" id="line-116"><code>		notewakeup(&amp;reader.park)</code></span>
+<span class="codeline" id="line-117"><code>		r -= 1</code></span>
+<span class="codeline" id="line-118"><code>	}</code></span>
+<span class="codeline" id="line-119"><code>	// If r &gt; 0, there are pending readers that aren't on the</code></span>
+<span class="codeline" id="line-120"><code>	// queue. Tell them to skip waiting.</code></span>
+<span class="codeline" id="line-121"><code>	rw.readerPass += uint32(r)</code></span>
+<span class="codeline" id="line-122"><code>	unlock(&amp;rw.rLock)</code></span>
+<span class="codeline" id="line-123"><code>	// Allow other writers to proceed.</code></span>
+<span class="codeline" id="line-124"><code>	unlock(&amp;rw.wLock)</code></span>
+<span class="codeline" id="line-125"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

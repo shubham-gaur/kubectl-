@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mpagecache.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mpagecache.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2019 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-9"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>const pageCachePages = 8 * unsafe.Sizeof(pageCache{}.cache)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>// pageCache represents a per-p cache of pages the allocator can</code></span>
+<span class="codeline" id="line-15"><code>// allocate from without a lock. More specifically, it represents</code></span>
+<span class="codeline" id="line-16"><code>// a pageCachePages*pageSize chunk of memory with 0 or more free</code></span>
+<span class="codeline" id="line-17"><code>// pages in it.</code></span>
+<span class="codeline" id="line-18"><code>type pageCache struct {</code></span>
+<span class="codeline" id="line-19"><code>	base  uintptr // base address of the chunk</code></span>
+<span class="codeline" id="line-20"><code>	cache uint64  // 64-bit bitmap representing free pages (1 means free)</code></span>
+<span class="codeline" id="line-21"><code>	scav  uint64  // 64-bit bitmap representing scavenged pages (1 means scavenged)</code></span>
+<span class="codeline" id="line-22"><code>}</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>// empty returns true if the pageCache has any free pages, and false</code></span>
+<span class="codeline" id="line-25"><code>// otherwise.</code></span>
+<span class="codeline" id="line-26"><code>func (c *pageCache) empty() bool {</code></span>
+<span class="codeline" id="line-27"><code>	return c.cache == 0</code></span>
+<span class="codeline" id="line-28"><code>}</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>// alloc allocates npages from the page cache and is the main entry</code></span>
+<span class="codeline" id="line-31"><code>// point for allocation.</code></span>
+<span class="codeline" id="line-32"><code>//</code></span>
+<span class="codeline" id="line-33"><code>// Returns a base address and the amount of scavenged memory in the</code></span>
+<span class="codeline" id="line-34"><code>// allocated region in bytes.</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>// Returns a base address of zero on failure, in which case the</code></span>
+<span class="codeline" id="line-37"><code>// amount of scavenged memory should be ignored.</code></span>
+<span class="codeline" id="line-38"><code>func (c *pageCache) alloc(npages uintptr) (uintptr, uintptr) {</code></span>
+<span class="codeline" id="line-39"><code>	if c.cache == 0 {</code></span>
+<span class="codeline" id="line-40"><code>		return 0, 0</code></span>
+<span class="codeline" id="line-41"><code>	}</code></span>
+<span class="codeline" id="line-42"><code>	if npages == 1 {</code></span>
+<span class="codeline" id="line-43"><code>		i := uintptr(sys.TrailingZeros64(c.cache))</code></span>
+<span class="codeline" id="line-44"><code>		scav := (c.scav &gt;&gt; i) &amp; 1</code></span>
+<span class="codeline" id="line-45"><code>		c.cache &amp;^= 1 &lt;&lt; i // set bit to mark in-use</code></span>
+<span class="codeline" id="line-46"><code>		c.scav &amp;^= 1 &lt;&lt; i  // clear bit to mark unscavenged</code></span>
+<span class="codeline" id="line-47"><code>		return c.base + i*pageSize, uintptr(scav) * pageSize</code></span>
+<span class="codeline" id="line-48"><code>	}</code></span>
+<span class="codeline" id="line-49"><code>	return c.allocN(npages)</code></span>
+<span class="codeline" id="line-50"><code>}</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>// allocN is a helper which attempts to allocate npages worth of pages</code></span>
+<span class="codeline" id="line-53"><code>// from the cache. It represents the general case for allocating from</code></span>
+<span class="codeline" id="line-54"><code>// the page cache.</code></span>
+<span class="codeline" id="line-55"><code>//</code></span>
+<span class="codeline" id="line-56"><code>// Returns a base address and the amount of scavenged memory in the</code></span>
+<span class="codeline" id="line-57"><code>// allocated region in bytes.</code></span>
+<span class="codeline" id="line-58"><code>func (c *pageCache) allocN(npages uintptr) (uintptr, uintptr) {</code></span>
+<span class="codeline" id="line-59"><code>	i := findBitRange64(c.cache, uint(npages))</code></span>
+<span class="codeline" id="line-60"><code>	if i &gt;= 64 {</code></span>
+<span class="codeline" id="line-61"><code>		return 0, 0</code></span>
+<span class="codeline" id="line-62"><code>	}</code></span>
+<span class="codeline" id="line-63"><code>	mask := ((uint64(1) &lt;&lt; npages) - 1) &lt;&lt; i</code></span>
+<span class="codeline" id="line-64"><code>	scav := sys.OnesCount64(c.scav &amp; mask)</code></span>
+<span class="codeline" id="line-65"><code>	c.cache &amp;^= mask // mark in-use bits</code></span>
+<span class="codeline" id="line-66"><code>	c.scav &amp;^= mask  // clear scavenged bits</code></span>
+<span class="codeline" id="line-67"><code>	return c.base + uintptr(i*pageSize), uintptr(scav) * pageSize</code></span>
+<span class="codeline" id="line-68"><code>}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>// flush empties out unallocated free pages in the given cache</code></span>
+<span class="codeline" id="line-71"><code>// into s. Then, it clears the cache, such that empty returns</code></span>
+<span class="codeline" id="line-72"><code>// true.</code></span>
+<span class="codeline" id="line-73"><code>//</code></span>
+<span class="codeline" id="line-74"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-75"><code>//</code></span>
+<span class="codeline" id="line-76"><code>// Must run on the system stack because p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-77"><code>//</code></span>
+<span class="codeline" id="line-78"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-79"><code>func (c *pageCache) flush(p *pageAlloc) {</code></span>
+<span class="codeline" id="line-80"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>	if c.empty() {</code></span>
+<span class="codeline" id="line-83"><code>		return</code></span>
+<span class="codeline" id="line-84"><code>	}</code></span>
+<span class="codeline" id="line-85"><code>	ci := chunkIndex(c.base)</code></span>
+<span class="codeline" id="line-86"><code>	pi := chunkPageIndex(c.base)</code></span>
+<span class="codeline" id="line-87"><code></code></span>
+<span class="codeline" id="line-88"><code>	// This method is called very infrequently, so just do the</code></span>
+<span class="codeline" id="line-89"><code>	// slower, safer thing by iterating over each bit individually.</code></span>
+<span class="codeline" id="line-90"><code>	for i := uint(0); i &lt; 64; i++ {</code></span>
+<span class="codeline" id="line-91"><code>		if c.cache&amp;(1&lt;&lt;i) != 0 {</code></span>
+<span class="codeline" id="line-92"><code>			p.chunkOf(ci).free1(pi + i)</code></span>
+<span class="codeline" id="line-93"><code>		}</code></span>
+<span class="codeline" id="line-94"><code>		if c.scav&amp;(1&lt;&lt;i) != 0 {</code></span>
+<span class="codeline" id="line-95"><code>			p.chunkOf(ci).scavenged.setRange(pi+i, 1)</code></span>
+<span class="codeline" id="line-96"><code>		}</code></span>
+<span class="codeline" id="line-97"><code>	}</code></span>
+<span class="codeline" id="line-98"><code>	// Since this is a lot like a free, we need to make sure</code></span>
+<span class="codeline" id="line-99"><code>	// we update the searchAddr just like free does.</code></span>
+<span class="codeline" id="line-100"><code>	if b := (offAddr{c.base}); b.lessThan(p.searchAddr) {</code></span>
+<span class="codeline" id="line-101"><code>		p.searchAddr = b</code></span>
+<span class="codeline" id="line-102"><code>	}</code></span>
+<span class="codeline" id="line-103"><code>	p.update(c.base, pageCachePages, false, false)</code></span>
+<span class="codeline" id="line-104"><code>	*c = pageCache{}</code></span>
+<span class="codeline" id="line-105"><code>}</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>// allocToCache acquires a pageCachePages-aligned chunk of free pages which</code></span>
+<span class="codeline" id="line-108"><code>// may not be contiguous, and returns a pageCache structure which owns the</code></span>
+<span class="codeline" id="line-109"><code>// chunk.</code></span>
+<span class="codeline" id="line-110"><code>//</code></span>
+<span class="codeline" id="line-111"><code>// p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-112"><code>//</code></span>
+<span class="codeline" id="line-113"><code>// Must run on the system stack because p.mheapLock must be held.</code></span>
+<span class="codeline" id="line-114"><code>//</code></span>
+<span class="codeline" id="line-115"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-116"><code>func (p *pageAlloc) allocToCache() pageCache {</code></span>
+<span class="codeline" id="line-117"><code>	assertLockHeld(p.mheapLock)</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>	// If the searchAddr refers to a region which has a higher address than</code></span>
+<span class="codeline" id="line-120"><code>	// any known chunk, then we know we're out of memory.</code></span>
+<span class="codeline" id="line-121"><code>	if chunkIndex(p.searchAddr.addr()) &gt;= p.end {</code></span>
+<span class="codeline" id="line-122"><code>		return pageCache{}</code></span>
+<span class="codeline" id="line-123"><code>	}</code></span>
+<span class="codeline" id="line-124"><code>	c := pageCache{}</code></span>
+<span class="codeline" id="line-125"><code>	ci := chunkIndex(p.searchAddr.addr()) // chunk index</code></span>
+<span class="codeline" id="line-126"><code>	if p.summary[len(p.summary)-1][ci] != 0 {</code></span>
+<span class="codeline" id="line-127"><code>		// Fast path: there's free pages at or near the searchAddr address.</code></span>
+<span class="codeline" id="line-128"><code>		chunk := p.chunkOf(ci)</code></span>
+<span class="codeline" id="line-129"><code>		j, _ := chunk.find(1, chunkPageIndex(p.searchAddr.addr()))</code></span>
+<span class="codeline" id="line-130"><code>		if j == ^uint(0) {</code></span>
+<span class="codeline" id="line-131"><code>			throw("bad summary data")</code></span>
+<span class="codeline" id="line-132"><code>		}</code></span>
+<span class="codeline" id="line-133"><code>		c = pageCache{</code></span>
+<span class="codeline" id="line-134"><code>			base:  chunkBase(ci) + alignDown(uintptr(j), 64)*pageSize,</code></span>
+<span class="codeline" id="line-135"><code>			cache: ^chunk.pages64(j),</code></span>
+<span class="codeline" id="line-136"><code>			scav:  chunk.scavenged.block64(j),</code></span>
+<span class="codeline" id="line-137"><code>		}</code></span>
+<span class="codeline" id="line-138"><code>	} else {</code></span>
+<span class="codeline" id="line-139"><code>		// Slow path: the searchAddr address had nothing there, so go find</code></span>
+<span class="codeline" id="line-140"><code>		// the first free page the slow way.</code></span>
+<span class="codeline" id="line-141"><code>		addr, _ := p.find(1)</code></span>
+<span class="codeline" id="line-142"><code>		if addr == 0 {</code></span>
+<span class="codeline" id="line-143"><code>			// We failed to find adequate free space, so mark the searchAddr as OoM</code></span>
+<span class="codeline" id="line-144"><code>			// and return an empty pageCache.</code></span>
+<span class="codeline" id="line-145"><code>			p.searchAddr = maxSearchAddr</code></span>
+<span class="codeline" id="line-146"><code>			return pageCache{}</code></span>
+<span class="codeline" id="line-147"><code>		}</code></span>
+<span class="codeline" id="line-148"><code>		ci := chunkIndex(addr)</code></span>
+<span class="codeline" id="line-149"><code>		chunk := p.chunkOf(ci)</code></span>
+<span class="codeline" id="line-150"><code>		c = pageCache{</code></span>
+<span class="codeline" id="line-151"><code>			base:  alignDown(addr, 64*pageSize),</code></span>
+<span class="codeline" id="line-152"><code>			cache: ^chunk.pages64(chunkPageIndex(addr)),</code></span>
+<span class="codeline" id="line-153"><code>			scav:  chunk.scavenged.block64(chunkPageIndex(addr)),</code></span>
+<span class="codeline" id="line-154"><code>		}</code></span>
+<span class="codeline" id="line-155"><code>	}</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>	// Set the bits as allocated and clear the scavenged bits.</code></span>
+<span class="codeline" id="line-158"><code>	p.allocRange(c.base, pageCachePages)</code></span>
+<span class="codeline" id="line-159"><code></code></span>
+<span class="codeline" id="line-160"><code>	// Update as an allocation, but note that it's not contiguous.</code></span>
+<span class="codeline" id="line-161"><code>	p.update(c.base, pageCachePages, false, true)</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>	// Set the search address to the last page represented by the cache.</code></span>
+<span class="codeline" id="line-164"><code>	// Since all of the pages in this block are going to the cache, and we</code></span>
+<span class="codeline" id="line-165"><code>	// searched for the first free page, we can confidently start at the</code></span>
+<span class="codeline" id="line-166"><code>	// next page.</code></span>
+<span class="codeline" id="line-167"><code>	//</code></span>
+<span class="codeline" id="line-168"><code>	// However, p.searchAddr is not allowed to point into unmapped heap memory</code></span>
+<span class="codeline" id="line-169"><code>	// unless it is maxSearchAddr, so make it the last page as opposed to</code></span>
+<span class="codeline" id="line-170"><code>	// the page after.</code></span>
+<span class="codeline" id="line-171"><code>	p.searchAddr = offAddr{c.base + pageSize*(pageCachePages-1)}</code></span>
+<span class="codeline" id="line-172"><code>	return c</code></span>
+<span class="codeline" id="line-173"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

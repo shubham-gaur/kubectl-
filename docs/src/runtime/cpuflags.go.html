@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: cpuflags.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	cpuflags.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/cpu"</code></span>
+<span class="codeline" id="line-9"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// Offsets into internal/cpu records for use in assembly.</code></span>
+<span class="codeline" id="line-13"><code>const (</code></span>
+<span class="codeline" id="line-14"><code>	offsetX86HasAVX  = unsafe.Offsetof(cpu.X86.HasAVX)</code></span>
+<span class="codeline" id="line-15"><code>	offsetX86HasAVX2 = unsafe.Offsetof(cpu.X86.HasAVX2)</code></span>
+<span class="codeline" id="line-16"><code>	offsetX86HasERMS = unsafe.Offsetof(cpu.X86.HasERMS)</code></span>
+<span class="codeline" id="line-17"><code>	offsetX86HasSSE2 = unsafe.Offsetof(cpu.X86.HasSSE2)</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>	offsetARMHasIDIVA = unsafe.Offsetof(cpu.ARM.HasIDIVA)</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>	offsetMIPS64XHasMSA = unsafe.Offsetof(cpu.MIPS64X.HasMSA)</code></span>
+<span class="codeline" id="line-22"><code>)</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>var (</code></span>
+<span class="codeline" id="line-25"><code>	// Set in runtime.cpuinit.</code></span>
+<span class="codeline" id="line-26"><code>	// TODO: deprecate these; use internal/cpu directly.</code></span>
+<span class="codeline" id="line-27"><code>	x86HasPOPCNT bool</code></span>
+<span class="codeline" id="line-28"><code>	x86HasSSE41  bool</code></span>
+<span class="codeline" id="line-29"><code>	x86HasFMA    bool</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>	armHasVFPv4 bool</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	arm64HasATOMICS bool</code></span>
+<span class="codeline" id="line-34"><code>)</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

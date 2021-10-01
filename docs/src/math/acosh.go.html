@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: acosh.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	acosh.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// The original C code, the long comment, and the constants</code></span>
+<span class="codeline" id="line-8"><code>// below are from FreeBSD's /usr/src/lib/msun/src/e_acosh.c</code></span>
+<span class="codeline" id="line-9"><code>// and came with this notice. The go code is a simplified</code></span>
+<span class="codeline" id="line-10"><code>// version of the original C.</code></span>
+<span class="codeline" id="line-11"><code>//</code></span>
+<span class="codeline" id="line-12"><code>// ====================================================</code></span>
+<span class="codeline" id="line-13"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-16"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-17"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-18"><code>// is preserved.</code></span>
+<span class="codeline" id="line-19"><code>// ====================================================</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>//</code></span>
+<span class="codeline" id="line-22"><code>// __ieee754_acosh(x)</code></span>
+<span class="codeline" id="line-23"><code>// Method :</code></span>
+<span class="codeline" id="line-24"><code>//	Based on</code></span>
+<span class="codeline" id="line-25"><code>//	        acosh(x) = log [ x + sqrt(x*x-1) ]</code></span>
+<span class="codeline" id="line-26"><code>//	we have</code></span>
+<span class="codeline" id="line-27"><code>//	        acosh(x) := log(x)+ln2,	if x is large; else</code></span>
+<span class="codeline" id="line-28"><code>//	        acosh(x) := log(2x-1/(sqrt(x*x-1)+x)) if x&gt;2; else</code></span>
+<span class="codeline" id="line-29"><code>//	        acosh(x) := log1p(t+sqrt(2.0*t+t*t)); where t=x-1.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// Special cases:</code></span>
+<span class="codeline" id="line-32"><code>//	acosh(x) is NaN with signal if x&lt;1.</code></span>
+<span class="codeline" id="line-33"><code>//	acosh(NaN) is NaN without signal.</code></span>
+<span class="codeline" id="line-34"><code>//</code></span>
+<span class="codeline" id="line-35"><code></code></span>
+<span class="codeline" id="line-36"><code>// Acosh returns the inverse hyperbolic cosine of x.</code></span>
+<span class="codeline" id="line-37"><code>//</code></span>
+<span class="codeline" id="line-38"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-39"><code>//	Acosh(+Inf) = +Inf</code></span>
+<span class="codeline" id="line-40"><code>//	Acosh(x) = NaN if x &lt; 1</code></span>
+<span class="codeline" id="line-41"><code>//	Acosh(NaN) = NaN</code></span>
+<span class="codeline" id="line-42"><code>func Acosh(x float64) float64</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>func acosh(x float64) float64 {</code></span>
+<span class="codeline" id="line-45"><code>	const Large = 1 &lt;&lt; 28 // 2**28</code></span>
+<span class="codeline" id="line-46"><code>	// first case is special case</code></span>
+<span class="codeline" id="line-47"><code>	switch {</code></span>
+<span class="codeline" id="line-48"><code>	case x &lt; 1 || IsNaN(x):</code></span>
+<span class="codeline" id="line-49"><code>		return NaN()</code></span>
+<span class="codeline" id="line-50"><code>	case x == 1:</code></span>
+<span class="codeline" id="line-51"><code>		return 0</code></span>
+<span class="codeline" id="line-52"><code>	case x &gt;= Large:</code></span>
+<span class="codeline" id="line-53"><code>		return Log(x) + Ln2 // x &gt; 2**28</code></span>
+<span class="codeline" id="line-54"><code>	case x &gt; 2:</code></span>
+<span class="codeline" id="line-55"><code>		return Log(2*x - 1/(x+Sqrt(x*x-1))) // 2**28 &gt; x &gt; 2</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code>	t := x - 1</code></span>
+<span class="codeline" id="line-58"><code>	return Log1p(t + Sqrt(2*t+t*t)) // 2 &gt;= x &gt; 1</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

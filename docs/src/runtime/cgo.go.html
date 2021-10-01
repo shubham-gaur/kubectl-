@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: cgo.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	cgo.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>//go:cgo_export_static main</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// Filled in by runtime/cgo when linked into binary.</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>//go:linkname _cgo_init _cgo_init</code></span>
+<span class="codeline" id="line-14"><code>//go:linkname _cgo_thread_start _cgo_thread_start</code></span>
+<span class="codeline" id="line-15"><code>//go:linkname _cgo_sys_thread_create _cgo_sys_thread_create</code></span>
+<span class="codeline" id="line-16"><code>//go:linkname _cgo_notify_runtime_init_done _cgo_notify_runtime_init_done</code></span>
+<span class="codeline" id="line-17"><code>//go:linkname _cgo_callers _cgo_callers</code></span>
+<span class="codeline" id="line-18"><code>//go:linkname _cgo_set_context_function _cgo_set_context_function</code></span>
+<span class="codeline" id="line-19"><code>//go:linkname _cgo_yield _cgo_yield</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>var (</code></span>
+<span class="codeline" id="line-22"><code>	_cgo_init                     unsafe.Pointer</code></span>
+<span class="codeline" id="line-23"><code>	_cgo_thread_start             unsafe.Pointer</code></span>
+<span class="codeline" id="line-24"><code>	_cgo_sys_thread_create        unsafe.Pointer</code></span>
+<span class="codeline" id="line-25"><code>	_cgo_notify_runtime_init_done unsafe.Pointer</code></span>
+<span class="codeline" id="line-26"><code>	_cgo_callers                  unsafe.Pointer</code></span>
+<span class="codeline" id="line-27"><code>	_cgo_set_context_function     unsafe.Pointer</code></span>
+<span class="codeline" id="line-28"><code>	_cgo_yield                    unsafe.Pointer</code></span>
+<span class="codeline" id="line-29"><code>)</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>// iscgo is set to true by the runtime/cgo package</code></span>
+<span class="codeline" id="line-32"><code>var iscgo bool</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>// cgoHasExtraM is set on startup when an extra M is created for cgo.</code></span>
+<span class="codeline" id="line-35"><code>// The extra M must be created before any C/C++ code calls cgocallback.</code></span>
+<span class="codeline" id="line-36"><code>var cgoHasExtraM bool</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>// cgoUse is called by cgo-generated code (using go:linkname to get at</code></span>
+<span class="codeline" id="line-39"><code>// an unexported name). The calls serve two purposes:</code></span>
+<span class="codeline" id="line-40"><code>// 1) they are opaque to escape analysis, so the argument is considered to</code></span>
+<span class="codeline" id="line-41"><code>// escape to the heap.</code></span>
+<span class="codeline" id="line-42"><code>// 2) they keep the argument alive until the call site; the call is emitted after</code></span>
+<span class="codeline" id="line-43"><code>// the end of the (presumed) use of the argument by C.</code></span>
+<span class="codeline" id="line-44"><code>// cgoUse should not actually be called (see cgoAlwaysFalse).</code></span>
+<span class="codeline" id="line-45"><code>func cgoUse(interface{}) { throw("cgoUse should not be called") }</code></span>
+<span class="codeline" id="line-46"><code></code></span>
+<span class="codeline" id="line-47"><code>// cgoAlwaysFalse is a boolean value that is always false.</code></span>
+<span class="codeline" id="line-48"><code>// The cgo-generated code says if cgoAlwaysFalse { cgoUse(p) }.</code></span>
+<span class="codeline" id="line-49"><code>// The compiler cannot see that cgoAlwaysFalse is always false,</code></span>
+<span class="codeline" id="line-50"><code>// so it emits the test and keeps the call, giving the desired</code></span>
+<span class="codeline" id="line-51"><code>// escape analysis result. The test is cheaper than the call.</code></span>
+<span class="codeline" id="line-52"><code>var cgoAlwaysFalse bool</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>var cgo_yield = &amp;_cgo_yield</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

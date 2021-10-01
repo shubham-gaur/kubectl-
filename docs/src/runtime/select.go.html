@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: select.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	select.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// This file contains the implementation of Go select statements.</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-11"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>const debugSelect = false</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>// Select case descriptor.</code></span>
+<span class="codeline" id="line-17"><code>// Known to compiler.</code></span>
+<span class="codeline" id="line-18"><code>// Changes here must also be made in src/cmd/internal/gc/select.go's scasetype.</code></span>
+<span class="codeline" id="line-19"><code>type scase struct {</code></span>
+<span class="codeline" id="line-20"><code>	c    *hchan         // chan</code></span>
+<span class="codeline" id="line-21"><code>	elem unsafe.Pointer // data element</code></span>
+<span class="codeline" id="line-22"><code>}</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>var (</code></span>
+<span class="codeline" id="line-25"><code>	chansendpc = funcPC(chansend)</code></span>
+<span class="codeline" id="line-26"><code>	chanrecvpc = funcPC(chanrecv)</code></span>
+<span class="codeline" id="line-27"><code>)</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>func selectsetpc(pc *uintptr) {</code></span>
+<span class="codeline" id="line-30"><code>	*pc = getcallerpc()</code></span>
+<span class="codeline" id="line-31"><code>}</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>func sellock(scases []scase, lockorder []uint16) {</code></span>
+<span class="codeline" id="line-34"><code>	var c *hchan</code></span>
+<span class="codeline" id="line-35"><code>	for _, o := range lockorder {</code></span>
+<span class="codeline" id="line-36"><code>		c0 := scases[o].c</code></span>
+<span class="codeline" id="line-37"><code>		if c0 != c {</code></span>
+<span class="codeline" id="line-38"><code>			c = c0</code></span>
+<span class="codeline" id="line-39"><code>			lock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-40"><code>		}</code></span>
+<span class="codeline" id="line-41"><code>	}</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>func selunlock(scases []scase, lockorder []uint16) {</code></span>
+<span class="codeline" id="line-45"><code>	// We must be very careful here to not touch sel after we have unlocked</code></span>
+<span class="codeline" id="line-46"><code>	// the last lock, because sel can be freed right after the last unlock.</code></span>
+<span class="codeline" id="line-47"><code>	// Consider the following situation.</code></span>
+<span class="codeline" id="line-48"><code>	// First M calls runtime·park() in runtime·selectgo() passing the sel.</code></span>
+<span class="codeline" id="line-49"><code>	// Once runtime·park() has unlocked the last lock, another M makes</code></span>
+<span class="codeline" id="line-50"><code>	// the G that calls select runnable again and schedules it for execution.</code></span>
+<span class="codeline" id="line-51"><code>	// When the G runs on another M, it locks all the locks and frees sel.</code></span>
+<span class="codeline" id="line-52"><code>	// Now if the first M touches sel, it will access freed memory.</code></span>
+<span class="codeline" id="line-53"><code>	for i := len(lockorder) - 1; i &gt;= 0; i-- {</code></span>
+<span class="codeline" id="line-54"><code>		c := scases[lockorder[i]].c</code></span>
+<span class="codeline" id="line-55"><code>		if i &gt; 0 &amp;&amp; c == scases[lockorder[i-1]].c {</code></span>
+<span class="codeline" id="line-56"><code>			continue // will unlock it on the next iteration</code></span>
+<span class="codeline" id="line-57"><code>		}</code></span>
+<span class="codeline" id="line-58"><code>		unlock(&amp;c.lock)</code></span>
+<span class="codeline" id="line-59"><code>	}</code></span>
+<span class="codeline" id="line-60"><code>}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>func selparkcommit(gp *g, _ unsafe.Pointer) bool {</code></span>
+<span class="codeline" id="line-63"><code>	// There are unlocked sudogs that point into gp's stack. Stack</code></span>
+<span class="codeline" id="line-64"><code>	// copying must lock the channels of those sudogs.</code></span>
+<span class="codeline" id="line-65"><code>	// Set activeStackChans here instead of before we try parking</code></span>
+<span class="codeline" id="line-66"><code>	// because we could self-deadlock in stack growth on a</code></span>
+<span class="codeline" id="line-67"><code>	// channel lock.</code></span>
+<span class="codeline" id="line-68"><code>	gp.activeStackChans = true</code></span>
+<span class="codeline" id="line-69"><code>	// Mark that it's safe for stack shrinking to occur now,</code></span>
+<span class="codeline" id="line-70"><code>	// because any thread acquiring this G's stack for shrinking</code></span>
+<span class="codeline" id="line-71"><code>	// is guaranteed to observe activeStackChans after this store.</code></span>
+<span class="codeline" id="line-72"><code>	atomic.Store8(&amp;gp.parkingOnChan, 0)</code></span>
+<span class="codeline" id="line-73"><code>	// Make sure we unlock after setting activeStackChans and</code></span>
+<span class="codeline" id="line-74"><code>	// unsetting parkingOnChan. The moment we unlock any of the</code></span>
+<span class="codeline" id="line-75"><code>	// channel locks we risk gp getting readied by a channel operation</code></span>
+<span class="codeline" id="line-76"><code>	// and so gp could continue running before everything before the</code></span>
+<span class="codeline" id="line-77"><code>	// unlock is visible (even to gp itself).</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>	// This must not access gp's stack (see gopark). In</code></span>
+<span class="codeline" id="line-80"><code>	// particular, it must not access the *hselect. That's okay,</code></span>
+<span class="codeline" id="line-81"><code>	// because by the time this is called, gp.waiting has all</code></span>
+<span class="codeline" id="line-82"><code>	// channels in lock order.</code></span>
+<span class="codeline" id="line-83"><code>	var lastc *hchan</code></span>
+<span class="codeline" id="line-84"><code>	for sg := gp.waiting; sg != nil; sg = sg.waitlink {</code></span>
+<span class="codeline" id="line-85"><code>		if sg.c != lastc &amp;&amp; lastc != nil {</code></span>
+<span class="codeline" id="line-86"><code>			// As soon as we unlock the channel, fields in</code></span>
+<span class="codeline" id="line-87"><code>			// any sudog with that channel may change,</code></span>
+<span class="codeline" id="line-88"><code>			// including c and waitlink. Since multiple</code></span>
+<span class="codeline" id="line-89"><code>			// sudogs may have the same channel, we unlock</code></span>
+<span class="codeline" id="line-90"><code>			// only after we've passed the last instance</code></span>
+<span class="codeline" id="line-91"><code>			// of a channel.</code></span>
+<span class="codeline" id="line-92"><code>			unlock(&amp;lastc.lock)</code></span>
+<span class="codeline" id="line-93"><code>		}</code></span>
+<span class="codeline" id="line-94"><code>		lastc = sg.c</code></span>
+<span class="codeline" id="line-95"><code>	}</code></span>
+<span class="codeline" id="line-96"><code>	if lastc != nil {</code></span>
+<span class="codeline" id="line-97"><code>		unlock(&amp;lastc.lock)</code></span>
+<span class="codeline" id="line-98"><code>	}</code></span>
+<span class="codeline" id="line-99"><code>	return true</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>func block() {</code></span>
+<span class="codeline" id="line-103"><code>	gopark(nil, nil, waitReasonSelectNoCases, traceEvGoStop, 1) // forever</code></span>
+<span class="codeline" id="line-104"><code>}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>// selectgo implements the select statement.</code></span>
+<span class="codeline" id="line-107"><code>//</code></span>
+<span class="codeline" id="line-108"><code>// cas0 points to an array of type [ncases]scase, and order0 points to</code></span>
+<span class="codeline" id="line-109"><code>// an array of type [2*ncases]uint16 where ncases must be &lt;= 65536.</code></span>
+<span class="codeline" id="line-110"><code>// Both reside on the goroutine's stack (regardless of any escaping in</code></span>
+<span class="codeline" id="line-111"><code>// selectgo).</code></span>
+<span class="codeline" id="line-112"><code>//</code></span>
+<span class="codeline" id="line-113"><code>// For race detector builds, pc0 points to an array of type</code></span>
+<span class="codeline" id="line-114"><code>// [ncases]uintptr (also on the stack); for other builds, it's set to</code></span>
+<span class="codeline" id="line-115"><code>// nil.</code></span>
+<span class="codeline" id="line-116"><code>//</code></span>
+<span class="codeline" id="line-117"><code>// selectgo returns the index of the chosen scase, which matches the</code></span>
+<span class="codeline" id="line-118"><code>// ordinal position of its respective select{recv,send,default} call.</code></span>
+<span class="codeline" id="line-119"><code>// Also, if the chosen scase was a receive operation, it reports whether</code></span>
+<span class="codeline" id="line-120"><code>// a value was received.</code></span>
+<span class="codeline" id="line-121"><code>func selectgo(cas0 *scase, order0 *uint16, pc0 *uintptr, nsends, nrecvs int, block bool) (int, bool) {</code></span>
+<span class="codeline" id="line-122"><code>	if debugSelect {</code></span>
+<span class="codeline" id="line-123"><code>		print("select: cas0=", cas0, "\n")</code></span>
+<span class="codeline" id="line-124"><code>	}</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>	// NOTE: In order to maintain a lean stack size, the number of scases</code></span>
+<span class="codeline" id="line-127"><code>	// is capped at 65536.</code></span>
+<span class="codeline" id="line-128"><code>	cas1 := (*[1 &lt;&lt; 16]scase)(unsafe.Pointer(cas0))</code></span>
+<span class="codeline" id="line-129"><code>	order1 := (*[1 &lt;&lt; 17]uint16)(unsafe.Pointer(order0))</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>	ncases := nsends + nrecvs</code></span>
+<span class="codeline" id="line-132"><code>	scases := cas1[:ncases:ncases]</code></span>
+<span class="codeline" id="line-133"><code>	pollorder := order1[:ncases:ncases]</code></span>
+<span class="codeline" id="line-134"><code>	lockorder := order1[ncases:][:ncases:ncases]</code></span>
+<span class="codeline" id="line-135"><code>	// NOTE: pollorder/lockorder's underlying array was not zero-initialized by compiler.</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>	// Even when raceenabled is true, there might be select</code></span>
+<span class="codeline" id="line-138"><code>	// statements in packages compiled without -race (e.g.,</code></span>
+<span class="codeline" id="line-139"><code>	// ensureSigM in runtime/signal_unix.go).</code></span>
+<span class="codeline" id="line-140"><code>	var pcs []uintptr</code></span>
+<span class="codeline" id="line-141"><code>	if raceenabled &amp;&amp; pc0 != nil {</code></span>
+<span class="codeline" id="line-142"><code>		pc1 := (*[1 &lt;&lt; 16]uintptr)(unsafe.Pointer(pc0))</code></span>
+<span class="codeline" id="line-143"><code>		pcs = pc1[:ncases:ncases]</code></span>
+<span class="codeline" id="line-144"><code>	}</code></span>
+<span class="codeline" id="line-145"><code>	casePC := func(casi int) uintptr {</code></span>
+<span class="codeline" id="line-146"><code>		if pcs == nil {</code></span>
+<span class="codeline" id="line-147"><code>			return 0</code></span>
+<span class="codeline" id="line-148"><code>		}</code></span>
+<span class="codeline" id="line-149"><code>		return pcs[casi]</code></span>
+<span class="codeline" id="line-150"><code>	}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>	var t0 int64</code></span>
+<span class="codeline" id="line-153"><code>	if blockprofilerate &gt; 0 {</code></span>
+<span class="codeline" id="line-154"><code>		t0 = cputicks()</code></span>
+<span class="codeline" id="line-155"><code>	}</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>	// The compiler rewrites selects that statically have</code></span>
+<span class="codeline" id="line-158"><code>	// only 0 or 1 cases plus default into simpler constructs.</code></span>
+<span class="codeline" id="line-159"><code>	// The only way we can end up with such small sel.ncase</code></span>
+<span class="codeline" id="line-160"><code>	// values here is for a larger select in which most channels</code></span>
+<span class="codeline" id="line-161"><code>	// have been nilled out. The general code handles those</code></span>
+<span class="codeline" id="line-162"><code>	// cases correctly, and they are rare enough not to bother</code></span>
+<span class="codeline" id="line-163"><code>	// optimizing (and needing to test).</code></span>
+<span class="codeline" id="line-164"><code></code></span>
+<span class="codeline" id="line-165"><code>	// generate permuted order</code></span>
+<span class="codeline" id="line-166"><code>	norder := 0</code></span>
+<span class="codeline" id="line-167"><code>	for i := range scases {</code></span>
+<span class="codeline" id="line-168"><code>		cas := &amp;scases[i]</code></span>
+<span class="codeline" id="line-169"><code></code></span>
+<span class="codeline" id="line-170"><code>		// Omit cases without channels from the poll and lock orders.</code></span>
+<span class="codeline" id="line-171"><code>		if cas.c == nil {</code></span>
+<span class="codeline" id="line-172"><code>			cas.elem = nil // allow GC</code></span>
+<span class="codeline" id="line-173"><code>			continue</code></span>
+<span class="codeline" id="line-174"><code>		}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>		j := fastrandn(uint32(norder + 1))</code></span>
+<span class="codeline" id="line-177"><code>		pollorder[norder] = pollorder[j]</code></span>
+<span class="codeline" id="line-178"><code>		pollorder[j] = uint16(i)</code></span>
+<span class="codeline" id="line-179"><code>		norder++</code></span>
+<span class="codeline" id="line-180"><code>	}</code></span>
+<span class="codeline" id="line-181"><code>	pollorder = pollorder[:norder]</code></span>
+<span class="codeline" id="line-182"><code>	lockorder = lockorder[:norder]</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>	// sort the cases by Hchan address to get the locking order.</code></span>
+<span class="codeline" id="line-185"><code>	// simple heap sort, to guarantee n log n time and constant stack footprint.</code></span>
+<span class="codeline" id="line-186"><code>	for i := range lockorder {</code></span>
+<span class="codeline" id="line-187"><code>		j := i</code></span>
+<span class="codeline" id="line-188"><code>		// Start with the pollorder to permute cases on the same channel.</code></span>
+<span class="codeline" id="line-189"><code>		c := scases[pollorder[i]].c</code></span>
+<span class="codeline" id="line-190"><code>		for j &gt; 0 &amp;&amp; scases[lockorder[(j-1)/2]].c.sortkey() &lt; c.sortkey() {</code></span>
+<span class="codeline" id="line-191"><code>			k := (j - 1) / 2</code></span>
+<span class="codeline" id="line-192"><code>			lockorder[j] = lockorder[k]</code></span>
+<span class="codeline" id="line-193"><code>			j = k</code></span>
+<span class="codeline" id="line-194"><code>		}</code></span>
+<span class="codeline" id="line-195"><code>		lockorder[j] = pollorder[i]</code></span>
+<span class="codeline" id="line-196"><code>	}</code></span>
+<span class="codeline" id="line-197"><code>	for i := len(lockorder) - 1; i &gt;= 0; i-- {</code></span>
+<span class="codeline" id="line-198"><code>		o := lockorder[i]</code></span>
+<span class="codeline" id="line-199"><code>		c := scases[o].c</code></span>
+<span class="codeline" id="line-200"><code>		lockorder[i] = lockorder[0]</code></span>
+<span class="codeline" id="line-201"><code>		j := 0</code></span>
+<span class="codeline" id="line-202"><code>		for {</code></span>
+<span class="codeline" id="line-203"><code>			k := j*2 + 1</code></span>
+<span class="codeline" id="line-204"><code>			if k &gt;= i {</code></span>
+<span class="codeline" id="line-205"><code>				break</code></span>
+<span class="codeline" id="line-206"><code>			}</code></span>
+<span class="codeline" id="line-207"><code>			if k+1 &lt; i &amp;&amp; scases[lockorder[k]].c.sortkey() &lt; scases[lockorder[k+1]].c.sortkey() {</code></span>
+<span class="codeline" id="line-208"><code>				k++</code></span>
+<span class="codeline" id="line-209"><code>			}</code></span>
+<span class="codeline" id="line-210"><code>			if c.sortkey() &lt; scases[lockorder[k]].c.sortkey() {</code></span>
+<span class="codeline" id="line-211"><code>				lockorder[j] = lockorder[k]</code></span>
+<span class="codeline" id="line-212"><code>				j = k</code></span>
+<span class="codeline" id="line-213"><code>				continue</code></span>
+<span class="codeline" id="line-214"><code>			}</code></span>
+<span class="codeline" id="line-215"><code>			break</code></span>
+<span class="codeline" id="line-216"><code>		}</code></span>
+<span class="codeline" id="line-217"><code>		lockorder[j] = o</code></span>
+<span class="codeline" id="line-218"><code>	}</code></span>
+<span class="codeline" id="line-219"><code></code></span>
+<span class="codeline" id="line-220"><code>	if debugSelect {</code></span>
+<span class="codeline" id="line-221"><code>		for i := 0; i+1 &lt; len(lockorder); i++ {</code></span>
+<span class="codeline" id="line-222"><code>			if scases[lockorder[i]].c.sortkey() &gt; scases[lockorder[i+1]].c.sortkey() {</code></span>
+<span class="codeline" id="line-223"><code>				print("i=", i, " x=", lockorder[i], " y=", lockorder[i+1], "\n")</code></span>
+<span class="codeline" id="line-224"><code>				throw("select: broken sort")</code></span>
+<span class="codeline" id="line-225"><code>			}</code></span>
+<span class="codeline" id="line-226"><code>		}</code></span>
+<span class="codeline" id="line-227"><code>	}</code></span>
+<span class="codeline" id="line-228"><code></code></span>
+<span class="codeline" id="line-229"><code>	// lock all the channels involved in the select</code></span>
+<span class="codeline" id="line-230"><code>	sellock(scases, lockorder)</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>	var (</code></span>
+<span class="codeline" id="line-233"><code>		gp     *g</code></span>
+<span class="codeline" id="line-234"><code>		sg     *sudog</code></span>
+<span class="codeline" id="line-235"><code>		c      *hchan</code></span>
+<span class="codeline" id="line-236"><code>		k      *scase</code></span>
+<span class="codeline" id="line-237"><code>		sglist *sudog</code></span>
+<span class="codeline" id="line-238"><code>		sgnext *sudog</code></span>
+<span class="codeline" id="line-239"><code>		qp     unsafe.Pointer</code></span>
+<span class="codeline" id="line-240"><code>		nextp  **sudog</code></span>
+<span class="codeline" id="line-241"><code>	)</code></span>
+<span class="codeline" id="line-242"><code></code></span>
+<span class="codeline" id="line-243"><code>	// pass 1 - look for something already waiting</code></span>
+<span class="codeline" id="line-244"><code>	var casi int</code></span>
+<span class="codeline" id="line-245"><code>	var cas *scase</code></span>
+<span class="codeline" id="line-246"><code>	var caseSuccess bool</code></span>
+<span class="codeline" id="line-247"><code>	var caseReleaseTime int64 = -1</code></span>
+<span class="codeline" id="line-248"><code>	var recvOK bool</code></span>
+<span class="codeline" id="line-249"><code>	for _, casei := range pollorder {</code></span>
+<span class="codeline" id="line-250"><code>		casi = int(casei)</code></span>
+<span class="codeline" id="line-251"><code>		cas = &amp;scases[casi]</code></span>
+<span class="codeline" id="line-252"><code>		c = cas.c</code></span>
+<span class="codeline" id="line-253"><code></code></span>
+<span class="codeline" id="line-254"><code>		if casi &gt;= nsends {</code></span>
+<span class="codeline" id="line-255"><code>			sg = c.sendq.dequeue()</code></span>
+<span class="codeline" id="line-256"><code>			if sg != nil {</code></span>
+<span class="codeline" id="line-257"><code>				goto recv</code></span>
+<span class="codeline" id="line-258"><code>			}</code></span>
+<span class="codeline" id="line-259"><code>			if c.qcount &gt; 0 {</code></span>
+<span class="codeline" id="line-260"><code>				goto bufrecv</code></span>
+<span class="codeline" id="line-261"><code>			}</code></span>
+<span class="codeline" id="line-262"><code>			if c.closed != 0 {</code></span>
+<span class="codeline" id="line-263"><code>				goto rclose</code></span>
+<span class="codeline" id="line-264"><code>			}</code></span>
+<span class="codeline" id="line-265"><code>		} else {</code></span>
+<span class="codeline" id="line-266"><code>			if raceenabled {</code></span>
+<span class="codeline" id="line-267"><code>				racereadpc(c.raceaddr(), casePC(casi), chansendpc)</code></span>
+<span class="codeline" id="line-268"><code>			}</code></span>
+<span class="codeline" id="line-269"><code>			if c.closed != 0 {</code></span>
+<span class="codeline" id="line-270"><code>				goto sclose</code></span>
+<span class="codeline" id="line-271"><code>			}</code></span>
+<span class="codeline" id="line-272"><code>			sg = c.recvq.dequeue()</code></span>
+<span class="codeline" id="line-273"><code>			if sg != nil {</code></span>
+<span class="codeline" id="line-274"><code>				goto send</code></span>
+<span class="codeline" id="line-275"><code>			}</code></span>
+<span class="codeline" id="line-276"><code>			if c.qcount &lt; c.dataqsiz {</code></span>
+<span class="codeline" id="line-277"><code>				goto bufsend</code></span>
+<span class="codeline" id="line-278"><code>			}</code></span>
+<span class="codeline" id="line-279"><code>		}</code></span>
+<span class="codeline" id="line-280"><code>	}</code></span>
+<span class="codeline" id="line-281"><code></code></span>
+<span class="codeline" id="line-282"><code>	if !block {</code></span>
+<span class="codeline" id="line-283"><code>		selunlock(scases, lockorder)</code></span>
+<span class="codeline" id="line-284"><code>		casi = -1</code></span>
+<span class="codeline" id="line-285"><code>		goto retc</code></span>
+<span class="codeline" id="line-286"><code>	}</code></span>
+<span class="codeline" id="line-287"><code></code></span>
+<span class="codeline" id="line-288"><code>	// pass 2 - enqueue on all chans</code></span>
+<span class="codeline" id="line-289"><code>	gp = getg()</code></span>
+<span class="codeline" id="line-290"><code>	if gp.waiting != nil {</code></span>
+<span class="codeline" id="line-291"><code>		throw("gp.waiting != nil")</code></span>
+<span class="codeline" id="line-292"><code>	}</code></span>
+<span class="codeline" id="line-293"><code>	nextp = &amp;gp.waiting</code></span>
+<span class="codeline" id="line-294"><code>	for _, casei := range lockorder {</code></span>
+<span class="codeline" id="line-295"><code>		casi = int(casei)</code></span>
+<span class="codeline" id="line-296"><code>		cas = &amp;scases[casi]</code></span>
+<span class="codeline" id="line-297"><code>		c = cas.c</code></span>
+<span class="codeline" id="line-298"><code>		sg := acquireSudog()</code></span>
+<span class="codeline" id="line-299"><code>		sg.g = gp</code></span>
+<span class="codeline" id="line-300"><code>		sg.isSelect = true</code></span>
+<span class="codeline" id="line-301"><code>		// No stack splits between assigning elem and enqueuing</code></span>
+<span class="codeline" id="line-302"><code>		// sg on gp.waiting where copystack can find it.</code></span>
+<span class="codeline" id="line-303"><code>		sg.elem = cas.elem</code></span>
+<span class="codeline" id="line-304"><code>		sg.releasetime = 0</code></span>
+<span class="codeline" id="line-305"><code>		if t0 != 0 {</code></span>
+<span class="codeline" id="line-306"><code>			sg.releasetime = -1</code></span>
+<span class="codeline" id="line-307"><code>		}</code></span>
+<span class="codeline" id="line-308"><code>		sg.c = c</code></span>
+<span class="codeline" id="line-309"><code>		// Construct waiting list in lock order.</code></span>
+<span class="codeline" id="line-310"><code>		*nextp = sg</code></span>
+<span class="codeline" id="line-311"><code>		nextp = &amp;sg.waitlink</code></span>
+<span class="codeline" id="line-312"><code></code></span>
+<span class="codeline" id="line-313"><code>		if casi &lt; nsends {</code></span>
+<span class="codeline" id="line-314"><code>			c.sendq.enqueue(sg)</code></span>
+<span class="codeline" id="line-315"><code>		} else {</code></span>
+<span class="codeline" id="line-316"><code>			c.recvq.enqueue(sg)</code></span>
+<span class="codeline" id="line-317"><code>		}</code></span>
+<span class="codeline" id="line-318"><code>	}</code></span>
+<span class="codeline" id="line-319"><code></code></span>
+<span class="codeline" id="line-320"><code>	// wait for someone to wake us up</code></span>
+<span class="codeline" id="line-321"><code>	gp.param = nil</code></span>
+<span class="codeline" id="line-322"><code>	// Signal to anyone trying to shrink our stack that we're about</code></span>
+<span class="codeline" id="line-323"><code>	// to park on a channel. The window between when this G's status</code></span>
+<span class="codeline" id="line-324"><code>	// changes and when we set gp.activeStackChans is not safe for</code></span>
+<span class="codeline" id="line-325"><code>	// stack shrinking.</code></span>
+<span class="codeline" id="line-326"><code>	atomic.Store8(&amp;gp.parkingOnChan, 1)</code></span>
+<span class="codeline" id="line-327"><code>	gopark(selparkcommit, nil, waitReasonSelect, traceEvGoBlockSelect, 1)</code></span>
+<span class="codeline" id="line-328"><code>	gp.activeStackChans = false</code></span>
+<span class="codeline" id="line-329"><code></code></span>
+<span class="codeline" id="line-330"><code>	sellock(scases, lockorder)</code></span>
+<span class="codeline" id="line-331"><code></code></span>
+<span class="codeline" id="line-332"><code>	gp.selectDone = 0</code></span>
+<span class="codeline" id="line-333"><code>	sg = (*sudog)(gp.param)</code></span>
+<span class="codeline" id="line-334"><code>	gp.param = nil</code></span>
+<span class="codeline" id="line-335"><code></code></span>
+<span class="codeline" id="line-336"><code>	// pass 3 - dequeue from unsuccessful chans</code></span>
+<span class="codeline" id="line-337"><code>	// otherwise they stack up on quiet channels</code></span>
+<span class="codeline" id="line-338"><code>	// record the successful case, if any.</code></span>
+<span class="codeline" id="line-339"><code>	// We singly-linked up the SudoGs in lock order.</code></span>
+<span class="codeline" id="line-340"><code>	casi = -1</code></span>
+<span class="codeline" id="line-341"><code>	cas = nil</code></span>
+<span class="codeline" id="line-342"><code>	caseSuccess = false</code></span>
+<span class="codeline" id="line-343"><code>	sglist = gp.waiting</code></span>
+<span class="codeline" id="line-344"><code>	// Clear all elem before unlinking from gp.waiting.</code></span>
+<span class="codeline" id="line-345"><code>	for sg1 := gp.waiting; sg1 != nil; sg1 = sg1.waitlink {</code></span>
+<span class="codeline" id="line-346"><code>		sg1.isSelect = false</code></span>
+<span class="codeline" id="line-347"><code>		sg1.elem = nil</code></span>
+<span class="codeline" id="line-348"><code>		sg1.c = nil</code></span>
+<span class="codeline" id="line-349"><code>	}</code></span>
+<span class="codeline" id="line-350"><code>	gp.waiting = nil</code></span>
+<span class="codeline" id="line-351"><code></code></span>
+<span class="codeline" id="line-352"><code>	for _, casei := range lockorder {</code></span>
+<span class="codeline" id="line-353"><code>		k = &amp;scases[casei]</code></span>
+<span class="codeline" id="line-354"><code>		if sg == sglist {</code></span>
+<span class="codeline" id="line-355"><code>			// sg has already been dequeued by the G that woke us up.</code></span>
+<span class="codeline" id="line-356"><code>			casi = int(casei)</code></span>
+<span class="codeline" id="line-357"><code>			cas = k</code></span>
+<span class="codeline" id="line-358"><code>			caseSuccess = sglist.success</code></span>
+<span class="codeline" id="line-359"><code>			if sglist.releasetime &gt; 0 {</code></span>
+<span class="codeline" id="line-360"><code>				caseReleaseTime = sglist.releasetime</code></span>
+<span class="codeline" id="line-361"><code>			}</code></span>
+<span class="codeline" id="line-362"><code>		} else {</code></span>
+<span class="codeline" id="line-363"><code>			c = k.c</code></span>
+<span class="codeline" id="line-364"><code>			if int(casei) &lt; nsends {</code></span>
+<span class="codeline" id="line-365"><code>				c.sendq.dequeueSudoG(sglist)</code></span>
+<span class="codeline" id="line-366"><code>			} else {</code></span>
+<span class="codeline" id="line-367"><code>				c.recvq.dequeueSudoG(sglist)</code></span>
+<span class="codeline" id="line-368"><code>			}</code></span>
+<span class="codeline" id="line-369"><code>		}</code></span>
+<span class="codeline" id="line-370"><code>		sgnext = sglist.waitlink</code></span>
+<span class="codeline" id="line-371"><code>		sglist.waitlink = nil</code></span>
+<span class="codeline" id="line-372"><code>		releaseSudog(sglist)</code></span>
+<span class="codeline" id="line-373"><code>		sglist = sgnext</code></span>
+<span class="codeline" id="line-374"><code>	}</code></span>
+<span class="codeline" id="line-375"><code></code></span>
+<span class="codeline" id="line-376"><code>	if cas == nil {</code></span>
+<span class="codeline" id="line-377"><code>		throw("selectgo: bad wakeup")</code></span>
+<span class="codeline" id="line-378"><code>	}</code></span>
+<span class="codeline" id="line-379"><code></code></span>
+<span class="codeline" id="line-380"><code>	c = cas.c</code></span>
+<span class="codeline" id="line-381"><code></code></span>
+<span class="codeline" id="line-382"><code>	if debugSelect {</code></span>
+<span class="codeline" id="line-383"><code>		print("wait-return: cas0=", cas0, " c=", c, " cas=", cas, " send=", casi &lt; nsends, "\n")</code></span>
+<span class="codeline" id="line-384"><code>	}</code></span>
+<span class="codeline" id="line-385"><code></code></span>
+<span class="codeline" id="line-386"><code>	if casi &lt; nsends {</code></span>
+<span class="codeline" id="line-387"><code>		if !caseSuccess {</code></span>
+<span class="codeline" id="line-388"><code>			goto sclose</code></span>
+<span class="codeline" id="line-389"><code>		}</code></span>
+<span class="codeline" id="line-390"><code>	} else {</code></span>
+<span class="codeline" id="line-391"><code>		recvOK = caseSuccess</code></span>
+<span class="codeline" id="line-392"><code>	}</code></span>
+<span class="codeline" id="line-393"><code></code></span>
+<span class="codeline" id="line-394"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-395"><code>		if casi &lt; nsends {</code></span>
+<span class="codeline" id="line-396"><code>			raceReadObjectPC(c.elemtype, cas.elem, casePC(casi), chansendpc)</code></span>
+<span class="codeline" id="line-397"><code>		} else if cas.elem != nil {</code></span>
+<span class="codeline" id="line-398"><code>			raceWriteObjectPC(c.elemtype, cas.elem, casePC(casi), chanrecvpc)</code></span>
+<span class="codeline" id="line-399"><code>		}</code></span>
+<span class="codeline" id="line-400"><code>	}</code></span>
+<span class="codeline" id="line-401"><code>	if msanenabled {</code></span>
+<span class="codeline" id="line-402"><code>		if casi &lt; nsends {</code></span>
+<span class="codeline" id="line-403"><code>			msanread(cas.elem, c.elemtype.size)</code></span>
+<span class="codeline" id="line-404"><code>		} else if cas.elem != nil {</code></span>
+<span class="codeline" id="line-405"><code>			msanwrite(cas.elem, c.elemtype.size)</code></span>
+<span class="codeline" id="line-406"><code>		}</code></span>
+<span class="codeline" id="line-407"><code>	}</code></span>
+<span class="codeline" id="line-408"><code></code></span>
+<span class="codeline" id="line-409"><code>	selunlock(scases, lockorder)</code></span>
+<span class="codeline" id="line-410"><code>	goto retc</code></span>
+<span class="codeline" id="line-411"><code></code></span>
+<span class="codeline" id="line-412"><code>bufrecv:</code></span>
+<span class="codeline" id="line-413"><code>	// can receive from buffer</code></span>
+<span class="codeline" id="line-414"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-415"><code>		if cas.elem != nil {</code></span>
+<span class="codeline" id="line-416"><code>			raceWriteObjectPC(c.elemtype, cas.elem, casePC(casi), chanrecvpc)</code></span>
+<span class="codeline" id="line-417"><code>		}</code></span>
+<span class="codeline" id="line-418"><code>		racenotify(c, c.recvx, nil)</code></span>
+<span class="codeline" id="line-419"><code>	}</code></span>
+<span class="codeline" id="line-420"><code>	if msanenabled &amp;&amp; cas.elem != nil {</code></span>
+<span class="codeline" id="line-421"><code>		msanwrite(cas.elem, c.elemtype.size)</code></span>
+<span class="codeline" id="line-422"><code>	}</code></span>
+<span class="codeline" id="line-423"><code>	recvOK = true</code></span>
+<span class="codeline" id="line-424"><code>	qp = chanbuf(c, c.recvx)</code></span>
+<span class="codeline" id="line-425"><code>	if cas.elem != nil {</code></span>
+<span class="codeline" id="line-426"><code>		typedmemmove(c.elemtype, cas.elem, qp)</code></span>
+<span class="codeline" id="line-427"><code>	}</code></span>
+<span class="codeline" id="line-428"><code>	typedmemclr(c.elemtype, qp)</code></span>
+<span class="codeline" id="line-429"><code>	c.recvx++</code></span>
+<span class="codeline" id="line-430"><code>	if c.recvx == c.dataqsiz {</code></span>
+<span class="codeline" id="line-431"><code>		c.recvx = 0</code></span>
+<span class="codeline" id="line-432"><code>	}</code></span>
+<span class="codeline" id="line-433"><code>	c.qcount--</code></span>
+<span class="codeline" id="line-434"><code>	selunlock(scases, lockorder)</code></span>
+<span class="codeline" id="line-435"><code>	goto retc</code></span>
+<span class="codeline" id="line-436"><code></code></span>
+<span class="codeline" id="line-437"><code>bufsend:</code></span>
+<span class="codeline" id="line-438"><code>	// can send to buffer</code></span>
+<span class="codeline" id="line-439"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-440"><code>		racenotify(c, c.sendx, nil)</code></span>
+<span class="codeline" id="line-441"><code>		raceReadObjectPC(c.elemtype, cas.elem, casePC(casi), chansendpc)</code></span>
+<span class="codeline" id="line-442"><code>	}</code></span>
+<span class="codeline" id="line-443"><code>	if msanenabled {</code></span>
+<span class="codeline" id="line-444"><code>		msanread(cas.elem, c.elemtype.size)</code></span>
+<span class="codeline" id="line-445"><code>	}</code></span>
+<span class="codeline" id="line-446"><code>	typedmemmove(c.elemtype, chanbuf(c, c.sendx), cas.elem)</code></span>
+<span class="codeline" id="line-447"><code>	c.sendx++</code></span>
+<span class="codeline" id="line-448"><code>	if c.sendx == c.dataqsiz {</code></span>
+<span class="codeline" id="line-449"><code>		c.sendx = 0</code></span>
+<span class="codeline" id="line-450"><code>	}</code></span>
+<span class="codeline" id="line-451"><code>	c.qcount++</code></span>
+<span class="codeline" id="line-452"><code>	selunlock(scases, lockorder)</code></span>
+<span class="codeline" id="line-453"><code>	goto retc</code></span>
+<span class="codeline" id="line-454"><code></code></span>
+<span class="codeline" id="line-455"><code>recv:</code></span>
+<span class="codeline" id="line-456"><code>	// can receive from sleeping sender (sg)</code></span>
+<span class="codeline" id="line-457"><code>	recv(c, sg, cas.elem, func() { selunlock(scases, lockorder) }, 2)</code></span>
+<span class="codeline" id="line-458"><code>	if debugSelect {</code></span>
+<span class="codeline" id="line-459"><code>		print("syncrecv: cas0=", cas0, " c=", c, "\n")</code></span>
+<span class="codeline" id="line-460"><code>	}</code></span>
+<span class="codeline" id="line-461"><code>	recvOK = true</code></span>
+<span class="codeline" id="line-462"><code>	goto retc</code></span>
+<span class="codeline" id="line-463"><code></code></span>
+<span class="codeline" id="line-464"><code>rclose:</code></span>
+<span class="codeline" id="line-465"><code>	// read at end of closed channel</code></span>
+<span class="codeline" id="line-466"><code>	selunlock(scases, lockorder)</code></span>
+<span class="codeline" id="line-467"><code>	recvOK = false</code></span>
+<span class="codeline" id="line-468"><code>	if cas.elem != nil {</code></span>
+<span class="codeline" id="line-469"><code>		typedmemclr(c.elemtype, cas.elem)</code></span>
+<span class="codeline" id="line-470"><code>	}</code></span>
+<span class="codeline" id="line-471"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-472"><code>		raceacquire(c.raceaddr())</code></span>
+<span class="codeline" id="line-473"><code>	}</code></span>
+<span class="codeline" id="line-474"><code>	goto retc</code></span>
+<span class="codeline" id="line-475"><code></code></span>
+<span class="codeline" id="line-476"><code>send:</code></span>
+<span class="codeline" id="line-477"><code>	// can send to a sleeping receiver (sg)</code></span>
+<span class="codeline" id="line-478"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-479"><code>		raceReadObjectPC(c.elemtype, cas.elem, casePC(casi), chansendpc)</code></span>
+<span class="codeline" id="line-480"><code>	}</code></span>
+<span class="codeline" id="line-481"><code>	if msanenabled {</code></span>
+<span class="codeline" id="line-482"><code>		msanread(cas.elem, c.elemtype.size)</code></span>
+<span class="codeline" id="line-483"><code>	}</code></span>
+<span class="codeline" id="line-484"><code>	send(c, sg, cas.elem, func() { selunlock(scases, lockorder) }, 2)</code></span>
+<span class="codeline" id="line-485"><code>	if debugSelect {</code></span>
+<span class="codeline" id="line-486"><code>		print("syncsend: cas0=", cas0, " c=", c, "\n")</code></span>
+<span class="codeline" id="line-487"><code>	}</code></span>
+<span class="codeline" id="line-488"><code>	goto retc</code></span>
+<span class="codeline" id="line-489"><code></code></span>
+<span class="codeline" id="line-490"><code>retc:</code></span>
+<span class="codeline" id="line-491"><code>	if caseReleaseTime &gt; 0 {</code></span>
+<span class="codeline" id="line-492"><code>		blockevent(caseReleaseTime-t0, 1)</code></span>
+<span class="codeline" id="line-493"><code>	}</code></span>
+<span class="codeline" id="line-494"><code>	return casi, recvOK</code></span>
+<span class="codeline" id="line-495"><code></code></span>
+<span class="codeline" id="line-496"><code>sclose:</code></span>
+<span class="codeline" id="line-497"><code>	// send on closed channel</code></span>
+<span class="codeline" id="line-498"><code>	selunlock(scases, lockorder)</code></span>
+<span class="codeline" id="line-499"><code>	panic(plainError("send on closed channel"))</code></span>
+<span class="codeline" id="line-500"><code>}</code></span>
+<span class="codeline" id="line-501"><code></code></span>
+<span class="codeline" id="line-502"><code>func (c *hchan) sortkey() uintptr {</code></span>
+<span class="codeline" id="line-503"><code>	return uintptr(unsafe.Pointer(c))</code></span>
+<span class="codeline" id="line-504"><code>}</code></span>
+<span class="codeline" id="line-505"><code></code></span>
+<span class="codeline" id="line-506"><code>// A runtimeSelect is a single case passed to rselect.</code></span>
+<span class="codeline" id="line-507"><code>// This must match ../reflect/value.go:/runtimeSelect</code></span>
+<span class="codeline" id="line-508"><code>type runtimeSelect struct {</code></span>
+<span class="codeline" id="line-509"><code>	dir selectDir</code></span>
+<span class="codeline" id="line-510"><code>	typ unsafe.Pointer // channel type (not used here)</code></span>
+<span class="codeline" id="line-511"><code>	ch  *hchan         // channel</code></span>
+<span class="codeline" id="line-512"><code>	val unsafe.Pointer // ptr to data (SendDir) or ptr to receive buffer (RecvDir)</code></span>
+<span class="codeline" id="line-513"><code>}</code></span>
+<span class="codeline" id="line-514"><code></code></span>
+<span class="codeline" id="line-515"><code>// These values must match ../reflect/value.go:/SelectDir.</code></span>
+<span class="codeline" id="line-516"><code>type selectDir int</code></span>
+<span class="codeline" id="line-517"><code></code></span>
+<span class="codeline" id="line-518"><code>const (</code></span>
+<span class="codeline" id="line-519"><code>	_             selectDir = iota</code></span>
+<span class="codeline" id="line-520"><code>	selectSend              // case Chan &lt;- Send</code></span>
+<span class="codeline" id="line-521"><code>	selectRecv              // case &lt;-Chan:</code></span>
+<span class="codeline" id="line-522"><code>	selectDefault           // default</code></span>
+<span class="codeline" id="line-523"><code>)</code></span>
+<span class="codeline" id="line-524"><code></code></span>
+<span class="codeline" id="line-525"><code>//go:linkname reflect_rselect reflect.rselect</code></span>
+<span class="codeline" id="line-526"><code>func reflect_rselect(cases []runtimeSelect) (int, bool) {</code></span>
+<span class="codeline" id="line-527"><code>	if len(cases) == 0 {</code></span>
+<span class="codeline" id="line-528"><code>		block()</code></span>
+<span class="codeline" id="line-529"><code>	}</code></span>
+<span class="codeline" id="line-530"><code>	sel := make([]scase, len(cases))</code></span>
+<span class="codeline" id="line-531"><code>	orig := make([]int, len(cases))</code></span>
+<span class="codeline" id="line-532"><code>	nsends, nrecvs := 0, 0</code></span>
+<span class="codeline" id="line-533"><code>	dflt := -1</code></span>
+<span class="codeline" id="line-534"><code>	for i, rc := range cases {</code></span>
+<span class="codeline" id="line-535"><code>		var j int</code></span>
+<span class="codeline" id="line-536"><code>		switch rc.dir {</code></span>
+<span class="codeline" id="line-537"><code>		case selectDefault:</code></span>
+<span class="codeline" id="line-538"><code>			dflt = i</code></span>
+<span class="codeline" id="line-539"><code>			continue</code></span>
+<span class="codeline" id="line-540"><code>		case selectSend:</code></span>
+<span class="codeline" id="line-541"><code>			j = nsends</code></span>
+<span class="codeline" id="line-542"><code>			nsends++</code></span>
+<span class="codeline" id="line-543"><code>		case selectRecv:</code></span>
+<span class="codeline" id="line-544"><code>			nrecvs++</code></span>
+<span class="codeline" id="line-545"><code>			j = len(cases) - nrecvs</code></span>
+<span class="codeline" id="line-546"><code>		}</code></span>
+<span class="codeline" id="line-547"><code></code></span>
+<span class="codeline" id="line-548"><code>		sel[j] = scase{c: rc.ch, elem: rc.val}</code></span>
+<span class="codeline" id="line-549"><code>		orig[j] = i</code></span>
+<span class="codeline" id="line-550"><code>	}</code></span>
+<span class="codeline" id="line-551"><code></code></span>
+<span class="codeline" id="line-552"><code>	// Only a default case.</code></span>
+<span class="codeline" id="line-553"><code>	if nsends+nrecvs == 0 {</code></span>
+<span class="codeline" id="line-554"><code>		return dflt, false</code></span>
+<span class="codeline" id="line-555"><code>	}</code></span>
+<span class="codeline" id="line-556"><code></code></span>
+<span class="codeline" id="line-557"><code>	// Compact sel and orig if necessary.</code></span>
+<span class="codeline" id="line-558"><code>	if nsends+nrecvs &lt; len(cases) {</code></span>
+<span class="codeline" id="line-559"><code>		copy(sel[nsends:], sel[len(cases)-nrecvs:])</code></span>
+<span class="codeline" id="line-560"><code>		copy(orig[nsends:], orig[len(cases)-nrecvs:])</code></span>
+<span class="codeline" id="line-561"><code>	}</code></span>
+<span class="codeline" id="line-562"><code></code></span>
+<span class="codeline" id="line-563"><code>	order := make([]uint16, 2*(nsends+nrecvs))</code></span>
+<span class="codeline" id="line-564"><code>	var pc0 *uintptr</code></span>
+<span class="codeline" id="line-565"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-566"><code>		pcs := make([]uintptr, nsends+nrecvs)</code></span>
+<span class="codeline" id="line-567"><code>		for i := range pcs {</code></span>
+<span class="codeline" id="line-568"><code>			selectsetpc(&amp;pcs[i])</code></span>
+<span class="codeline" id="line-569"><code>		}</code></span>
+<span class="codeline" id="line-570"><code>		pc0 = &amp;pcs[0]</code></span>
+<span class="codeline" id="line-571"><code>	}</code></span>
+<span class="codeline" id="line-572"><code></code></span>
+<span class="codeline" id="line-573"><code>	chosen, recvOK := selectgo(&amp;sel[0], &amp;order[0], pc0, nsends, nrecvs, dflt == -1)</code></span>
+<span class="codeline" id="line-574"><code></code></span>
+<span class="codeline" id="line-575"><code>	// Translate chosen back to caller's ordering.</code></span>
+<span class="codeline" id="line-576"><code>	if chosen &lt; 0 {</code></span>
+<span class="codeline" id="line-577"><code>		chosen = dflt</code></span>
+<span class="codeline" id="line-578"><code>	} else {</code></span>
+<span class="codeline" id="line-579"><code>		chosen = orig[chosen]</code></span>
+<span class="codeline" id="line-580"><code>	}</code></span>
+<span class="codeline" id="line-581"><code>	return chosen, recvOK</code></span>
+<span class="codeline" id="line-582"><code>}</code></span>
+<span class="codeline" id="line-583"><code></code></span>
+<span class="codeline" id="line-584"><code>func (q *waitq) dequeueSudoG(sgp *sudog) {</code></span>
+<span class="codeline" id="line-585"><code>	x := sgp.prev</code></span>
+<span class="codeline" id="line-586"><code>	y := sgp.next</code></span>
+<span class="codeline" id="line-587"><code>	if x != nil {</code></span>
+<span class="codeline" id="line-588"><code>		if y != nil {</code></span>
+<span class="codeline" id="line-589"><code>			// middle of queue</code></span>
+<span class="codeline" id="line-590"><code>			x.next = y</code></span>
+<span class="codeline" id="line-591"><code>			y.prev = x</code></span>
+<span class="codeline" id="line-592"><code>			sgp.next = nil</code></span>
+<span class="codeline" id="line-593"><code>			sgp.prev = nil</code></span>
+<span class="codeline" id="line-594"><code>			return</code></span>
+<span class="codeline" id="line-595"><code>		}</code></span>
+<span class="codeline" id="line-596"><code>		// end of queue</code></span>
+<span class="codeline" id="line-597"><code>		x.next = nil</code></span>
+<span class="codeline" id="line-598"><code>		q.last = x</code></span>
+<span class="codeline" id="line-599"><code>		sgp.prev = nil</code></span>
+<span class="codeline" id="line-600"><code>		return</code></span>
+<span class="codeline" id="line-601"><code>	}</code></span>
+<span class="codeline" id="line-602"><code>	if y != nil {</code></span>
+<span class="codeline" id="line-603"><code>		// start of queue</code></span>
+<span class="codeline" id="line-604"><code>		y.prev = nil</code></span>
+<span class="codeline" id="line-605"><code>		q.first = y</code></span>
+<span class="codeline" id="line-606"><code>		sgp.next = nil</code></span>
+<span class="codeline" id="line-607"><code>		return</code></span>
+<span class="codeline" id="line-608"><code>	}</code></span>
+<span class="codeline" id="line-609"><code></code></span>
+<span class="codeline" id="line-610"><code>	// x==y==nil. Either sgp is the only element in the queue,</code></span>
+<span class="codeline" id="line-611"><code>	// or it has already been removed. Use q.first to disambiguate.</code></span>
+<span class="codeline" id="line-612"><code>	if q.first == sgp {</code></span>
+<span class="codeline" id="line-613"><code>		q.first = nil</code></span>
+<span class="codeline" id="line-614"><code>		q.last = nil</code></span>
+<span class="codeline" id="line-615"><code>	}</code></span>
+<span class="codeline" id="line-616"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

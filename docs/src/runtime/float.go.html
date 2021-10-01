@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: float.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	float.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>var inf = float64frombits(0x7FF0000000000000)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// isNaN reports whether f is an IEEE 754 ``not-a-number'' value.</code></span>
+<span class="codeline" id="line-12"><code>func isNaN(f float64) (is bool) {</code></span>
+<span class="codeline" id="line-13"><code>	// IEEE 754 says that only NaNs satisfy f != f.</code></span>
+<span class="codeline" id="line-14"><code>	return f != f</code></span>
+<span class="codeline" id="line-15"><code>}</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// isFinite reports whether f is neither NaN nor an infinity.</code></span>
+<span class="codeline" id="line-18"><code>func isFinite(f float64) bool {</code></span>
+<span class="codeline" id="line-19"><code>	return !isNaN(f - f)</code></span>
+<span class="codeline" id="line-20"><code>}</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>// isInf reports whether f is an infinity.</code></span>
+<span class="codeline" id="line-23"><code>func isInf(f float64) bool {</code></span>
+<span class="codeline" id="line-24"><code>	return !isNaN(f) &amp;&amp; !isFinite(f)</code></span>
+<span class="codeline" id="line-25"><code>}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>// Abs returns the absolute value of x.</code></span>
+<span class="codeline" id="line-28"><code>//</code></span>
+<span class="codeline" id="line-29"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-30"><code>//	Abs(±Inf) = +Inf</code></span>
+<span class="codeline" id="line-31"><code>//	Abs(NaN) = NaN</code></span>
+<span class="codeline" id="line-32"><code>func abs(x float64) float64 {</code></span>
+<span class="codeline" id="line-33"><code>	const sign = 1 &lt;&lt; 63</code></span>
+<span class="codeline" id="line-34"><code>	return float64frombits(float64bits(x) &amp;^ sign)</code></span>
+<span class="codeline" id="line-35"><code>}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>// copysign returns a value with the magnitude</code></span>
+<span class="codeline" id="line-38"><code>// of x and the sign of y.</code></span>
+<span class="codeline" id="line-39"><code>func copysign(x, y float64) float64 {</code></span>
+<span class="codeline" id="line-40"><code>	const sign = 1 &lt;&lt; 63</code></span>
+<span class="codeline" id="line-41"><code>	return float64frombits(float64bits(x)&amp;^sign | float64bits(y)&amp;sign)</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>// Float64bits returns the IEEE 754 binary representation of f.</code></span>
+<span class="codeline" id="line-45"><code>func float64bits(f float64) uint64 {</code></span>
+<span class="codeline" id="line-46"><code>	return *(*uint64)(unsafe.Pointer(&amp;f))</code></span>
+<span class="codeline" id="line-47"><code>}</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>// Float64frombits returns the floating point number corresponding</code></span>
+<span class="codeline" id="line-50"><code>// the IEEE 754 binary representation b.</code></span>
+<span class="codeline" id="line-51"><code>func float64frombits(b uint64) float64 {</code></span>
+<span class="codeline" id="line-52"><code>	return *(*float64)(unsafe.Pointer(&amp;b))</code></span>
+<span class="codeline" id="line-53"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

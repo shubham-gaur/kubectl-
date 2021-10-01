@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: signal_amd64.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	signal_amd64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2013 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build amd64</code></span>
+<span class="codeline" id="line-6"><code>// +build darwin dragonfly freebsd linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>package runtime</code></span>
+<span class="codeline" id="line-9"><code></code></span>
+<span class="codeline" id="line-10"><code>import (</code></span>
+<span class="codeline" id="line-11"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-12"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>func dumpregs(c *sigctxt) {</code></span>
+<span class="codeline" id="line-16"><code>	print("rax    ", hex(c.rax()), "\n")</code></span>
+<span class="codeline" id="line-17"><code>	print("rbx    ", hex(c.rbx()), "\n")</code></span>
+<span class="codeline" id="line-18"><code>	print("rcx    ", hex(c.rcx()), "\n")</code></span>
+<span class="codeline" id="line-19"><code>	print("rdx    ", hex(c.rdx()), "\n")</code></span>
+<span class="codeline" id="line-20"><code>	print("rdi    ", hex(c.rdi()), "\n")</code></span>
+<span class="codeline" id="line-21"><code>	print("rsi    ", hex(c.rsi()), "\n")</code></span>
+<span class="codeline" id="line-22"><code>	print("rbp    ", hex(c.rbp()), "\n")</code></span>
+<span class="codeline" id="line-23"><code>	print("rsp    ", hex(c.rsp()), "\n")</code></span>
+<span class="codeline" id="line-24"><code>	print("r8     ", hex(c.r8()), "\n")</code></span>
+<span class="codeline" id="line-25"><code>	print("r9     ", hex(c.r9()), "\n")</code></span>
+<span class="codeline" id="line-26"><code>	print("r10    ", hex(c.r10()), "\n")</code></span>
+<span class="codeline" id="line-27"><code>	print("r11    ", hex(c.r11()), "\n")</code></span>
+<span class="codeline" id="line-28"><code>	print("r12    ", hex(c.r12()), "\n")</code></span>
+<span class="codeline" id="line-29"><code>	print("r13    ", hex(c.r13()), "\n")</code></span>
+<span class="codeline" id="line-30"><code>	print("r14    ", hex(c.r14()), "\n")</code></span>
+<span class="codeline" id="line-31"><code>	print("r15    ", hex(c.r15()), "\n")</code></span>
+<span class="codeline" id="line-32"><code>	print("rip    ", hex(c.rip()), "\n")</code></span>
+<span class="codeline" id="line-33"><code>	print("rflags ", hex(c.rflags()), "\n")</code></span>
+<span class="codeline" id="line-34"><code>	print("cs     ", hex(c.cs()), "\n")</code></span>
+<span class="codeline" id="line-35"><code>	print("fs     ", hex(c.fs()), "\n")</code></span>
+<span class="codeline" id="line-36"><code>	print("gs     ", hex(c.gs()), "\n")</code></span>
+<span class="codeline" id="line-37"><code>}</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-40"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-41"><code>func (c *sigctxt) sigpc() uintptr { return uintptr(c.rip()) }</code></span>
+<span class="codeline" id="line-42"><code></code></span>
+<span class="codeline" id="line-43"><code>func (c *sigctxt) sigsp() uintptr { return uintptr(c.rsp()) }</code></span>
+<span class="codeline" id="line-44"><code>func (c *sigctxt) siglr() uintptr { return 0 }</code></span>
+<span class="codeline" id="line-45"><code>func (c *sigctxt) fault() uintptr { return uintptr(c.sigaddr()) }</code></span>
+<span class="codeline" id="line-46"><code></code></span>
+<span class="codeline" id="line-47"><code>// preparePanic sets up the stack to look like a call to sigpanic.</code></span>
+<span class="codeline" id="line-48"><code>func (c *sigctxt) preparePanic(sig uint32, gp *g) {</code></span>
+<span class="codeline" id="line-49"><code>	// Work around Leopard bug that doesn't set FPE_INTDIV.</code></span>
+<span class="codeline" id="line-50"><code>	// Look at instruction to see if it is a divide.</code></span>
+<span class="codeline" id="line-51"><code>	// Not necessary in Snow Leopard (si_code will be != 0).</code></span>
+<span class="codeline" id="line-52"><code>	if GOOS == "darwin" &amp;&amp; sig == _SIGFPE &amp;&amp; gp.sigcode0 == 0 {</code></span>
+<span class="codeline" id="line-53"><code>		pc := (*[4]byte)(unsafe.Pointer(gp.sigpc))</code></span>
+<span class="codeline" id="line-54"><code>		i := 0</code></span>
+<span class="codeline" id="line-55"><code>		if pc[i]&amp;0xF0 == 0x40 { // 64-bit REX prefix</code></span>
+<span class="codeline" id="line-56"><code>			i++</code></span>
+<span class="codeline" id="line-57"><code>		} else if pc[i] == 0x66 { // 16-bit instruction prefix</code></span>
+<span class="codeline" id="line-58"><code>			i++</code></span>
+<span class="codeline" id="line-59"><code>		}</code></span>
+<span class="codeline" id="line-60"><code>		if pc[i] == 0xF6 || pc[i] == 0xF7 {</code></span>
+<span class="codeline" id="line-61"><code>			gp.sigcode0 = _FPE_INTDIV</code></span>
+<span class="codeline" id="line-62"><code>		}</code></span>
+<span class="codeline" id="line-63"><code>	}</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>	pc := uintptr(c.rip())</code></span>
+<span class="codeline" id="line-66"><code>	sp := uintptr(c.rsp())</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>	if shouldPushSigpanic(gp, pc, *(*uintptr)(unsafe.Pointer(sp))) {</code></span>
+<span class="codeline" id="line-69"><code>		c.pushCall(funcPC(sigpanic), pc)</code></span>
+<span class="codeline" id="line-70"><code>	} else {</code></span>
+<span class="codeline" id="line-71"><code>		// Not safe to push the call. Just clobber the frame.</code></span>
+<span class="codeline" id="line-72"><code>		c.set_rip(uint64(funcPC(sigpanic)))</code></span>
+<span class="codeline" id="line-73"><code>	}</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>func (c *sigctxt) pushCall(targetPC, resumePC uintptr) {</code></span>
+<span class="codeline" id="line-77"><code>	// Make it look like we called target at resumePC.</code></span>
+<span class="codeline" id="line-78"><code>	sp := uintptr(c.rsp())</code></span>
+<span class="codeline" id="line-79"><code>	sp -= sys.PtrSize</code></span>
+<span class="codeline" id="line-80"><code>	*(*uintptr)(unsafe.Pointer(sp)) = resumePC</code></span>
+<span class="codeline" id="line-81"><code>	c.set_rsp(uint64(sp))</code></span>
+<span class="codeline" id="line-82"><code>	c.set_rip(uint64(targetPC))</code></span>
+<span class="codeline" id="line-83"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

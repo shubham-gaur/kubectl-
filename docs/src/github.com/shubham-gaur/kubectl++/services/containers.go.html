@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: containers.go in package github.com/shubham-gaur/kubectl++/services</title>
+<link href="../../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	containers.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../../pkg/github.com/shubham-gaur/kubectl++/services.html">github.com/shubham-gaur/kubectl++/services</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>package services</code></span>
+<span class="codeline" id="line-2"><code></code></span>
+<span class="codeline" id="line-3"><code>import (</code></span>
+<span class="codeline" id="line-4"><code>	"fmt"</code></span>
+<span class="codeline" id="line-5"><code>	"strings"</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>	help "github.com/shubham-gaur/kubectl++/helper"</code></span>
+<span class="codeline" id="line-8"><code>	log "github.com/shubham-gaur/kubectl++/logger"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>var containerSt struct {</code></span>
+<span class="codeline" id="line-12"><code>	containers         []string</code></span>
+<span class="codeline" id="line-13"><code>	numberOfContainers int</code></span>
+<span class="codeline" id="line-14"><code>}</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>var ctrStr string</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>func fetchContainers(pdIndex int, nsIndex int) {</code></span>
+<span class="codeline" id="line-19"><code>	kargs := []string{"get", "pods", podSt.pods[pdIndex], "-n", namespacesSt.namespaces[nsIndex], "-o", "jsonpath={.spec.containers[*].name}"}</code></span>
+<span class="codeline" id="line-20"><code>	ctrStr = help.ExecKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-21"><code>	containerSt.containers = strings.Fields(ctrStr)</code></span>
+<span class="codeline" id="line-22"><code>	containerSt.numberOfContainers = len(containerSt.containers)</code></span>
+<span class="codeline" id="line-23"><code>}</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>func GetTaggedContainers() (int, int, int) {</code></span>
+<span class="codeline" id="line-26"><code>	pdIndex, nsIndex := GetTaggedPods()</code></span>
+<span class="codeline" id="line-27"><code>	fetchContainers(pdIndex, nsIndex)</code></span>
+<span class="codeline" id="line-28"><code>	log.Info.Printf("🤔 Which container you are looking for?")</code></span>
+<span class="codeline" id="line-29"><code>	log.Info.Printf("😀 Below list might help... Available containers 👇 ")</code></span>
+<span class="codeline" id="line-30"><code>	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")</code></span>
+<span class="codeline" id="line-31"><code>	for ct := 0; ct &lt; containerSt.numberOfContainers; ct++ {</code></span>
+<span class="codeline" id="line-32"><code>		fmt.Printf("%10v👉 Press [%-2v]: %v\n", "", ct, containerSt.containers[ct])</code></span>
+<span class="codeline" id="line-33"><code>	}</code></span>
+<span class="codeline" id="line-34"><code>	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")</code></span>
+<span class="codeline" id="line-35"><code>	var ctIndex int</code></span>
+<span class="codeline" id="line-36"><code>	help.TakeIntInput(&amp;ctIndex, containerSt.numberOfContainers)</code></span>
+<span class="codeline" id="line-37"><code>	return ctIndex, pdIndex, nsIndex</code></span>
+<span class="codeline" id="line-38"><code>}</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>func MarkContainer() {</code></span>
+<span class="codeline" id="line-41"><code>	log.Info.Printf("🤔 Mark active container for operations...")</code></span>
+<span class="codeline" id="line-42"><code>	var ctIndex, pdIndex, nsIndex int</code></span>
+<span class="codeline" id="line-43"><code>	ctIndex, pdIndex, nsIndex = GetTaggedContainers()</code></span>
+<span class="codeline" id="line-44"><code>	options := make(map[int]string)</code></span>
+<span class="codeline" id="line-45"><code>	options[0] = "return"</code></span>
+<span class="codeline" id="line-46"><code>	options[1] = "login container"</code></span>
+<span class="codeline" id="line-47"><code>	options[2] = "exec command in container"</code></span>
+<span class="codeline" id="line-48"><code>	options[3] = "display logs of container"</code></span>
+<span class="codeline" id="line-49"><code>	options[4] = "return to main"</code></span>
+<span class="codeline" id="line-50"><code>	var opt int</code></span>
+<span class="codeline" id="line-51"><code>	for {</code></span>
+<span class="codeline" id="line-52"><code>		log.Info.Printf("😀 [Set Container]|👉 %v container  |👉 %v pod |👉 %v namespace", containerSt.containers[ctIndex], podSt.pods[pdIndex], namespacesSt.namespaces[nsIndex])</code></span>
+<span class="codeline" id="line-53"><code>		help.Default(options)</code></span>
+<span class="codeline" id="line-54"><code>		help.TakeIntInput(&amp;opt, len(options))</code></span>
+<span class="codeline" id="line-55"><code>		switch options[opt] {</code></span>
+<span class="codeline" id="line-56"><code>		case options[0]:</code></span>
+<span class="codeline" id="line-57"><code>			ctIndex, pdIndex, nsIndex = GetTaggedContainers()</code></span>
+<span class="codeline" id="line-58"><code>			log.Info.Printf("😀 Active container being set to 👉 %v", containerSt.containers[ctIndex])</code></span>
+<span class="codeline" id="line-59"><code>		case options[1]:</code></span>
+<span class="codeline" id="line-60"><code>			Login(ctIndex, pdIndex, nsIndex)</code></span>
+<span class="codeline" id="line-61"><code>		case options[2]:</code></span>
+<span class="codeline" id="line-62"><code>			executeCmd(ctIndex, pdIndex, nsIndex)</code></span>
+<span class="codeline" id="line-63"><code>		case options[3]:</code></span>
+<span class="codeline" id="line-64"><code>			displayLogs(ctIndex, pdIndex, nsIndex)</code></span>
+<span class="codeline" id="line-65"><code>		case options[4]:</code></span>
+<span class="codeline" id="line-66"><code>			return</code></span>
+<span class="codeline" id="line-67"><code>		}</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>func executeCmd(ctIndex int, pdIndex int, nsIndex int) {</code></span>
+<span class="codeline" id="line-72"><code>	log.Info.Printf("🤔 What command to execute?")</code></span>
+<span class="codeline" id="line-73"><code>	c := help.RetStrBufInput()</code></span>
+<span class="codeline" id="line-74"><code>	kargs := []string{"-n", namespacesSt.namespaces[nsIndex], "exec", "-it", podSt.pods[pdIndex], "-c", containerSt.containers[ctIndex], "--"}</code></span>
+<span class="codeline" id="line-75"><code>	kargs = append(kargs, strings.Fields(c)...)</code></span>
+<span class="codeline" id="line-76"><code>	help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-77"><code>}</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>func displayLogs(ctIndex int, pdIndex int, nsIndex int) {</code></span>
+<span class="codeline" id="line-80"><code>	log.Info.Printf("🤔 Following logs are found for %v", containerSt.containers[ctIndex])</code></span>
+<span class="codeline" id="line-81"><code>	kargs := []string{"-n", namespacesSt.namespaces[nsIndex], "logs", podSt.pods[pdIndex], "-c", containerSt.containers[ctIndex]}</code></span>
+<span class="codeline" id="line-82"><code>	help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-83"><code>}</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>func DisplayContainers(args ...int) {</code></span>
+<span class="codeline" id="line-86"><code>	var pdIndex, nsIndex int</code></span>
+<span class="codeline" id="line-87"><code>	if len(args) &gt; 0 {</code></span>
+<span class="codeline" id="line-88"><code>		pdIndex, nsIndex = args[0], args[1]</code></span>
+<span class="codeline" id="line-89"><code>	} else {</code></span>
+<span class="codeline" id="line-90"><code>		pdIndex, nsIndex = GetTaggedPods()</code></span>
+<span class="codeline" id="line-91"><code>	}</code></span>
+<span class="codeline" id="line-92"><code>	fetchContainers(pdIndex, nsIndex)</code></span>
+<span class="codeline" id="line-93"><code>	log.Info.Printf("🤔 No namespace provided; will display containers in %v pod for %v namespace", podSt.pods[pdIndex], namespacesSt.namespaces[nsIndex])</code></span>
+<span class="codeline" id="line-94"><code>	log.Info.Printf("😓 Executing command: kubectl get pods -n " + namespacesSt.namespaces[nsIndex])</code></span>
+<span class="codeline" id="line-95"><code>	log.PrintSpecial(log.GetCurrentFunctionName(), ctrStr+"\n")</code></span>
+<span class="codeline" id="line-96"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

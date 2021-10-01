@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: indent.go in package encoding/json</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	indent.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/encoding/json.html">encoding/json</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package json</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"bytes"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// Compact appends to dst the JSON-encoded src with</code></span>
+<span class="codeline" id="line-12"><code>// insignificant space characters elided.</code></span>
+<span class="codeline" id="line-13"><code>func Compact(dst *bytes.Buffer, src []byte) error {</code></span>
+<span class="codeline" id="line-14"><code>	return compact(dst, src, false)</code></span>
+<span class="codeline" id="line-15"><code>}</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>func compact(dst *bytes.Buffer, src []byte, escape bool) error {</code></span>
+<span class="codeline" id="line-18"><code>	origLen := dst.Len()</code></span>
+<span class="codeline" id="line-19"><code>	scan := newScanner()</code></span>
+<span class="codeline" id="line-20"><code>	defer freeScanner(scan)</code></span>
+<span class="codeline" id="line-21"><code>	start := 0</code></span>
+<span class="codeline" id="line-22"><code>	for i, c := range src {</code></span>
+<span class="codeline" id="line-23"><code>		if escape &amp;&amp; (c == '&lt;' || c == '&gt;' || c == '&amp;') {</code></span>
+<span class="codeline" id="line-24"><code>			if start &lt; i {</code></span>
+<span class="codeline" id="line-25"><code>				dst.Write(src[start:i])</code></span>
+<span class="codeline" id="line-26"><code>			}</code></span>
+<span class="codeline" id="line-27"><code>			dst.WriteString(`\u00`)</code></span>
+<span class="codeline" id="line-28"><code>			dst.WriteByte(hex[c&gt;&gt;4])</code></span>
+<span class="codeline" id="line-29"><code>			dst.WriteByte(hex[c&amp;0xF])</code></span>
+<span class="codeline" id="line-30"><code>			start = i + 1</code></span>
+<span class="codeline" id="line-31"><code>		}</code></span>
+<span class="codeline" id="line-32"><code>		// Convert U+2028 and U+2029 (E2 80 A8 and E2 80 A9).</code></span>
+<span class="codeline" id="line-33"><code>		if escape &amp;&amp; c == 0xE2 &amp;&amp; i+2 &lt; len(src) &amp;&amp; src[i+1] == 0x80 &amp;&amp; src[i+2]&amp;^1 == 0xA8 {</code></span>
+<span class="codeline" id="line-34"><code>			if start &lt; i {</code></span>
+<span class="codeline" id="line-35"><code>				dst.Write(src[start:i])</code></span>
+<span class="codeline" id="line-36"><code>			}</code></span>
+<span class="codeline" id="line-37"><code>			dst.WriteString(`\u202`)</code></span>
+<span class="codeline" id="line-38"><code>			dst.WriteByte(hex[src[i+2]&amp;0xF])</code></span>
+<span class="codeline" id="line-39"><code>			start = i + 3</code></span>
+<span class="codeline" id="line-40"><code>		}</code></span>
+<span class="codeline" id="line-41"><code>		v := scan.step(scan, c)</code></span>
+<span class="codeline" id="line-42"><code>		if v &gt;= scanSkipSpace {</code></span>
+<span class="codeline" id="line-43"><code>			if v == scanError {</code></span>
+<span class="codeline" id="line-44"><code>				break</code></span>
+<span class="codeline" id="line-45"><code>			}</code></span>
+<span class="codeline" id="line-46"><code>			if start &lt; i {</code></span>
+<span class="codeline" id="line-47"><code>				dst.Write(src[start:i])</code></span>
+<span class="codeline" id="line-48"><code>			}</code></span>
+<span class="codeline" id="line-49"><code>			start = i + 1</code></span>
+<span class="codeline" id="line-50"><code>		}</code></span>
+<span class="codeline" id="line-51"><code>	}</code></span>
+<span class="codeline" id="line-52"><code>	if scan.eof() == scanError {</code></span>
+<span class="codeline" id="line-53"><code>		dst.Truncate(origLen)</code></span>
+<span class="codeline" id="line-54"><code>		return scan.err</code></span>
+<span class="codeline" id="line-55"><code>	}</code></span>
+<span class="codeline" id="line-56"><code>	if start &lt; len(src) {</code></span>
+<span class="codeline" id="line-57"><code>		dst.Write(src[start:])</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code>	return nil</code></span>
+<span class="codeline" id="line-60"><code>}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>func newline(dst *bytes.Buffer, prefix, indent string, depth int) {</code></span>
+<span class="codeline" id="line-63"><code>	dst.WriteByte('\n')</code></span>
+<span class="codeline" id="line-64"><code>	dst.WriteString(prefix)</code></span>
+<span class="codeline" id="line-65"><code>	for i := 0; i &lt; depth; i++ {</code></span>
+<span class="codeline" id="line-66"><code>		dst.WriteString(indent)</code></span>
+<span class="codeline" id="line-67"><code>	}</code></span>
+<span class="codeline" id="line-68"><code>}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>// Indent appends to dst an indented form of the JSON-encoded src.</code></span>
+<span class="codeline" id="line-71"><code>// Each element in a JSON object or array begins on a new,</code></span>
+<span class="codeline" id="line-72"><code>// indented line beginning with prefix followed by one or more</code></span>
+<span class="codeline" id="line-73"><code>// copies of indent according to the indentation nesting.</code></span>
+<span class="codeline" id="line-74"><code>// The data appended to dst does not begin with the prefix nor</code></span>
+<span class="codeline" id="line-75"><code>// any indentation, to make it easier to embed inside other formatted JSON data.</code></span>
+<span class="codeline" id="line-76"><code>// Although leading space characters (space, tab, carriage return, newline)</code></span>
+<span class="codeline" id="line-77"><code>// at the beginning of src are dropped, trailing space characters</code></span>
+<span class="codeline" id="line-78"><code>// at the end of src are preserved and copied to dst.</code></span>
+<span class="codeline" id="line-79"><code>// For example, if src has no trailing spaces, neither will dst;</code></span>
+<span class="codeline" id="line-80"><code>// if src ends in a trailing newline, so will dst.</code></span>
+<span class="codeline" id="line-81"><code>func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {</code></span>
+<span class="codeline" id="line-82"><code>	origLen := dst.Len()</code></span>
+<span class="codeline" id="line-83"><code>	scan := newScanner()</code></span>
+<span class="codeline" id="line-84"><code>	defer freeScanner(scan)</code></span>
+<span class="codeline" id="line-85"><code>	needIndent := false</code></span>
+<span class="codeline" id="line-86"><code>	depth := 0</code></span>
+<span class="codeline" id="line-87"><code>	for _, c := range src {</code></span>
+<span class="codeline" id="line-88"><code>		scan.bytes++</code></span>
+<span class="codeline" id="line-89"><code>		v := scan.step(scan, c)</code></span>
+<span class="codeline" id="line-90"><code>		if v == scanSkipSpace {</code></span>
+<span class="codeline" id="line-91"><code>			continue</code></span>
+<span class="codeline" id="line-92"><code>		}</code></span>
+<span class="codeline" id="line-93"><code>		if v == scanError {</code></span>
+<span class="codeline" id="line-94"><code>			break</code></span>
+<span class="codeline" id="line-95"><code>		}</code></span>
+<span class="codeline" id="line-96"><code>		if needIndent &amp;&amp; v != scanEndObject &amp;&amp; v != scanEndArray {</code></span>
+<span class="codeline" id="line-97"><code>			needIndent = false</code></span>
+<span class="codeline" id="line-98"><code>			depth++</code></span>
+<span class="codeline" id="line-99"><code>			newline(dst, prefix, indent, depth)</code></span>
+<span class="codeline" id="line-100"><code>		}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>		// Emit semantically uninteresting bytes</code></span>
+<span class="codeline" id="line-103"><code>		// (in particular, punctuation in strings) unmodified.</code></span>
+<span class="codeline" id="line-104"><code>		if v == scanContinue {</code></span>
+<span class="codeline" id="line-105"><code>			dst.WriteByte(c)</code></span>
+<span class="codeline" id="line-106"><code>			continue</code></span>
+<span class="codeline" id="line-107"><code>		}</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>		// Add spacing around real punctuation.</code></span>
+<span class="codeline" id="line-110"><code>		switch c {</code></span>
+<span class="codeline" id="line-111"><code>		case '{', '[':</code></span>
+<span class="codeline" id="line-112"><code>			// delay indent so that empty object and array are formatted as {} and [].</code></span>
+<span class="codeline" id="line-113"><code>			needIndent = true</code></span>
+<span class="codeline" id="line-114"><code>			dst.WriteByte(c)</code></span>
+<span class="codeline" id="line-115"><code></code></span>
+<span class="codeline" id="line-116"><code>		case ',':</code></span>
+<span class="codeline" id="line-117"><code>			dst.WriteByte(c)</code></span>
+<span class="codeline" id="line-118"><code>			newline(dst, prefix, indent, depth)</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>		case ':':</code></span>
+<span class="codeline" id="line-121"><code>			dst.WriteByte(c)</code></span>
+<span class="codeline" id="line-122"><code>			dst.WriteByte(' ')</code></span>
+<span class="codeline" id="line-123"><code></code></span>
+<span class="codeline" id="line-124"><code>		case '}', ']':</code></span>
+<span class="codeline" id="line-125"><code>			if needIndent {</code></span>
+<span class="codeline" id="line-126"><code>				// suppress indent in empty object/array</code></span>
+<span class="codeline" id="line-127"><code>				needIndent = false</code></span>
+<span class="codeline" id="line-128"><code>			} else {</code></span>
+<span class="codeline" id="line-129"><code>				depth--</code></span>
+<span class="codeline" id="line-130"><code>				newline(dst, prefix, indent, depth)</code></span>
+<span class="codeline" id="line-131"><code>			}</code></span>
+<span class="codeline" id="line-132"><code>			dst.WriteByte(c)</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>		default:</code></span>
+<span class="codeline" id="line-135"><code>			dst.WriteByte(c)</code></span>
+<span class="codeline" id="line-136"><code>		}</code></span>
+<span class="codeline" id="line-137"><code>	}</code></span>
+<span class="codeline" id="line-138"><code>	if scan.eof() == scanError {</code></span>
+<span class="codeline" id="line-139"><code>		dst.Truncate(origLen)</code></span>
+<span class="codeline" id="line-140"><code>		return scan.err</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>	return nil</code></span>
+<span class="codeline" id="line-143"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

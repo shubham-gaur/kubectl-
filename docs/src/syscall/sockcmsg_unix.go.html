@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sockcmsg_unix.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sockcmsg_unix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Socket control messages</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>package syscall</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>import (</code></span>
+<span class="codeline" id="line-12"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// CmsgLen returns the value to store in the Len field of the Cmsghdr</code></span>
+<span class="codeline" id="line-16"><code>// structure, taking into account any necessary alignment.</code></span>
+<span class="codeline" id="line-17"><code>func CmsgLen(datalen int) int {</code></span>
+<span class="codeline" id="line-18"><code>	return cmsgAlignOf(SizeofCmsghdr) + datalen</code></span>
+<span class="codeline" id="line-19"><code>}</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>// CmsgSpace returns the number of bytes an ancillary element with</code></span>
+<span class="codeline" id="line-22"><code>// payload of the passed data length occupies.</code></span>
+<span class="codeline" id="line-23"><code>func CmsgSpace(datalen int) int {</code></span>
+<span class="codeline" id="line-24"><code>	return cmsgAlignOf(SizeofCmsghdr) + cmsgAlignOf(datalen)</code></span>
+<span class="codeline" id="line-25"><code>}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>func (h *Cmsghdr) data(offset uintptr) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-28"><code>	return unsafe.Pointer(uintptr(unsafe.Pointer(h)) + uintptr(cmsgAlignOf(SizeofCmsghdr)) + offset)</code></span>
+<span class="codeline" id="line-29"><code>}</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>// SocketControlMessage represents a socket control message.</code></span>
+<span class="codeline" id="line-32"><code>type SocketControlMessage struct {</code></span>
+<span class="codeline" id="line-33"><code>	Header Cmsghdr</code></span>
+<span class="codeline" id="line-34"><code>	Data   []byte</code></span>
+<span class="codeline" id="line-35"><code>}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>// ParseSocketControlMessage parses b as an array of socket control</code></span>
+<span class="codeline" id="line-38"><code>// messages.</code></span>
+<span class="codeline" id="line-39"><code>func ParseSocketControlMessage(b []byte) ([]SocketControlMessage, error) {</code></span>
+<span class="codeline" id="line-40"><code>	var msgs []SocketControlMessage</code></span>
+<span class="codeline" id="line-41"><code>	i := 0</code></span>
+<span class="codeline" id="line-42"><code>	for i+CmsgLen(0) &lt;= len(b) {</code></span>
+<span class="codeline" id="line-43"><code>		h, dbuf, err := socketControlMessageHeaderAndData(b[i:])</code></span>
+<span class="codeline" id="line-44"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-45"><code>			return nil, err</code></span>
+<span class="codeline" id="line-46"><code>		}</code></span>
+<span class="codeline" id="line-47"><code>		m := SocketControlMessage{Header: *h, Data: dbuf}</code></span>
+<span class="codeline" id="line-48"><code>		msgs = append(msgs, m)</code></span>
+<span class="codeline" id="line-49"><code>		i += cmsgAlignOf(int(h.Len))</code></span>
+<span class="codeline" id="line-50"><code>	}</code></span>
+<span class="codeline" id="line-51"><code>	return msgs, nil</code></span>
+<span class="codeline" id="line-52"><code>}</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>func socketControlMessageHeaderAndData(b []byte) (*Cmsghdr, []byte, error) {</code></span>
+<span class="codeline" id="line-55"><code>	h := (*Cmsghdr)(unsafe.Pointer(&amp;b[0]))</code></span>
+<span class="codeline" id="line-56"><code>	if h.Len &lt; SizeofCmsghdr || uint64(h.Len) &gt; uint64(len(b)) {</code></span>
+<span class="codeline" id="line-57"><code>		return nil, nil, EINVAL</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code>	return h, b[cmsgAlignOf(SizeofCmsghdr):h.Len], nil</code></span>
+<span class="codeline" id="line-60"><code>}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>// UnixRights encodes a set of open file descriptors into a socket</code></span>
+<span class="codeline" id="line-63"><code>// control message for sending to another process.</code></span>
+<span class="codeline" id="line-64"><code>func UnixRights(fds ...int) []byte {</code></span>
+<span class="codeline" id="line-65"><code>	datalen := len(fds) * 4</code></span>
+<span class="codeline" id="line-66"><code>	b := make([]byte, CmsgSpace(datalen))</code></span>
+<span class="codeline" id="line-67"><code>	h := (*Cmsghdr)(unsafe.Pointer(&amp;b[0]))</code></span>
+<span class="codeline" id="line-68"><code>	h.Level = SOL_SOCKET</code></span>
+<span class="codeline" id="line-69"><code>	h.Type = SCM_RIGHTS</code></span>
+<span class="codeline" id="line-70"><code>	h.SetLen(CmsgLen(datalen))</code></span>
+<span class="codeline" id="line-71"><code>	for i, fd := range fds {</code></span>
+<span class="codeline" id="line-72"><code>		*(*int32)(h.data(4 * uintptr(i))) = int32(fd)</code></span>
+<span class="codeline" id="line-73"><code>	}</code></span>
+<span class="codeline" id="line-74"><code>	return b</code></span>
+<span class="codeline" id="line-75"><code>}</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>// ParseUnixRights decodes a socket control message that contains an</code></span>
+<span class="codeline" id="line-78"><code>// integer array of open file descriptors from another process.</code></span>
+<span class="codeline" id="line-79"><code>func ParseUnixRights(m *SocketControlMessage) ([]int, error) {</code></span>
+<span class="codeline" id="line-80"><code>	if m.Header.Level != SOL_SOCKET {</code></span>
+<span class="codeline" id="line-81"><code>		return nil, EINVAL</code></span>
+<span class="codeline" id="line-82"><code>	}</code></span>
+<span class="codeline" id="line-83"><code>	if m.Header.Type != SCM_RIGHTS {</code></span>
+<span class="codeline" id="line-84"><code>		return nil, EINVAL</code></span>
+<span class="codeline" id="line-85"><code>	}</code></span>
+<span class="codeline" id="line-86"><code>	fds := make([]int, len(m.Data)&gt;&gt;2)</code></span>
+<span class="codeline" id="line-87"><code>	for i, j := 0, 0; i &lt; len(m.Data); i += 4 {</code></span>
+<span class="codeline" id="line-88"><code>		fds[j] = int(*(*int32)(unsafe.Pointer(&amp;m.Data[i])))</code></span>
+<span class="codeline" id="line-89"><code>		j++</code></span>
+<span class="codeline" id="line-90"><code>	}</code></span>
+<span class="codeline" id="line-91"><code>	return fds, nil</code></span>
+<span class="codeline" id="line-92"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

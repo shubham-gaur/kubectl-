@@ -1,0 +1,1184 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: time.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	time.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Time-related runtime and pieces of package time.</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package runtime</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-11"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-12"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// Package time knows the layout of this structure.</code></span>
+<span class="codeline" id="line-16"><code>// If this struct changes, adjust ../time/sleep.go:/runtimeTimer.</code></span>
+<span class="codeline" id="line-17"><code>type timer struct {</code></span>
+<span class="codeline" id="line-18"><code>	// If this timer is on a heap, which P's heap it is on.</code></span>
+<span class="codeline" id="line-19"><code>	// puintptr rather than *p to match uintptr in the versions</code></span>
+<span class="codeline" id="line-20"><code>	// of this struct defined in other packages.</code></span>
+<span class="codeline" id="line-21"><code>	pp puintptr</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>	// Timer wakes up at when, and then at when+period, ... (period &gt; 0 only)</code></span>
+<span class="codeline" id="line-24"><code>	// each time calling f(arg, now) in the timer goroutine, so f must be</code></span>
+<span class="codeline" id="line-25"><code>	// a well-behaved function and not block.</code></span>
+<span class="codeline" id="line-26"><code>	//</code></span>
+<span class="codeline" id="line-27"><code>	// when must be positive on an active timer.</code></span>
+<span class="codeline" id="line-28"><code>	when   int64</code></span>
+<span class="codeline" id="line-29"><code>	period int64</code></span>
+<span class="codeline" id="line-30"><code>	f      func(interface{}, uintptr)</code></span>
+<span class="codeline" id="line-31"><code>	arg    interface{}</code></span>
+<span class="codeline" id="line-32"><code>	seq    uintptr</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>	// What to set the when field to in timerModifiedXX status.</code></span>
+<span class="codeline" id="line-35"><code>	nextwhen int64</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>	// The status field holds one of the values below.</code></span>
+<span class="codeline" id="line-38"><code>	status uint32</code></span>
+<span class="codeline" id="line-39"><code>}</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>// Code outside this file has to be careful in using a timer value.</code></span>
+<span class="codeline" id="line-42"><code>//</code></span>
+<span class="codeline" id="line-43"><code>// The pp, status, and nextwhen fields may only be used by code in this file.</code></span>
+<span class="codeline" id="line-44"><code>//</code></span>
+<span class="codeline" id="line-45"><code>// Code that creates a new timer value can set the when, period, f,</code></span>
+<span class="codeline" id="line-46"><code>// arg, and seq fields.</code></span>
+<span class="codeline" id="line-47"><code>// A new timer value may be passed to addtimer (called by time.startTimer).</code></span>
+<span class="codeline" id="line-48"><code>// After doing that no fields may be touched.</code></span>
+<span class="codeline" id="line-49"><code>//</code></span>
+<span class="codeline" id="line-50"><code>// An active timer (one that has been passed to addtimer) may be</code></span>
+<span class="codeline" id="line-51"><code>// passed to deltimer (time.stopTimer), after which it is no longer an</code></span>
+<span class="codeline" id="line-52"><code>// active timer. It is an inactive timer.</code></span>
+<span class="codeline" id="line-53"><code>// In an inactive timer the period, f, arg, and seq fields may be modified,</code></span>
+<span class="codeline" id="line-54"><code>// but not the when field.</code></span>
+<span class="codeline" id="line-55"><code>// It's OK to just drop an inactive timer and let the GC collect it.</code></span>
+<span class="codeline" id="line-56"><code>// It's not OK to pass an inactive timer to addtimer.</code></span>
+<span class="codeline" id="line-57"><code>// Only newly allocated timer values may be passed to addtimer.</code></span>
+<span class="codeline" id="line-58"><code>//</code></span>
+<span class="codeline" id="line-59"><code>// An active timer may be passed to modtimer. No fields may be touched.</code></span>
+<span class="codeline" id="line-60"><code>// It remains an active timer.</code></span>
+<span class="codeline" id="line-61"><code>//</code></span>
+<span class="codeline" id="line-62"><code>// An inactive timer may be passed to resettimer to turn into an</code></span>
+<span class="codeline" id="line-63"><code>// active timer with an updated when field.</code></span>
+<span class="codeline" id="line-64"><code>// It's OK to pass a newly allocated timer value to resettimer.</code></span>
+<span class="codeline" id="line-65"><code>//</code></span>
+<span class="codeline" id="line-66"><code>// Timer operations are addtimer, deltimer, modtimer, resettimer,</code></span>
+<span class="codeline" id="line-67"><code>// cleantimers, adjusttimers, and runtimer.</code></span>
+<span class="codeline" id="line-68"><code>//</code></span>
+<span class="codeline" id="line-69"><code>// We don't permit calling addtimer/deltimer/modtimer/resettimer simultaneously,</code></span>
+<span class="codeline" id="line-70"><code>// but adjusttimers and runtimer can be called at the same time as any of those.</code></span>
+<span class="codeline" id="line-71"><code>//</code></span>
+<span class="codeline" id="line-72"><code>// Active timers live in heaps attached to P, in the timers field.</code></span>
+<span class="codeline" id="line-73"><code>// Inactive timers live there too temporarily, until they are removed.</code></span>
+<span class="codeline" id="line-74"><code>//</code></span>
+<span class="codeline" id="line-75"><code>// addtimer:</code></span>
+<span class="codeline" id="line-76"><code>//   timerNoStatus   -&gt; timerWaiting</code></span>
+<span class="codeline" id="line-77"><code>//   anything else   -&gt; panic: invalid value</code></span>
+<span class="codeline" id="line-78"><code>// deltimer:</code></span>
+<span class="codeline" id="line-79"><code>//   timerWaiting         -&gt; timerModifying -&gt; timerDeleted</code></span>
+<span class="codeline" id="line-80"><code>//   timerModifiedEarlier -&gt; timerModifying -&gt; timerDeleted</code></span>
+<span class="codeline" id="line-81"><code>//   timerModifiedLater   -&gt; timerModifying -&gt; timerDeleted</code></span>
+<span class="codeline" id="line-82"><code>//   timerNoStatus        -&gt; do nothing</code></span>
+<span class="codeline" id="line-83"><code>//   timerDeleted         -&gt; do nothing</code></span>
+<span class="codeline" id="line-84"><code>//   timerRemoving        -&gt; do nothing</code></span>
+<span class="codeline" id="line-85"><code>//   timerRemoved         -&gt; do nothing</code></span>
+<span class="codeline" id="line-86"><code>//   timerRunning         -&gt; wait until status changes</code></span>
+<span class="codeline" id="line-87"><code>//   timerMoving          -&gt; wait until status changes</code></span>
+<span class="codeline" id="line-88"><code>//   timerModifying       -&gt; wait until status changes</code></span>
+<span class="codeline" id="line-89"><code>// modtimer:</code></span>
+<span class="codeline" id="line-90"><code>//   timerWaiting    -&gt; timerModifying -&gt; timerModifiedXX</code></span>
+<span class="codeline" id="line-91"><code>//   timerModifiedXX -&gt; timerModifying -&gt; timerModifiedYY</code></span>
+<span class="codeline" id="line-92"><code>//   timerNoStatus   -&gt; timerModifying -&gt; timerWaiting</code></span>
+<span class="codeline" id="line-93"><code>//   timerRemoved    -&gt; timerModifying -&gt; timerWaiting</code></span>
+<span class="codeline" id="line-94"><code>//   timerDeleted    -&gt; timerModifying -&gt; timerModifiedXX</code></span>
+<span class="codeline" id="line-95"><code>//   timerRunning    -&gt; wait until status changes</code></span>
+<span class="codeline" id="line-96"><code>//   timerMoving     -&gt; wait until status changes</code></span>
+<span class="codeline" id="line-97"><code>//   timerRemoving   -&gt; wait until status changes</code></span>
+<span class="codeline" id="line-98"><code>//   timerModifying  -&gt; wait until status changes</code></span>
+<span class="codeline" id="line-99"><code>// cleantimers (looks in P's timer heap):</code></span>
+<span class="codeline" id="line-100"><code>//   timerDeleted    -&gt; timerRemoving -&gt; timerRemoved</code></span>
+<span class="codeline" id="line-101"><code>//   timerModifiedXX -&gt; timerMoving -&gt; timerWaiting</code></span>
+<span class="codeline" id="line-102"><code>// adjusttimers (looks in P's timer heap):</code></span>
+<span class="codeline" id="line-103"><code>//   timerDeleted    -&gt; timerRemoving -&gt; timerRemoved</code></span>
+<span class="codeline" id="line-104"><code>//   timerModifiedXX -&gt; timerMoving -&gt; timerWaiting</code></span>
+<span class="codeline" id="line-105"><code>// runtimer (looks in P's timer heap):</code></span>
+<span class="codeline" id="line-106"><code>//   timerNoStatus   -&gt; panic: uninitialized timer</code></span>
+<span class="codeline" id="line-107"><code>//   timerWaiting    -&gt; timerWaiting or</code></span>
+<span class="codeline" id="line-108"><code>//   timerWaiting    -&gt; timerRunning -&gt; timerNoStatus or</code></span>
+<span class="codeline" id="line-109"><code>//   timerWaiting    -&gt; timerRunning -&gt; timerWaiting</code></span>
+<span class="codeline" id="line-110"><code>//   timerModifying  -&gt; wait until status changes</code></span>
+<span class="codeline" id="line-111"><code>//   timerModifiedXX -&gt; timerMoving -&gt; timerWaiting</code></span>
+<span class="codeline" id="line-112"><code>//   timerDeleted    -&gt; timerRemoving -&gt; timerRemoved</code></span>
+<span class="codeline" id="line-113"><code>//   timerRunning    -&gt; panic: concurrent runtimer calls</code></span>
+<span class="codeline" id="line-114"><code>//   timerRemoved    -&gt; panic: inconsistent timer heap</code></span>
+<span class="codeline" id="line-115"><code>//   timerRemoving   -&gt; panic: inconsistent timer heap</code></span>
+<span class="codeline" id="line-116"><code>//   timerMoving     -&gt; panic: inconsistent timer heap</code></span>
+<span class="codeline" id="line-117"><code></code></span>
+<span class="codeline" id="line-118"><code>// Values for the timer status field.</code></span>
+<span class="codeline" id="line-119"><code>const (</code></span>
+<span class="codeline" id="line-120"><code>	// Timer has no status set yet.</code></span>
+<span class="codeline" id="line-121"><code>	timerNoStatus = iota</code></span>
+<span class="codeline" id="line-122"><code></code></span>
+<span class="codeline" id="line-123"><code>	// Waiting for timer to fire.</code></span>
+<span class="codeline" id="line-124"><code>	// The timer is in some P's heap.</code></span>
+<span class="codeline" id="line-125"><code>	timerWaiting</code></span>
+<span class="codeline" id="line-126"><code></code></span>
+<span class="codeline" id="line-127"><code>	// Running the timer function.</code></span>
+<span class="codeline" id="line-128"><code>	// A timer will only have this status briefly.</code></span>
+<span class="codeline" id="line-129"><code>	timerRunning</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>	// The timer is deleted and should be removed.</code></span>
+<span class="codeline" id="line-132"><code>	// It should not be run, but it is still in some P's heap.</code></span>
+<span class="codeline" id="line-133"><code>	timerDeleted</code></span>
+<span class="codeline" id="line-134"><code></code></span>
+<span class="codeline" id="line-135"><code>	// The timer is being removed.</code></span>
+<span class="codeline" id="line-136"><code>	// The timer will only have this status briefly.</code></span>
+<span class="codeline" id="line-137"><code>	timerRemoving</code></span>
+<span class="codeline" id="line-138"><code></code></span>
+<span class="codeline" id="line-139"><code>	// The timer has been stopped.</code></span>
+<span class="codeline" id="line-140"><code>	// It is not in any P's heap.</code></span>
+<span class="codeline" id="line-141"><code>	timerRemoved</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>	// The timer is being modified.</code></span>
+<span class="codeline" id="line-144"><code>	// The timer will only have this status briefly.</code></span>
+<span class="codeline" id="line-145"><code>	timerModifying</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>	// The timer has been modified to an earlier time.</code></span>
+<span class="codeline" id="line-148"><code>	// The new when value is in the nextwhen field.</code></span>
+<span class="codeline" id="line-149"><code>	// The timer is in some P's heap, possibly in the wrong place.</code></span>
+<span class="codeline" id="line-150"><code>	timerModifiedEarlier</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>	// The timer has been modified to the same or a later time.</code></span>
+<span class="codeline" id="line-153"><code>	// The new when value is in the nextwhen field.</code></span>
+<span class="codeline" id="line-154"><code>	// The timer is in some P's heap, possibly in the wrong place.</code></span>
+<span class="codeline" id="line-155"><code>	timerModifiedLater</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>	// The timer has been modified and is being moved.</code></span>
+<span class="codeline" id="line-158"><code>	// The timer will only have this status briefly.</code></span>
+<span class="codeline" id="line-159"><code>	timerMoving</code></span>
+<span class="codeline" id="line-160"><code>)</code></span>
+<span class="codeline" id="line-161"><code></code></span>
+<span class="codeline" id="line-162"><code>// maxWhen is the maximum value for timer's when field.</code></span>
+<span class="codeline" id="line-163"><code>const maxWhen = 1&lt;&lt;63 - 1</code></span>
+<span class="codeline" id="line-164"><code></code></span>
+<span class="codeline" id="line-165"><code>// verifyTimers can be set to true to add debugging checks that the</code></span>
+<span class="codeline" id="line-166"><code>// timer heaps are valid.</code></span>
+<span class="codeline" id="line-167"><code>const verifyTimers = false</code></span>
+<span class="codeline" id="line-168"><code></code></span>
+<span class="codeline" id="line-169"><code>// Package time APIs.</code></span>
+<span class="codeline" id="line-170"><code>// Godoc uses the comments in package time, not these.</code></span>
+<span class="codeline" id="line-171"><code></code></span>
+<span class="codeline" id="line-172"><code>// time.now is implemented in assembly.</code></span>
+<span class="codeline" id="line-173"><code></code></span>
+<span class="codeline" id="line-174"><code>// timeSleep puts the current goroutine to sleep for at least ns nanoseconds.</code></span>
+<span class="codeline" id="line-175"><code>//go:linkname timeSleep time.Sleep</code></span>
+<span class="codeline" id="line-176"><code>func timeSleep(ns int64) {</code></span>
+<span class="codeline" id="line-177"><code>	if ns &lt;= 0 {</code></span>
+<span class="codeline" id="line-178"><code>		return</code></span>
+<span class="codeline" id="line-179"><code>	}</code></span>
+<span class="codeline" id="line-180"><code></code></span>
+<span class="codeline" id="line-181"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-182"><code>	t := gp.timer</code></span>
+<span class="codeline" id="line-183"><code>	if t == nil {</code></span>
+<span class="codeline" id="line-184"><code>		t = new(timer)</code></span>
+<span class="codeline" id="line-185"><code>		gp.timer = t</code></span>
+<span class="codeline" id="line-186"><code>	}</code></span>
+<span class="codeline" id="line-187"><code>	t.f = goroutineReady</code></span>
+<span class="codeline" id="line-188"><code>	t.arg = gp</code></span>
+<span class="codeline" id="line-189"><code>	t.nextwhen = nanotime() + ns</code></span>
+<span class="codeline" id="line-190"><code>	if t.nextwhen &lt; 0 { // check for overflow.</code></span>
+<span class="codeline" id="line-191"><code>		t.nextwhen = maxWhen</code></span>
+<span class="codeline" id="line-192"><code>	}</code></span>
+<span class="codeline" id="line-193"><code>	gopark(resetForSleep, unsafe.Pointer(t), waitReasonSleep, traceEvGoSleep, 1)</code></span>
+<span class="codeline" id="line-194"><code>}</code></span>
+<span class="codeline" id="line-195"><code></code></span>
+<span class="codeline" id="line-196"><code>// resetForSleep is called after the goroutine is parked for timeSleep.</code></span>
+<span class="codeline" id="line-197"><code>// We can't call resettimer in timeSleep itself because if this is a short</code></span>
+<span class="codeline" id="line-198"><code>// sleep and there are many goroutines then the P can wind up running the</code></span>
+<span class="codeline" id="line-199"><code>// timer function, goroutineReady, before the goroutine has been parked.</code></span>
+<span class="codeline" id="line-200"><code>func resetForSleep(gp *g, ut unsafe.Pointer) bool {</code></span>
+<span class="codeline" id="line-201"><code>	t := (*timer)(ut)</code></span>
+<span class="codeline" id="line-202"><code>	resettimer(t, t.nextwhen)</code></span>
+<span class="codeline" id="line-203"><code>	return true</code></span>
+<span class="codeline" id="line-204"><code>}</code></span>
+<span class="codeline" id="line-205"><code></code></span>
+<span class="codeline" id="line-206"><code>// startTimer adds t to the timer heap.</code></span>
+<span class="codeline" id="line-207"><code>//go:linkname startTimer time.startTimer</code></span>
+<span class="codeline" id="line-208"><code>func startTimer(t *timer) {</code></span>
+<span class="codeline" id="line-209"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-210"><code>		racerelease(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-211"><code>	}</code></span>
+<span class="codeline" id="line-212"><code>	addtimer(t)</code></span>
+<span class="codeline" id="line-213"><code>}</code></span>
+<span class="codeline" id="line-214"><code></code></span>
+<span class="codeline" id="line-215"><code>// stopTimer stops a timer.</code></span>
+<span class="codeline" id="line-216"><code>// It reports whether t was stopped before being run.</code></span>
+<span class="codeline" id="line-217"><code>//go:linkname stopTimer time.stopTimer</code></span>
+<span class="codeline" id="line-218"><code>func stopTimer(t *timer) bool {</code></span>
+<span class="codeline" id="line-219"><code>	return deltimer(t)</code></span>
+<span class="codeline" id="line-220"><code>}</code></span>
+<span class="codeline" id="line-221"><code></code></span>
+<span class="codeline" id="line-222"><code>// resetTimer resets an inactive timer, adding it to the heap.</code></span>
+<span class="codeline" id="line-223"><code>//go:linkname resetTimer time.resetTimer</code></span>
+<span class="codeline" id="line-224"><code>// Reports whether the timer was modified before it was run.</code></span>
+<span class="codeline" id="line-225"><code>func resetTimer(t *timer, when int64) bool {</code></span>
+<span class="codeline" id="line-226"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-227"><code>		racerelease(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-228"><code>	}</code></span>
+<span class="codeline" id="line-229"><code>	return resettimer(t, when)</code></span>
+<span class="codeline" id="line-230"><code>}</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>// modTimer modifies an existing timer.</code></span>
+<span class="codeline" id="line-233"><code>//go:linkname modTimer time.modTimer</code></span>
+<span class="codeline" id="line-234"><code>func modTimer(t *timer, when, period int64, f func(interface{}, uintptr), arg interface{}, seq uintptr) {</code></span>
+<span class="codeline" id="line-235"><code>	modtimer(t, when, period, f, arg, seq)</code></span>
+<span class="codeline" id="line-236"><code>}</code></span>
+<span class="codeline" id="line-237"><code></code></span>
+<span class="codeline" id="line-238"><code>// Go runtime.</code></span>
+<span class="codeline" id="line-239"><code></code></span>
+<span class="codeline" id="line-240"><code>// Ready the goroutine arg.</code></span>
+<span class="codeline" id="line-241"><code>func goroutineReady(arg interface{}, seq uintptr) {</code></span>
+<span class="codeline" id="line-242"><code>	goready(arg.(*g), 0)</code></span>
+<span class="codeline" id="line-243"><code>}</code></span>
+<span class="codeline" id="line-244"><code></code></span>
+<span class="codeline" id="line-245"><code>// addtimer adds a timer to the current P.</code></span>
+<span class="codeline" id="line-246"><code>// This should only be called with a newly created timer.</code></span>
+<span class="codeline" id="line-247"><code>// That avoids the risk of changing the when field of a timer in some P's heap,</code></span>
+<span class="codeline" id="line-248"><code>// which could cause the heap to become unsorted.</code></span>
+<span class="codeline" id="line-249"><code>func addtimer(t *timer) {</code></span>
+<span class="codeline" id="line-250"><code>	// when must be positive. A negative value will cause runtimer to</code></span>
+<span class="codeline" id="line-251"><code>	// overflow during its delta calculation and never expire other runtime</code></span>
+<span class="codeline" id="line-252"><code>	// timers. Zero will cause checkTimers to fail to notice the timer.</code></span>
+<span class="codeline" id="line-253"><code>	if t.when &lt;= 0 {</code></span>
+<span class="codeline" id="line-254"><code>		throw("timer when must be positive")</code></span>
+<span class="codeline" id="line-255"><code>	}</code></span>
+<span class="codeline" id="line-256"><code>	if t.period &lt; 0 {</code></span>
+<span class="codeline" id="line-257"><code>		throw("timer period must be non-negative")</code></span>
+<span class="codeline" id="line-258"><code>	}</code></span>
+<span class="codeline" id="line-259"><code>	if t.status != timerNoStatus {</code></span>
+<span class="codeline" id="line-260"><code>		throw("addtimer called with initialized timer")</code></span>
+<span class="codeline" id="line-261"><code>	}</code></span>
+<span class="codeline" id="line-262"><code>	t.status = timerWaiting</code></span>
+<span class="codeline" id="line-263"><code></code></span>
+<span class="codeline" id="line-264"><code>	when := t.when</code></span>
+<span class="codeline" id="line-265"><code></code></span>
+<span class="codeline" id="line-266"><code>	// Disable preemption while using pp to avoid changing another P's heap.</code></span>
+<span class="codeline" id="line-267"><code>	mp := acquirem()</code></span>
+<span class="codeline" id="line-268"><code></code></span>
+<span class="codeline" id="line-269"><code>	pp := getg().m.p.ptr()</code></span>
+<span class="codeline" id="line-270"><code>	lock(&amp;pp.timersLock)</code></span>
+<span class="codeline" id="line-271"><code>	cleantimers(pp)</code></span>
+<span class="codeline" id="line-272"><code>	doaddtimer(pp, t)</code></span>
+<span class="codeline" id="line-273"><code>	unlock(&amp;pp.timersLock)</code></span>
+<span class="codeline" id="line-274"><code></code></span>
+<span class="codeline" id="line-275"><code>	wakeNetPoller(when)</code></span>
+<span class="codeline" id="line-276"><code></code></span>
+<span class="codeline" id="line-277"><code>	releasem(mp)</code></span>
+<span class="codeline" id="line-278"><code>}</code></span>
+<span class="codeline" id="line-279"><code></code></span>
+<span class="codeline" id="line-280"><code>// doaddtimer adds t to the current P's heap.</code></span>
+<span class="codeline" id="line-281"><code>// The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-282"><code>func doaddtimer(pp *p, t *timer) {</code></span>
+<span class="codeline" id="line-283"><code>	// Timers rely on the network poller, so make sure the poller</code></span>
+<span class="codeline" id="line-284"><code>	// has started.</code></span>
+<span class="codeline" id="line-285"><code>	if netpollInited == 0 {</code></span>
+<span class="codeline" id="line-286"><code>		netpollGenericInit()</code></span>
+<span class="codeline" id="line-287"><code>	}</code></span>
+<span class="codeline" id="line-288"><code></code></span>
+<span class="codeline" id="line-289"><code>	if t.pp != 0 {</code></span>
+<span class="codeline" id="line-290"><code>		throw("doaddtimer: P already set in timer")</code></span>
+<span class="codeline" id="line-291"><code>	}</code></span>
+<span class="codeline" id="line-292"><code>	t.pp.set(pp)</code></span>
+<span class="codeline" id="line-293"><code>	i := len(pp.timers)</code></span>
+<span class="codeline" id="line-294"><code>	pp.timers = append(pp.timers, t)</code></span>
+<span class="codeline" id="line-295"><code>	siftupTimer(pp.timers, i)</code></span>
+<span class="codeline" id="line-296"><code>	if t == pp.timers[0] {</code></span>
+<span class="codeline" id="line-297"><code>		atomic.Store64(&amp;pp.timer0When, uint64(t.when))</code></span>
+<span class="codeline" id="line-298"><code>	}</code></span>
+<span class="codeline" id="line-299"><code>	atomic.Xadd(&amp;pp.numTimers, 1)</code></span>
+<span class="codeline" id="line-300"><code>}</code></span>
+<span class="codeline" id="line-301"><code></code></span>
+<span class="codeline" id="line-302"><code>// deltimer deletes the timer t. It may be on some other P, so we can't</code></span>
+<span class="codeline" id="line-303"><code>// actually remove it from the timers heap. We can only mark it as deleted.</code></span>
+<span class="codeline" id="line-304"><code>// It will be removed in due course by the P whose heap it is on.</code></span>
+<span class="codeline" id="line-305"><code>// Reports whether the timer was removed before it was run.</code></span>
+<span class="codeline" id="line-306"><code>func deltimer(t *timer) bool {</code></span>
+<span class="codeline" id="line-307"><code>	for {</code></span>
+<span class="codeline" id="line-308"><code>		switch s := atomic.Load(&amp;t.status); s {</code></span>
+<span class="codeline" id="line-309"><code>		case timerWaiting, timerModifiedLater:</code></span>
+<span class="codeline" id="line-310"><code>			// Prevent preemption while the timer is in timerModifying.</code></span>
+<span class="codeline" id="line-311"><code>			// This could lead to a self-deadlock. See #38070.</code></span>
+<span class="codeline" id="line-312"><code>			mp := acquirem()</code></span>
+<span class="codeline" id="line-313"><code>			if atomic.Cas(&amp;t.status, s, timerModifying) {</code></span>
+<span class="codeline" id="line-314"><code>				// Must fetch t.pp before changing status,</code></span>
+<span class="codeline" id="line-315"><code>				// as cleantimers in another goroutine</code></span>
+<span class="codeline" id="line-316"><code>				// can clear t.pp of a timerDeleted timer.</code></span>
+<span class="codeline" id="line-317"><code>				tpp := t.pp.ptr()</code></span>
+<span class="codeline" id="line-318"><code>				if !atomic.Cas(&amp;t.status, timerModifying, timerDeleted) {</code></span>
+<span class="codeline" id="line-319"><code>					badTimer()</code></span>
+<span class="codeline" id="line-320"><code>				}</code></span>
+<span class="codeline" id="line-321"><code>				releasem(mp)</code></span>
+<span class="codeline" id="line-322"><code>				atomic.Xadd(&amp;tpp.deletedTimers, 1)</code></span>
+<span class="codeline" id="line-323"><code>				// Timer was not yet run.</code></span>
+<span class="codeline" id="line-324"><code>				return true</code></span>
+<span class="codeline" id="line-325"><code>			} else {</code></span>
+<span class="codeline" id="line-326"><code>				releasem(mp)</code></span>
+<span class="codeline" id="line-327"><code>			}</code></span>
+<span class="codeline" id="line-328"><code>		case timerModifiedEarlier:</code></span>
+<span class="codeline" id="line-329"><code>			// Prevent preemption while the timer is in timerModifying.</code></span>
+<span class="codeline" id="line-330"><code>			// This could lead to a self-deadlock. See #38070.</code></span>
+<span class="codeline" id="line-331"><code>			mp := acquirem()</code></span>
+<span class="codeline" id="line-332"><code>			if atomic.Cas(&amp;t.status, s, timerModifying) {</code></span>
+<span class="codeline" id="line-333"><code>				// Must fetch t.pp before setting status</code></span>
+<span class="codeline" id="line-334"><code>				// to timerDeleted.</code></span>
+<span class="codeline" id="line-335"><code>				tpp := t.pp.ptr()</code></span>
+<span class="codeline" id="line-336"><code>				atomic.Xadd(&amp;tpp.adjustTimers, -1)</code></span>
+<span class="codeline" id="line-337"><code>				if !atomic.Cas(&amp;t.status, timerModifying, timerDeleted) {</code></span>
+<span class="codeline" id="line-338"><code>					badTimer()</code></span>
+<span class="codeline" id="line-339"><code>				}</code></span>
+<span class="codeline" id="line-340"><code>				releasem(mp)</code></span>
+<span class="codeline" id="line-341"><code>				atomic.Xadd(&amp;tpp.deletedTimers, 1)</code></span>
+<span class="codeline" id="line-342"><code>				// Timer was not yet run.</code></span>
+<span class="codeline" id="line-343"><code>				return true</code></span>
+<span class="codeline" id="line-344"><code>			} else {</code></span>
+<span class="codeline" id="line-345"><code>				releasem(mp)</code></span>
+<span class="codeline" id="line-346"><code>			}</code></span>
+<span class="codeline" id="line-347"><code>		case timerDeleted, timerRemoving, timerRemoved:</code></span>
+<span class="codeline" id="line-348"><code>			// Timer was already run.</code></span>
+<span class="codeline" id="line-349"><code>			return false</code></span>
+<span class="codeline" id="line-350"><code>		case timerRunning, timerMoving:</code></span>
+<span class="codeline" id="line-351"><code>			// The timer is being run or moved, by a different P.</code></span>
+<span class="codeline" id="line-352"><code>			// Wait for it to complete.</code></span>
+<span class="codeline" id="line-353"><code>			osyield()</code></span>
+<span class="codeline" id="line-354"><code>		case timerNoStatus:</code></span>
+<span class="codeline" id="line-355"><code>			// Removing timer that was never added or</code></span>
+<span class="codeline" id="line-356"><code>			// has already been run. Also see issue 21874.</code></span>
+<span class="codeline" id="line-357"><code>			return false</code></span>
+<span class="codeline" id="line-358"><code>		case timerModifying:</code></span>
+<span class="codeline" id="line-359"><code>			// Simultaneous calls to deltimer and modtimer.</code></span>
+<span class="codeline" id="line-360"><code>			// Wait for the other call to complete.</code></span>
+<span class="codeline" id="line-361"><code>			osyield()</code></span>
+<span class="codeline" id="line-362"><code>		default:</code></span>
+<span class="codeline" id="line-363"><code>			badTimer()</code></span>
+<span class="codeline" id="line-364"><code>		}</code></span>
+<span class="codeline" id="line-365"><code>	}</code></span>
+<span class="codeline" id="line-366"><code>}</code></span>
+<span class="codeline" id="line-367"><code></code></span>
+<span class="codeline" id="line-368"><code>// dodeltimer removes timer i from the current P's heap.</code></span>
+<span class="codeline" id="line-369"><code>// We are locked on the P when this is called.</code></span>
+<span class="codeline" id="line-370"><code>// It reports whether it saw no problems due to races.</code></span>
+<span class="codeline" id="line-371"><code>// The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-372"><code>func dodeltimer(pp *p, i int) {</code></span>
+<span class="codeline" id="line-373"><code>	if t := pp.timers[i]; t.pp.ptr() != pp {</code></span>
+<span class="codeline" id="line-374"><code>		throw("dodeltimer: wrong P")</code></span>
+<span class="codeline" id="line-375"><code>	} else {</code></span>
+<span class="codeline" id="line-376"><code>		t.pp = 0</code></span>
+<span class="codeline" id="line-377"><code>	}</code></span>
+<span class="codeline" id="line-378"><code>	last := len(pp.timers) - 1</code></span>
+<span class="codeline" id="line-379"><code>	if i != last {</code></span>
+<span class="codeline" id="line-380"><code>		pp.timers[i] = pp.timers[last]</code></span>
+<span class="codeline" id="line-381"><code>	}</code></span>
+<span class="codeline" id="line-382"><code>	pp.timers[last] = nil</code></span>
+<span class="codeline" id="line-383"><code>	pp.timers = pp.timers[:last]</code></span>
+<span class="codeline" id="line-384"><code>	if i != last {</code></span>
+<span class="codeline" id="line-385"><code>		// Moving to i may have moved the last timer to a new parent,</code></span>
+<span class="codeline" id="line-386"><code>		// so sift up to preserve the heap guarantee.</code></span>
+<span class="codeline" id="line-387"><code>		siftupTimer(pp.timers, i)</code></span>
+<span class="codeline" id="line-388"><code>		siftdownTimer(pp.timers, i)</code></span>
+<span class="codeline" id="line-389"><code>	}</code></span>
+<span class="codeline" id="line-390"><code>	if i == 0 {</code></span>
+<span class="codeline" id="line-391"><code>		updateTimer0When(pp)</code></span>
+<span class="codeline" id="line-392"><code>	}</code></span>
+<span class="codeline" id="line-393"><code>	atomic.Xadd(&amp;pp.numTimers, -1)</code></span>
+<span class="codeline" id="line-394"><code>}</code></span>
+<span class="codeline" id="line-395"><code></code></span>
+<span class="codeline" id="line-396"><code>// dodeltimer0 removes timer 0 from the current P's heap.</code></span>
+<span class="codeline" id="line-397"><code>// We are locked on the P when this is called.</code></span>
+<span class="codeline" id="line-398"><code>// It reports whether it saw no problems due to races.</code></span>
+<span class="codeline" id="line-399"><code>// The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-400"><code>func dodeltimer0(pp *p) {</code></span>
+<span class="codeline" id="line-401"><code>	if t := pp.timers[0]; t.pp.ptr() != pp {</code></span>
+<span class="codeline" id="line-402"><code>		throw("dodeltimer0: wrong P")</code></span>
+<span class="codeline" id="line-403"><code>	} else {</code></span>
+<span class="codeline" id="line-404"><code>		t.pp = 0</code></span>
+<span class="codeline" id="line-405"><code>	}</code></span>
+<span class="codeline" id="line-406"><code>	last := len(pp.timers) - 1</code></span>
+<span class="codeline" id="line-407"><code>	if last &gt; 0 {</code></span>
+<span class="codeline" id="line-408"><code>		pp.timers[0] = pp.timers[last]</code></span>
+<span class="codeline" id="line-409"><code>	}</code></span>
+<span class="codeline" id="line-410"><code>	pp.timers[last] = nil</code></span>
+<span class="codeline" id="line-411"><code>	pp.timers = pp.timers[:last]</code></span>
+<span class="codeline" id="line-412"><code>	if last &gt; 0 {</code></span>
+<span class="codeline" id="line-413"><code>		siftdownTimer(pp.timers, 0)</code></span>
+<span class="codeline" id="line-414"><code>	}</code></span>
+<span class="codeline" id="line-415"><code>	updateTimer0When(pp)</code></span>
+<span class="codeline" id="line-416"><code>	atomic.Xadd(&amp;pp.numTimers, -1)</code></span>
+<span class="codeline" id="line-417"><code>}</code></span>
+<span class="codeline" id="line-418"><code></code></span>
+<span class="codeline" id="line-419"><code>// modtimer modifies an existing timer.</code></span>
+<span class="codeline" id="line-420"><code>// This is called by the netpoll code or time.Ticker.Reset or time.Timer.Reset.</code></span>
+<span class="codeline" id="line-421"><code>// Reports whether the timer was modified before it was run.</code></span>
+<span class="codeline" id="line-422"><code>func modtimer(t *timer, when, period int64, f func(interface{}, uintptr), arg interface{}, seq uintptr) bool {</code></span>
+<span class="codeline" id="line-423"><code>	if when &lt;= 0 {</code></span>
+<span class="codeline" id="line-424"><code>		throw("timer when must be positive")</code></span>
+<span class="codeline" id="line-425"><code>	}</code></span>
+<span class="codeline" id="line-426"><code>	if period &lt; 0 {</code></span>
+<span class="codeline" id="line-427"><code>		throw("timer period must be non-negative")</code></span>
+<span class="codeline" id="line-428"><code>	}</code></span>
+<span class="codeline" id="line-429"><code></code></span>
+<span class="codeline" id="line-430"><code>	status := uint32(timerNoStatus)</code></span>
+<span class="codeline" id="line-431"><code>	wasRemoved := false</code></span>
+<span class="codeline" id="line-432"><code>	var pending bool</code></span>
+<span class="codeline" id="line-433"><code>	var mp *m</code></span>
+<span class="codeline" id="line-434"><code>loop:</code></span>
+<span class="codeline" id="line-435"><code>	for {</code></span>
+<span class="codeline" id="line-436"><code>		switch status = atomic.Load(&amp;t.status); status {</code></span>
+<span class="codeline" id="line-437"><code>		case timerWaiting, timerModifiedEarlier, timerModifiedLater:</code></span>
+<span class="codeline" id="line-438"><code>			// Prevent preemption while the timer is in timerModifying.</code></span>
+<span class="codeline" id="line-439"><code>			// This could lead to a self-deadlock. See #38070.</code></span>
+<span class="codeline" id="line-440"><code>			mp = acquirem()</code></span>
+<span class="codeline" id="line-441"><code>			if atomic.Cas(&amp;t.status, status, timerModifying) {</code></span>
+<span class="codeline" id="line-442"><code>				pending = true // timer not yet run</code></span>
+<span class="codeline" id="line-443"><code>				break loop</code></span>
+<span class="codeline" id="line-444"><code>			}</code></span>
+<span class="codeline" id="line-445"><code>			releasem(mp)</code></span>
+<span class="codeline" id="line-446"><code>		case timerNoStatus, timerRemoved:</code></span>
+<span class="codeline" id="line-447"><code>			// Prevent preemption while the timer is in timerModifying.</code></span>
+<span class="codeline" id="line-448"><code>			// This could lead to a self-deadlock. See #38070.</code></span>
+<span class="codeline" id="line-449"><code>			mp = acquirem()</code></span>
+<span class="codeline" id="line-450"><code></code></span>
+<span class="codeline" id="line-451"><code>			// Timer was already run and t is no longer in a heap.</code></span>
+<span class="codeline" id="line-452"><code>			// Act like addtimer.</code></span>
+<span class="codeline" id="line-453"><code>			if atomic.Cas(&amp;t.status, status, timerModifying) {</code></span>
+<span class="codeline" id="line-454"><code>				wasRemoved = true</code></span>
+<span class="codeline" id="line-455"><code>				pending = false // timer already run or stopped</code></span>
+<span class="codeline" id="line-456"><code>				break loop</code></span>
+<span class="codeline" id="line-457"><code>			}</code></span>
+<span class="codeline" id="line-458"><code>			releasem(mp)</code></span>
+<span class="codeline" id="line-459"><code>		case timerDeleted:</code></span>
+<span class="codeline" id="line-460"><code>			// Prevent preemption while the timer is in timerModifying.</code></span>
+<span class="codeline" id="line-461"><code>			// This could lead to a self-deadlock. See #38070.</code></span>
+<span class="codeline" id="line-462"><code>			mp = acquirem()</code></span>
+<span class="codeline" id="line-463"><code>			if atomic.Cas(&amp;t.status, status, timerModifying) {</code></span>
+<span class="codeline" id="line-464"><code>				atomic.Xadd(&amp;t.pp.ptr().deletedTimers, -1)</code></span>
+<span class="codeline" id="line-465"><code>				pending = false // timer already stopped</code></span>
+<span class="codeline" id="line-466"><code>				break loop</code></span>
+<span class="codeline" id="line-467"><code>			}</code></span>
+<span class="codeline" id="line-468"><code>			releasem(mp)</code></span>
+<span class="codeline" id="line-469"><code>		case timerRunning, timerRemoving, timerMoving:</code></span>
+<span class="codeline" id="line-470"><code>			// The timer is being run or moved, by a different P.</code></span>
+<span class="codeline" id="line-471"><code>			// Wait for it to complete.</code></span>
+<span class="codeline" id="line-472"><code>			osyield()</code></span>
+<span class="codeline" id="line-473"><code>		case timerModifying:</code></span>
+<span class="codeline" id="line-474"><code>			// Multiple simultaneous calls to modtimer.</code></span>
+<span class="codeline" id="line-475"><code>			// Wait for the other call to complete.</code></span>
+<span class="codeline" id="line-476"><code>			osyield()</code></span>
+<span class="codeline" id="line-477"><code>		default:</code></span>
+<span class="codeline" id="line-478"><code>			badTimer()</code></span>
+<span class="codeline" id="line-479"><code>		}</code></span>
+<span class="codeline" id="line-480"><code>	}</code></span>
+<span class="codeline" id="line-481"><code></code></span>
+<span class="codeline" id="line-482"><code>	t.period = period</code></span>
+<span class="codeline" id="line-483"><code>	t.f = f</code></span>
+<span class="codeline" id="line-484"><code>	t.arg = arg</code></span>
+<span class="codeline" id="line-485"><code>	t.seq = seq</code></span>
+<span class="codeline" id="line-486"><code></code></span>
+<span class="codeline" id="line-487"><code>	if wasRemoved {</code></span>
+<span class="codeline" id="line-488"><code>		t.when = when</code></span>
+<span class="codeline" id="line-489"><code>		pp := getg().m.p.ptr()</code></span>
+<span class="codeline" id="line-490"><code>		lock(&amp;pp.timersLock)</code></span>
+<span class="codeline" id="line-491"><code>		doaddtimer(pp, t)</code></span>
+<span class="codeline" id="line-492"><code>		unlock(&amp;pp.timersLock)</code></span>
+<span class="codeline" id="line-493"><code>		if !atomic.Cas(&amp;t.status, timerModifying, timerWaiting) {</code></span>
+<span class="codeline" id="line-494"><code>			badTimer()</code></span>
+<span class="codeline" id="line-495"><code>		}</code></span>
+<span class="codeline" id="line-496"><code>		releasem(mp)</code></span>
+<span class="codeline" id="line-497"><code>		wakeNetPoller(when)</code></span>
+<span class="codeline" id="line-498"><code>	} else {</code></span>
+<span class="codeline" id="line-499"><code>		// The timer is in some other P's heap, so we can't change</code></span>
+<span class="codeline" id="line-500"><code>		// the when field. If we did, the other P's heap would</code></span>
+<span class="codeline" id="line-501"><code>		// be out of order. So we put the new when value in the</code></span>
+<span class="codeline" id="line-502"><code>		// nextwhen field, and let the other P set the when field</code></span>
+<span class="codeline" id="line-503"><code>		// when it is prepared to resort the heap.</code></span>
+<span class="codeline" id="line-504"><code>		t.nextwhen = when</code></span>
+<span class="codeline" id="line-505"><code></code></span>
+<span class="codeline" id="line-506"><code>		newStatus := uint32(timerModifiedLater)</code></span>
+<span class="codeline" id="line-507"><code>		if when &lt; t.when {</code></span>
+<span class="codeline" id="line-508"><code>			newStatus = timerModifiedEarlier</code></span>
+<span class="codeline" id="line-509"><code>		}</code></span>
+<span class="codeline" id="line-510"><code></code></span>
+<span class="codeline" id="line-511"><code>		tpp := t.pp.ptr()</code></span>
+<span class="codeline" id="line-512"><code></code></span>
+<span class="codeline" id="line-513"><code>		// Update the adjustTimers field.  Subtract one if we</code></span>
+<span class="codeline" id="line-514"><code>		// are removing a timerModifiedEarlier, add one if we</code></span>
+<span class="codeline" id="line-515"><code>		// are adding a timerModifiedEarlier.</code></span>
+<span class="codeline" id="line-516"><code>		adjust := int32(0)</code></span>
+<span class="codeline" id="line-517"><code>		if status == timerModifiedEarlier {</code></span>
+<span class="codeline" id="line-518"><code>			adjust--</code></span>
+<span class="codeline" id="line-519"><code>		}</code></span>
+<span class="codeline" id="line-520"><code>		if newStatus == timerModifiedEarlier {</code></span>
+<span class="codeline" id="line-521"><code>			adjust++</code></span>
+<span class="codeline" id="line-522"><code>			updateTimerModifiedEarliest(tpp, when)</code></span>
+<span class="codeline" id="line-523"><code>		}</code></span>
+<span class="codeline" id="line-524"><code>		if adjust != 0 {</code></span>
+<span class="codeline" id="line-525"><code>			atomic.Xadd(&amp;tpp.adjustTimers, adjust)</code></span>
+<span class="codeline" id="line-526"><code>		}</code></span>
+<span class="codeline" id="line-527"><code></code></span>
+<span class="codeline" id="line-528"><code>		// Set the new status of the timer.</code></span>
+<span class="codeline" id="line-529"><code>		if !atomic.Cas(&amp;t.status, timerModifying, newStatus) {</code></span>
+<span class="codeline" id="line-530"><code>			badTimer()</code></span>
+<span class="codeline" id="line-531"><code>		}</code></span>
+<span class="codeline" id="line-532"><code>		releasem(mp)</code></span>
+<span class="codeline" id="line-533"><code></code></span>
+<span class="codeline" id="line-534"><code>		// If the new status is earlier, wake up the poller.</code></span>
+<span class="codeline" id="line-535"><code>		if newStatus == timerModifiedEarlier {</code></span>
+<span class="codeline" id="line-536"><code>			wakeNetPoller(when)</code></span>
+<span class="codeline" id="line-537"><code>		}</code></span>
+<span class="codeline" id="line-538"><code>	}</code></span>
+<span class="codeline" id="line-539"><code></code></span>
+<span class="codeline" id="line-540"><code>	return pending</code></span>
+<span class="codeline" id="line-541"><code>}</code></span>
+<span class="codeline" id="line-542"><code></code></span>
+<span class="codeline" id="line-543"><code>// resettimer resets the time when a timer should fire.</code></span>
+<span class="codeline" id="line-544"><code>// If used for an inactive timer, the timer will become active.</code></span>
+<span class="codeline" id="line-545"><code>// This should be called instead of addtimer if the timer value has been,</code></span>
+<span class="codeline" id="line-546"><code>// or may have been, used previously.</code></span>
+<span class="codeline" id="line-547"><code>// Reports whether the timer was modified before it was run.</code></span>
+<span class="codeline" id="line-548"><code>func resettimer(t *timer, when int64) bool {</code></span>
+<span class="codeline" id="line-549"><code>	return modtimer(t, when, t.period, t.f, t.arg, t.seq)</code></span>
+<span class="codeline" id="line-550"><code>}</code></span>
+<span class="codeline" id="line-551"><code></code></span>
+<span class="codeline" id="line-552"><code>// cleantimers cleans up the head of the timer queue. This speeds up</code></span>
+<span class="codeline" id="line-553"><code>// programs that create and delete timers; leaving them in the heap</code></span>
+<span class="codeline" id="line-554"><code>// slows down addtimer. Reports whether no timer problems were found.</code></span>
+<span class="codeline" id="line-555"><code>// The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-556"><code>func cleantimers(pp *p) {</code></span>
+<span class="codeline" id="line-557"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-558"><code>	for {</code></span>
+<span class="codeline" id="line-559"><code>		if len(pp.timers) == 0 {</code></span>
+<span class="codeline" id="line-560"><code>			return</code></span>
+<span class="codeline" id="line-561"><code>		}</code></span>
+<span class="codeline" id="line-562"><code></code></span>
+<span class="codeline" id="line-563"><code>		// This loop can theoretically run for a while, and because</code></span>
+<span class="codeline" id="line-564"><code>		// it is holding timersLock it cannot be preempted.</code></span>
+<span class="codeline" id="line-565"><code>		// If someone is trying to preempt us, just return.</code></span>
+<span class="codeline" id="line-566"><code>		// We can clean the timers later.</code></span>
+<span class="codeline" id="line-567"><code>		if gp.preemptStop {</code></span>
+<span class="codeline" id="line-568"><code>			return</code></span>
+<span class="codeline" id="line-569"><code>		}</code></span>
+<span class="codeline" id="line-570"><code></code></span>
+<span class="codeline" id="line-571"><code>		t := pp.timers[0]</code></span>
+<span class="codeline" id="line-572"><code>		if t.pp.ptr() != pp {</code></span>
+<span class="codeline" id="line-573"><code>			throw("cleantimers: bad p")</code></span>
+<span class="codeline" id="line-574"><code>		}</code></span>
+<span class="codeline" id="line-575"><code>		switch s := atomic.Load(&amp;t.status); s {</code></span>
+<span class="codeline" id="line-576"><code>		case timerDeleted:</code></span>
+<span class="codeline" id="line-577"><code>			if !atomic.Cas(&amp;t.status, s, timerRemoving) {</code></span>
+<span class="codeline" id="line-578"><code>				continue</code></span>
+<span class="codeline" id="line-579"><code>			}</code></span>
+<span class="codeline" id="line-580"><code>			dodeltimer0(pp)</code></span>
+<span class="codeline" id="line-581"><code>			if !atomic.Cas(&amp;t.status, timerRemoving, timerRemoved) {</code></span>
+<span class="codeline" id="line-582"><code>				badTimer()</code></span>
+<span class="codeline" id="line-583"><code>			}</code></span>
+<span class="codeline" id="line-584"><code>			atomic.Xadd(&amp;pp.deletedTimers, -1)</code></span>
+<span class="codeline" id="line-585"><code>		case timerModifiedEarlier, timerModifiedLater:</code></span>
+<span class="codeline" id="line-586"><code>			if !atomic.Cas(&amp;t.status, s, timerMoving) {</code></span>
+<span class="codeline" id="line-587"><code>				continue</code></span>
+<span class="codeline" id="line-588"><code>			}</code></span>
+<span class="codeline" id="line-589"><code>			// Now we can change the when field.</code></span>
+<span class="codeline" id="line-590"><code>			t.when = t.nextwhen</code></span>
+<span class="codeline" id="line-591"><code>			// Move t to the right position.</code></span>
+<span class="codeline" id="line-592"><code>			dodeltimer0(pp)</code></span>
+<span class="codeline" id="line-593"><code>			doaddtimer(pp, t)</code></span>
+<span class="codeline" id="line-594"><code>			if s == timerModifiedEarlier {</code></span>
+<span class="codeline" id="line-595"><code>				atomic.Xadd(&amp;pp.adjustTimers, -1)</code></span>
+<span class="codeline" id="line-596"><code>			}</code></span>
+<span class="codeline" id="line-597"><code>			if !atomic.Cas(&amp;t.status, timerMoving, timerWaiting) {</code></span>
+<span class="codeline" id="line-598"><code>				badTimer()</code></span>
+<span class="codeline" id="line-599"><code>			}</code></span>
+<span class="codeline" id="line-600"><code>		default:</code></span>
+<span class="codeline" id="line-601"><code>			// Head of timers does not need adjustment.</code></span>
+<span class="codeline" id="line-602"><code>			return</code></span>
+<span class="codeline" id="line-603"><code>		}</code></span>
+<span class="codeline" id="line-604"><code>	}</code></span>
+<span class="codeline" id="line-605"><code>}</code></span>
+<span class="codeline" id="line-606"><code></code></span>
+<span class="codeline" id="line-607"><code>// moveTimers moves a slice of timers to pp. The slice has been taken</code></span>
+<span class="codeline" id="line-608"><code>// from a different P.</code></span>
+<span class="codeline" id="line-609"><code>// This is currently called when the world is stopped, but the caller</code></span>
+<span class="codeline" id="line-610"><code>// is expected to have locked the timers for pp.</code></span>
+<span class="codeline" id="line-611"><code>func moveTimers(pp *p, timers []*timer) {</code></span>
+<span class="codeline" id="line-612"><code>	for _, t := range timers {</code></span>
+<span class="codeline" id="line-613"><code>	loop:</code></span>
+<span class="codeline" id="line-614"><code>		for {</code></span>
+<span class="codeline" id="line-615"><code>			switch s := atomic.Load(&amp;t.status); s {</code></span>
+<span class="codeline" id="line-616"><code>			case timerWaiting:</code></span>
+<span class="codeline" id="line-617"><code>				if !atomic.Cas(&amp;t.status, s, timerMoving) {</code></span>
+<span class="codeline" id="line-618"><code>					continue</code></span>
+<span class="codeline" id="line-619"><code>				}</code></span>
+<span class="codeline" id="line-620"><code>				t.pp = 0</code></span>
+<span class="codeline" id="line-621"><code>				doaddtimer(pp, t)</code></span>
+<span class="codeline" id="line-622"><code>				if !atomic.Cas(&amp;t.status, timerMoving, timerWaiting) {</code></span>
+<span class="codeline" id="line-623"><code>					badTimer()</code></span>
+<span class="codeline" id="line-624"><code>				}</code></span>
+<span class="codeline" id="line-625"><code>				break loop</code></span>
+<span class="codeline" id="line-626"><code>			case timerModifiedEarlier, timerModifiedLater:</code></span>
+<span class="codeline" id="line-627"><code>				if !atomic.Cas(&amp;t.status, s, timerMoving) {</code></span>
+<span class="codeline" id="line-628"><code>					continue</code></span>
+<span class="codeline" id="line-629"><code>				}</code></span>
+<span class="codeline" id="line-630"><code>				t.when = t.nextwhen</code></span>
+<span class="codeline" id="line-631"><code>				t.pp = 0</code></span>
+<span class="codeline" id="line-632"><code>				doaddtimer(pp, t)</code></span>
+<span class="codeline" id="line-633"><code>				if !atomic.Cas(&amp;t.status, timerMoving, timerWaiting) {</code></span>
+<span class="codeline" id="line-634"><code>					badTimer()</code></span>
+<span class="codeline" id="line-635"><code>				}</code></span>
+<span class="codeline" id="line-636"><code>				break loop</code></span>
+<span class="codeline" id="line-637"><code>			case timerDeleted:</code></span>
+<span class="codeline" id="line-638"><code>				if !atomic.Cas(&amp;t.status, s, timerRemoved) {</code></span>
+<span class="codeline" id="line-639"><code>					continue</code></span>
+<span class="codeline" id="line-640"><code>				}</code></span>
+<span class="codeline" id="line-641"><code>				t.pp = 0</code></span>
+<span class="codeline" id="line-642"><code>				// We no longer need this timer in the heap.</code></span>
+<span class="codeline" id="line-643"><code>				break loop</code></span>
+<span class="codeline" id="line-644"><code>			case timerModifying:</code></span>
+<span class="codeline" id="line-645"><code>				// Loop until the modification is complete.</code></span>
+<span class="codeline" id="line-646"><code>				osyield()</code></span>
+<span class="codeline" id="line-647"><code>			case timerNoStatus, timerRemoved:</code></span>
+<span class="codeline" id="line-648"><code>				// We should not see these status values in a timers heap.</code></span>
+<span class="codeline" id="line-649"><code>				badTimer()</code></span>
+<span class="codeline" id="line-650"><code>			case timerRunning, timerRemoving, timerMoving:</code></span>
+<span class="codeline" id="line-651"><code>				// Some other P thinks it owns this timer,</code></span>
+<span class="codeline" id="line-652"><code>				// which should not happen.</code></span>
+<span class="codeline" id="line-653"><code>				badTimer()</code></span>
+<span class="codeline" id="line-654"><code>			default:</code></span>
+<span class="codeline" id="line-655"><code>				badTimer()</code></span>
+<span class="codeline" id="line-656"><code>			}</code></span>
+<span class="codeline" id="line-657"><code>		}</code></span>
+<span class="codeline" id="line-658"><code>	}</code></span>
+<span class="codeline" id="line-659"><code>}</code></span>
+<span class="codeline" id="line-660"><code></code></span>
+<span class="codeline" id="line-661"><code>// adjusttimers looks through the timers in the current P's heap for</code></span>
+<span class="codeline" id="line-662"><code>// any timers that have been modified to run earlier, and puts them in</code></span>
+<span class="codeline" id="line-663"><code>// the correct place in the heap. While looking for those timers,</code></span>
+<span class="codeline" id="line-664"><code>// it also moves timers that have been modified to run later,</code></span>
+<span class="codeline" id="line-665"><code>// and removes deleted timers. The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-666"><code>func adjusttimers(pp *p, now int64) {</code></span>
+<span class="codeline" id="line-667"><code>	if atomic.Load(&amp;pp.adjustTimers) == 0 {</code></span>
+<span class="codeline" id="line-668"><code>		if verifyTimers {</code></span>
+<span class="codeline" id="line-669"><code>			verifyTimerHeap(pp)</code></span>
+<span class="codeline" id="line-670"><code>		}</code></span>
+<span class="codeline" id="line-671"><code>		// There are no timers to adjust, so it is safe to clear</code></span>
+<span class="codeline" id="line-672"><code>		// timerModifiedEarliest. Do so in case it is stale.</code></span>
+<span class="codeline" id="line-673"><code>		// Everything will work if we don't do this,</code></span>
+<span class="codeline" id="line-674"><code>		// but clearing here may save future calls to adjusttimers.</code></span>
+<span class="codeline" id="line-675"><code>		atomic.Store64(&amp;pp.timerModifiedEarliest, 0)</code></span>
+<span class="codeline" id="line-676"><code>		return</code></span>
+<span class="codeline" id="line-677"><code>	}</code></span>
+<span class="codeline" id="line-678"><code></code></span>
+<span class="codeline" id="line-679"><code>	// If we haven't yet reached the time of the first timerModifiedEarlier</code></span>
+<span class="codeline" id="line-680"><code>	// timer, don't do anything. This speeds up programs that adjust</code></span>
+<span class="codeline" id="line-681"><code>	// a lot of timers back and forth if the timers rarely expire.</code></span>
+<span class="codeline" id="line-682"><code>	// We'll postpone looking through all the adjusted timers until</code></span>
+<span class="codeline" id="line-683"><code>	// one would actually expire.</code></span>
+<span class="codeline" id="line-684"><code>	if first := atomic.Load64(&amp;pp.timerModifiedEarliest); first != 0 {</code></span>
+<span class="codeline" id="line-685"><code>		if int64(first) &gt; now {</code></span>
+<span class="codeline" id="line-686"><code>			if verifyTimers {</code></span>
+<span class="codeline" id="line-687"><code>				verifyTimerHeap(pp)</code></span>
+<span class="codeline" id="line-688"><code>			}</code></span>
+<span class="codeline" id="line-689"><code>			return</code></span>
+<span class="codeline" id="line-690"><code>		}</code></span>
+<span class="codeline" id="line-691"><code></code></span>
+<span class="codeline" id="line-692"><code>		// We are going to clear all timerModifiedEarlier timers.</code></span>
+<span class="codeline" id="line-693"><code>		atomic.Store64(&amp;pp.timerModifiedEarliest, 0)</code></span>
+<span class="codeline" id="line-694"><code>	}</code></span>
+<span class="codeline" id="line-695"><code></code></span>
+<span class="codeline" id="line-696"><code>	var moved []*timer</code></span>
+<span class="codeline" id="line-697"><code>loop:</code></span>
+<span class="codeline" id="line-698"><code>	for i := 0; i &lt; len(pp.timers); i++ {</code></span>
+<span class="codeline" id="line-699"><code>		t := pp.timers[i]</code></span>
+<span class="codeline" id="line-700"><code>		if t.pp.ptr() != pp {</code></span>
+<span class="codeline" id="line-701"><code>			throw("adjusttimers: bad p")</code></span>
+<span class="codeline" id="line-702"><code>		}</code></span>
+<span class="codeline" id="line-703"><code>		switch s := atomic.Load(&amp;t.status); s {</code></span>
+<span class="codeline" id="line-704"><code>		case timerDeleted:</code></span>
+<span class="codeline" id="line-705"><code>			if atomic.Cas(&amp;t.status, s, timerRemoving) {</code></span>
+<span class="codeline" id="line-706"><code>				dodeltimer(pp, i)</code></span>
+<span class="codeline" id="line-707"><code>				if !atomic.Cas(&amp;t.status, timerRemoving, timerRemoved) {</code></span>
+<span class="codeline" id="line-708"><code>					badTimer()</code></span>
+<span class="codeline" id="line-709"><code>				}</code></span>
+<span class="codeline" id="line-710"><code>				atomic.Xadd(&amp;pp.deletedTimers, -1)</code></span>
+<span class="codeline" id="line-711"><code>				// Look at this heap position again.</code></span>
+<span class="codeline" id="line-712"><code>				i--</code></span>
+<span class="codeline" id="line-713"><code>			}</code></span>
+<span class="codeline" id="line-714"><code>		case timerModifiedEarlier, timerModifiedLater:</code></span>
+<span class="codeline" id="line-715"><code>			if atomic.Cas(&amp;t.status, s, timerMoving) {</code></span>
+<span class="codeline" id="line-716"><code>				// Now we can change the when field.</code></span>
+<span class="codeline" id="line-717"><code>				t.when = t.nextwhen</code></span>
+<span class="codeline" id="line-718"><code>				// Take t off the heap, and hold onto it.</code></span>
+<span class="codeline" id="line-719"><code>				// We don't add it back yet because the</code></span>
+<span class="codeline" id="line-720"><code>				// heap manipulation could cause our</code></span>
+<span class="codeline" id="line-721"><code>				// loop to skip some other timer.</code></span>
+<span class="codeline" id="line-722"><code>				dodeltimer(pp, i)</code></span>
+<span class="codeline" id="line-723"><code>				moved = append(moved, t)</code></span>
+<span class="codeline" id="line-724"><code>				if s == timerModifiedEarlier {</code></span>
+<span class="codeline" id="line-725"><code>					if n := atomic.Xadd(&amp;pp.adjustTimers, -1); int32(n) &lt;= 0 {</code></span>
+<span class="codeline" id="line-726"><code>						break loop</code></span>
+<span class="codeline" id="line-727"><code>					}</code></span>
+<span class="codeline" id="line-728"><code>				}</code></span>
+<span class="codeline" id="line-729"><code>				// Look at this heap position again.</code></span>
+<span class="codeline" id="line-730"><code>				i--</code></span>
+<span class="codeline" id="line-731"><code>			}</code></span>
+<span class="codeline" id="line-732"><code>		case timerNoStatus, timerRunning, timerRemoving, timerRemoved, timerMoving:</code></span>
+<span class="codeline" id="line-733"><code>			badTimer()</code></span>
+<span class="codeline" id="line-734"><code>		case timerWaiting:</code></span>
+<span class="codeline" id="line-735"><code>			// OK, nothing to do.</code></span>
+<span class="codeline" id="line-736"><code>		case timerModifying:</code></span>
+<span class="codeline" id="line-737"><code>			// Check again after modification is complete.</code></span>
+<span class="codeline" id="line-738"><code>			osyield()</code></span>
+<span class="codeline" id="line-739"><code>			i--</code></span>
+<span class="codeline" id="line-740"><code>		default:</code></span>
+<span class="codeline" id="line-741"><code>			badTimer()</code></span>
+<span class="codeline" id="line-742"><code>		}</code></span>
+<span class="codeline" id="line-743"><code>	}</code></span>
+<span class="codeline" id="line-744"><code></code></span>
+<span class="codeline" id="line-745"><code>	if len(moved) &gt; 0 {</code></span>
+<span class="codeline" id="line-746"><code>		addAdjustedTimers(pp, moved)</code></span>
+<span class="codeline" id="line-747"><code>	}</code></span>
+<span class="codeline" id="line-748"><code></code></span>
+<span class="codeline" id="line-749"><code>	if verifyTimers {</code></span>
+<span class="codeline" id="line-750"><code>		verifyTimerHeap(pp)</code></span>
+<span class="codeline" id="line-751"><code>	}</code></span>
+<span class="codeline" id="line-752"><code>}</code></span>
+<span class="codeline" id="line-753"><code></code></span>
+<span class="codeline" id="line-754"><code>// addAdjustedTimers adds any timers we adjusted in adjusttimers</code></span>
+<span class="codeline" id="line-755"><code>// back to the timer heap.</code></span>
+<span class="codeline" id="line-756"><code>func addAdjustedTimers(pp *p, moved []*timer) {</code></span>
+<span class="codeline" id="line-757"><code>	for _, t := range moved {</code></span>
+<span class="codeline" id="line-758"><code>		doaddtimer(pp, t)</code></span>
+<span class="codeline" id="line-759"><code>		if !atomic.Cas(&amp;t.status, timerMoving, timerWaiting) {</code></span>
+<span class="codeline" id="line-760"><code>			badTimer()</code></span>
+<span class="codeline" id="line-761"><code>		}</code></span>
+<span class="codeline" id="line-762"><code>	}</code></span>
+<span class="codeline" id="line-763"><code>}</code></span>
+<span class="codeline" id="line-764"><code></code></span>
+<span class="codeline" id="line-765"><code>// nobarrierWakeTime looks at P's timers and returns the time when we</code></span>
+<span class="codeline" id="line-766"><code>// should wake up the netpoller. It returns 0 if there are no timers.</code></span>
+<span class="codeline" id="line-767"><code>// This function is invoked when dropping a P, and must run without</code></span>
+<span class="codeline" id="line-768"><code>// any write barriers.</code></span>
+<span class="codeline" id="line-769"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-770"><code>func nobarrierWakeTime(pp *p) int64 {</code></span>
+<span class="codeline" id="line-771"><code>	next := int64(atomic.Load64(&amp;pp.timer0When))</code></span>
+<span class="codeline" id="line-772"><code>	nextAdj := int64(atomic.Load64(&amp;pp.timerModifiedEarliest))</code></span>
+<span class="codeline" id="line-773"><code>	if next == 0 || (nextAdj != 0 &amp;&amp; nextAdj &lt; next) {</code></span>
+<span class="codeline" id="line-774"><code>		next = nextAdj</code></span>
+<span class="codeline" id="line-775"><code>	}</code></span>
+<span class="codeline" id="line-776"><code>	return next</code></span>
+<span class="codeline" id="line-777"><code>}</code></span>
+<span class="codeline" id="line-778"><code></code></span>
+<span class="codeline" id="line-779"><code>// runtimer examines the first timer in timers. If it is ready based on now,</code></span>
+<span class="codeline" id="line-780"><code>// it runs the timer and removes or updates it.</code></span>
+<span class="codeline" id="line-781"><code>// Returns 0 if it ran a timer, -1 if there are no more timers, or the time</code></span>
+<span class="codeline" id="line-782"><code>// when the first timer should run.</code></span>
+<span class="codeline" id="line-783"><code>// The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-784"><code>// If a timer is run, this will temporarily unlock the timers.</code></span>
+<span class="codeline" id="line-785"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-786"><code>func runtimer(pp *p, now int64) int64 {</code></span>
+<span class="codeline" id="line-787"><code>	for {</code></span>
+<span class="codeline" id="line-788"><code>		t := pp.timers[0]</code></span>
+<span class="codeline" id="line-789"><code>		if t.pp.ptr() != pp {</code></span>
+<span class="codeline" id="line-790"><code>			throw("runtimer: bad p")</code></span>
+<span class="codeline" id="line-791"><code>		}</code></span>
+<span class="codeline" id="line-792"><code>		switch s := atomic.Load(&amp;t.status); s {</code></span>
+<span class="codeline" id="line-793"><code>		case timerWaiting:</code></span>
+<span class="codeline" id="line-794"><code>			if t.when &gt; now {</code></span>
+<span class="codeline" id="line-795"><code>				// Not ready to run.</code></span>
+<span class="codeline" id="line-796"><code>				return t.when</code></span>
+<span class="codeline" id="line-797"><code>			}</code></span>
+<span class="codeline" id="line-798"><code></code></span>
+<span class="codeline" id="line-799"><code>			if !atomic.Cas(&amp;t.status, s, timerRunning) {</code></span>
+<span class="codeline" id="line-800"><code>				continue</code></span>
+<span class="codeline" id="line-801"><code>			}</code></span>
+<span class="codeline" id="line-802"><code>			// Note that runOneTimer may temporarily unlock</code></span>
+<span class="codeline" id="line-803"><code>			// pp.timersLock.</code></span>
+<span class="codeline" id="line-804"><code>			runOneTimer(pp, t, now)</code></span>
+<span class="codeline" id="line-805"><code>			return 0</code></span>
+<span class="codeline" id="line-806"><code></code></span>
+<span class="codeline" id="line-807"><code>		case timerDeleted:</code></span>
+<span class="codeline" id="line-808"><code>			if !atomic.Cas(&amp;t.status, s, timerRemoving) {</code></span>
+<span class="codeline" id="line-809"><code>				continue</code></span>
+<span class="codeline" id="line-810"><code>			}</code></span>
+<span class="codeline" id="line-811"><code>			dodeltimer0(pp)</code></span>
+<span class="codeline" id="line-812"><code>			if !atomic.Cas(&amp;t.status, timerRemoving, timerRemoved) {</code></span>
+<span class="codeline" id="line-813"><code>				badTimer()</code></span>
+<span class="codeline" id="line-814"><code>			}</code></span>
+<span class="codeline" id="line-815"><code>			atomic.Xadd(&amp;pp.deletedTimers, -1)</code></span>
+<span class="codeline" id="line-816"><code>			if len(pp.timers) == 0 {</code></span>
+<span class="codeline" id="line-817"><code>				return -1</code></span>
+<span class="codeline" id="line-818"><code>			}</code></span>
+<span class="codeline" id="line-819"><code></code></span>
+<span class="codeline" id="line-820"><code>		case timerModifiedEarlier, timerModifiedLater:</code></span>
+<span class="codeline" id="line-821"><code>			if !atomic.Cas(&amp;t.status, s, timerMoving) {</code></span>
+<span class="codeline" id="line-822"><code>				continue</code></span>
+<span class="codeline" id="line-823"><code>			}</code></span>
+<span class="codeline" id="line-824"><code>			t.when = t.nextwhen</code></span>
+<span class="codeline" id="line-825"><code>			dodeltimer0(pp)</code></span>
+<span class="codeline" id="line-826"><code>			doaddtimer(pp, t)</code></span>
+<span class="codeline" id="line-827"><code>			if s == timerModifiedEarlier {</code></span>
+<span class="codeline" id="line-828"><code>				atomic.Xadd(&amp;pp.adjustTimers, -1)</code></span>
+<span class="codeline" id="line-829"><code>			}</code></span>
+<span class="codeline" id="line-830"><code>			if !atomic.Cas(&amp;t.status, timerMoving, timerWaiting) {</code></span>
+<span class="codeline" id="line-831"><code>				badTimer()</code></span>
+<span class="codeline" id="line-832"><code>			}</code></span>
+<span class="codeline" id="line-833"><code></code></span>
+<span class="codeline" id="line-834"><code>		case timerModifying:</code></span>
+<span class="codeline" id="line-835"><code>			// Wait for modification to complete.</code></span>
+<span class="codeline" id="line-836"><code>			osyield()</code></span>
+<span class="codeline" id="line-837"><code></code></span>
+<span class="codeline" id="line-838"><code>		case timerNoStatus, timerRemoved:</code></span>
+<span class="codeline" id="line-839"><code>			// Should not see a new or inactive timer on the heap.</code></span>
+<span class="codeline" id="line-840"><code>			badTimer()</code></span>
+<span class="codeline" id="line-841"><code>		case timerRunning, timerRemoving, timerMoving:</code></span>
+<span class="codeline" id="line-842"><code>			// These should only be set when timers are locked,</code></span>
+<span class="codeline" id="line-843"><code>			// and we didn't do it.</code></span>
+<span class="codeline" id="line-844"><code>			badTimer()</code></span>
+<span class="codeline" id="line-845"><code>		default:</code></span>
+<span class="codeline" id="line-846"><code>			badTimer()</code></span>
+<span class="codeline" id="line-847"><code>		}</code></span>
+<span class="codeline" id="line-848"><code>	}</code></span>
+<span class="codeline" id="line-849"><code>}</code></span>
+<span class="codeline" id="line-850"><code></code></span>
+<span class="codeline" id="line-851"><code>// runOneTimer runs a single timer.</code></span>
+<span class="codeline" id="line-852"><code>// The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-853"><code>// This will temporarily unlock the timers while running the timer function.</code></span>
+<span class="codeline" id="line-854"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-855"><code>func runOneTimer(pp *p, t *timer, now int64) {</code></span>
+<span class="codeline" id="line-856"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-857"><code>		ppcur := getg().m.p.ptr()</code></span>
+<span class="codeline" id="line-858"><code>		if ppcur.timerRaceCtx == 0 {</code></span>
+<span class="codeline" id="line-859"><code>			ppcur.timerRaceCtx = racegostart(funcPC(runtimer) + sys.PCQuantum)</code></span>
+<span class="codeline" id="line-860"><code>		}</code></span>
+<span class="codeline" id="line-861"><code>		raceacquirectx(ppcur.timerRaceCtx, unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-862"><code>	}</code></span>
+<span class="codeline" id="line-863"><code></code></span>
+<span class="codeline" id="line-864"><code>	f := t.f</code></span>
+<span class="codeline" id="line-865"><code>	arg := t.arg</code></span>
+<span class="codeline" id="line-866"><code>	seq := t.seq</code></span>
+<span class="codeline" id="line-867"><code></code></span>
+<span class="codeline" id="line-868"><code>	if t.period &gt; 0 {</code></span>
+<span class="codeline" id="line-869"><code>		// Leave in heap but adjust next time to fire.</code></span>
+<span class="codeline" id="line-870"><code>		delta := t.when - now</code></span>
+<span class="codeline" id="line-871"><code>		t.when += t.period * (1 + -delta/t.period)</code></span>
+<span class="codeline" id="line-872"><code>		if t.when &lt; 0 { // check for overflow.</code></span>
+<span class="codeline" id="line-873"><code>			t.when = maxWhen</code></span>
+<span class="codeline" id="line-874"><code>		}</code></span>
+<span class="codeline" id="line-875"><code>		siftdownTimer(pp.timers, 0)</code></span>
+<span class="codeline" id="line-876"><code>		if !atomic.Cas(&amp;t.status, timerRunning, timerWaiting) {</code></span>
+<span class="codeline" id="line-877"><code>			badTimer()</code></span>
+<span class="codeline" id="line-878"><code>		}</code></span>
+<span class="codeline" id="line-879"><code>		updateTimer0When(pp)</code></span>
+<span class="codeline" id="line-880"><code>	} else {</code></span>
+<span class="codeline" id="line-881"><code>		// Remove from heap.</code></span>
+<span class="codeline" id="line-882"><code>		dodeltimer0(pp)</code></span>
+<span class="codeline" id="line-883"><code>		if !atomic.Cas(&amp;t.status, timerRunning, timerNoStatus) {</code></span>
+<span class="codeline" id="line-884"><code>			badTimer()</code></span>
+<span class="codeline" id="line-885"><code>		}</code></span>
+<span class="codeline" id="line-886"><code>	}</code></span>
+<span class="codeline" id="line-887"><code></code></span>
+<span class="codeline" id="line-888"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-889"><code>		// Temporarily use the current P's racectx for g0.</code></span>
+<span class="codeline" id="line-890"><code>		gp := getg()</code></span>
+<span class="codeline" id="line-891"><code>		if gp.racectx != 0 {</code></span>
+<span class="codeline" id="line-892"><code>			throw("runOneTimer: unexpected racectx")</code></span>
+<span class="codeline" id="line-893"><code>		}</code></span>
+<span class="codeline" id="line-894"><code>		gp.racectx = gp.m.p.ptr().timerRaceCtx</code></span>
+<span class="codeline" id="line-895"><code>	}</code></span>
+<span class="codeline" id="line-896"><code></code></span>
+<span class="codeline" id="line-897"><code>	unlock(&amp;pp.timersLock)</code></span>
+<span class="codeline" id="line-898"><code></code></span>
+<span class="codeline" id="line-899"><code>	f(arg, seq)</code></span>
+<span class="codeline" id="line-900"><code></code></span>
+<span class="codeline" id="line-901"><code>	lock(&amp;pp.timersLock)</code></span>
+<span class="codeline" id="line-902"><code></code></span>
+<span class="codeline" id="line-903"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-904"><code>		gp := getg()</code></span>
+<span class="codeline" id="line-905"><code>		gp.racectx = 0</code></span>
+<span class="codeline" id="line-906"><code>	}</code></span>
+<span class="codeline" id="line-907"><code>}</code></span>
+<span class="codeline" id="line-908"><code></code></span>
+<span class="codeline" id="line-909"><code>// clearDeletedTimers removes all deleted timers from the P's timer heap.</code></span>
+<span class="codeline" id="line-910"><code>// This is used to avoid clogging up the heap if the program</code></span>
+<span class="codeline" id="line-911"><code>// starts a lot of long-running timers and then stops them.</code></span>
+<span class="codeline" id="line-912"><code>// For example, this can happen via context.WithTimeout.</code></span>
+<span class="codeline" id="line-913"><code>//</code></span>
+<span class="codeline" id="line-914"><code>// This is the only function that walks through the entire timer heap,</code></span>
+<span class="codeline" id="line-915"><code>// other than moveTimers which only runs when the world is stopped.</code></span>
+<span class="codeline" id="line-916"><code>//</code></span>
+<span class="codeline" id="line-917"><code>// The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-918"><code>func clearDeletedTimers(pp *p) {</code></span>
+<span class="codeline" id="line-919"><code>	// We are going to clear all timerModifiedEarlier timers.</code></span>
+<span class="codeline" id="line-920"><code>	// Do this now in case new ones show up while we are looping.</code></span>
+<span class="codeline" id="line-921"><code>	atomic.Store64(&amp;pp.timerModifiedEarliest, 0)</code></span>
+<span class="codeline" id="line-922"><code></code></span>
+<span class="codeline" id="line-923"><code>	cdel := int32(0)</code></span>
+<span class="codeline" id="line-924"><code>	cearlier := int32(0)</code></span>
+<span class="codeline" id="line-925"><code>	to := 0</code></span>
+<span class="codeline" id="line-926"><code>	changedHeap := false</code></span>
+<span class="codeline" id="line-927"><code>	timers := pp.timers</code></span>
+<span class="codeline" id="line-928"><code>nextTimer:</code></span>
+<span class="codeline" id="line-929"><code>	for _, t := range timers {</code></span>
+<span class="codeline" id="line-930"><code>		for {</code></span>
+<span class="codeline" id="line-931"><code>			switch s := atomic.Load(&amp;t.status); s {</code></span>
+<span class="codeline" id="line-932"><code>			case timerWaiting:</code></span>
+<span class="codeline" id="line-933"><code>				if changedHeap {</code></span>
+<span class="codeline" id="line-934"><code>					timers[to] = t</code></span>
+<span class="codeline" id="line-935"><code>					siftupTimer(timers, to)</code></span>
+<span class="codeline" id="line-936"><code>				}</code></span>
+<span class="codeline" id="line-937"><code>				to++</code></span>
+<span class="codeline" id="line-938"><code>				continue nextTimer</code></span>
+<span class="codeline" id="line-939"><code>			case timerModifiedEarlier, timerModifiedLater:</code></span>
+<span class="codeline" id="line-940"><code>				if atomic.Cas(&amp;t.status, s, timerMoving) {</code></span>
+<span class="codeline" id="line-941"><code>					t.when = t.nextwhen</code></span>
+<span class="codeline" id="line-942"><code>					timers[to] = t</code></span>
+<span class="codeline" id="line-943"><code>					siftupTimer(timers, to)</code></span>
+<span class="codeline" id="line-944"><code>					to++</code></span>
+<span class="codeline" id="line-945"><code>					changedHeap = true</code></span>
+<span class="codeline" id="line-946"><code>					if !atomic.Cas(&amp;t.status, timerMoving, timerWaiting) {</code></span>
+<span class="codeline" id="line-947"><code>						badTimer()</code></span>
+<span class="codeline" id="line-948"><code>					}</code></span>
+<span class="codeline" id="line-949"><code>					if s == timerModifiedEarlier {</code></span>
+<span class="codeline" id="line-950"><code>						cearlier++</code></span>
+<span class="codeline" id="line-951"><code>					}</code></span>
+<span class="codeline" id="line-952"><code>					continue nextTimer</code></span>
+<span class="codeline" id="line-953"><code>				}</code></span>
+<span class="codeline" id="line-954"><code>			case timerDeleted:</code></span>
+<span class="codeline" id="line-955"><code>				if atomic.Cas(&amp;t.status, s, timerRemoving) {</code></span>
+<span class="codeline" id="line-956"><code>					t.pp = 0</code></span>
+<span class="codeline" id="line-957"><code>					cdel++</code></span>
+<span class="codeline" id="line-958"><code>					if !atomic.Cas(&amp;t.status, timerRemoving, timerRemoved) {</code></span>
+<span class="codeline" id="line-959"><code>						badTimer()</code></span>
+<span class="codeline" id="line-960"><code>					}</code></span>
+<span class="codeline" id="line-961"><code>					changedHeap = true</code></span>
+<span class="codeline" id="line-962"><code>					continue nextTimer</code></span>
+<span class="codeline" id="line-963"><code>				}</code></span>
+<span class="codeline" id="line-964"><code>			case timerModifying:</code></span>
+<span class="codeline" id="line-965"><code>				// Loop until modification complete.</code></span>
+<span class="codeline" id="line-966"><code>				osyield()</code></span>
+<span class="codeline" id="line-967"><code>			case timerNoStatus, timerRemoved:</code></span>
+<span class="codeline" id="line-968"><code>				// We should not see these status values in a timer heap.</code></span>
+<span class="codeline" id="line-969"><code>				badTimer()</code></span>
+<span class="codeline" id="line-970"><code>			case timerRunning, timerRemoving, timerMoving:</code></span>
+<span class="codeline" id="line-971"><code>				// Some other P thinks it owns this timer,</code></span>
+<span class="codeline" id="line-972"><code>				// which should not happen.</code></span>
+<span class="codeline" id="line-973"><code>				badTimer()</code></span>
+<span class="codeline" id="line-974"><code>			default:</code></span>
+<span class="codeline" id="line-975"><code>				badTimer()</code></span>
+<span class="codeline" id="line-976"><code>			}</code></span>
+<span class="codeline" id="line-977"><code>		}</code></span>
+<span class="codeline" id="line-978"><code>	}</code></span>
+<span class="codeline" id="line-979"><code></code></span>
+<span class="codeline" id="line-980"><code>	// Set remaining slots in timers slice to nil,</code></span>
+<span class="codeline" id="line-981"><code>	// so that the timer values can be garbage collected.</code></span>
+<span class="codeline" id="line-982"><code>	for i := to; i &lt; len(timers); i++ {</code></span>
+<span class="codeline" id="line-983"><code>		timers[i] = nil</code></span>
+<span class="codeline" id="line-984"><code>	}</code></span>
+<span class="codeline" id="line-985"><code></code></span>
+<span class="codeline" id="line-986"><code>	atomic.Xadd(&amp;pp.deletedTimers, -cdel)</code></span>
+<span class="codeline" id="line-987"><code>	atomic.Xadd(&amp;pp.numTimers, -cdel)</code></span>
+<span class="codeline" id="line-988"><code>	atomic.Xadd(&amp;pp.adjustTimers, -cearlier)</code></span>
+<span class="codeline" id="line-989"><code></code></span>
+<span class="codeline" id="line-990"><code>	timers = timers[:to]</code></span>
+<span class="codeline" id="line-991"><code>	pp.timers = timers</code></span>
+<span class="codeline" id="line-992"><code>	updateTimer0When(pp)</code></span>
+<span class="codeline" id="line-993"><code></code></span>
+<span class="codeline" id="line-994"><code>	if verifyTimers {</code></span>
+<span class="codeline" id="line-995"><code>		verifyTimerHeap(pp)</code></span>
+<span class="codeline" id="line-996"><code>	}</code></span>
+<span class="codeline" id="line-997"><code>}</code></span>
+<span class="codeline" id="line-998"><code></code></span>
+<span class="codeline" id="line-999"><code>// verifyTimerHeap verifies that the timer heap is in a valid state.</code></span>
+<span class="codeline" id="line-1000"><code>// This is only for debugging, and is only called if verifyTimers is true.</code></span>
+<span class="codeline" id="line-1001"><code>// The caller must have locked the timers.</code></span>
+<span class="codeline" id="line-1002"><code>func verifyTimerHeap(pp *p) {</code></span>
+<span class="codeline" id="line-1003"><code>	for i, t := range pp.timers {</code></span>
+<span class="codeline" id="line-1004"><code>		if i == 0 {</code></span>
+<span class="codeline" id="line-1005"><code>			// First timer has no parent.</code></span>
+<span class="codeline" id="line-1006"><code>			continue</code></span>
+<span class="codeline" id="line-1007"><code>		}</code></span>
+<span class="codeline" id="line-1008"><code></code></span>
+<span class="codeline" id="line-1009"><code>		// The heap is 4-ary. See siftupTimer and siftdownTimer.</code></span>
+<span class="codeline" id="line-1010"><code>		p := (i - 1) / 4</code></span>
+<span class="codeline" id="line-1011"><code>		if t.when &lt; pp.timers[p].when {</code></span>
+<span class="codeline" id="line-1012"><code>			print("bad timer heap at ", i, ": ", p, ": ", pp.timers[p].when, ", ", i, ": ", t.when, "\n")</code></span>
+<span class="codeline" id="line-1013"><code>			throw("bad timer heap")</code></span>
+<span class="codeline" id="line-1014"><code>		}</code></span>
+<span class="codeline" id="line-1015"><code>	}</code></span>
+<span class="codeline" id="line-1016"><code>	if numTimers := int(atomic.Load(&amp;pp.numTimers)); len(pp.timers) != numTimers {</code></span>
+<span class="codeline" id="line-1017"><code>		println("timer heap len", len(pp.timers), "!= numTimers", numTimers)</code></span>
+<span class="codeline" id="line-1018"><code>		throw("bad timer heap len")</code></span>
+<span class="codeline" id="line-1019"><code>	}</code></span>
+<span class="codeline" id="line-1020"><code>}</code></span>
+<span class="codeline" id="line-1021"><code></code></span>
+<span class="codeline" id="line-1022"><code>// updateTimer0When sets the P's timer0When field.</code></span>
+<span class="codeline" id="line-1023"><code>// The caller must have locked the timers for pp.</code></span>
+<span class="codeline" id="line-1024"><code>func updateTimer0When(pp *p) {</code></span>
+<span class="codeline" id="line-1025"><code>	if len(pp.timers) == 0 {</code></span>
+<span class="codeline" id="line-1026"><code>		atomic.Store64(&amp;pp.timer0When, 0)</code></span>
+<span class="codeline" id="line-1027"><code>	} else {</code></span>
+<span class="codeline" id="line-1028"><code>		atomic.Store64(&amp;pp.timer0When, uint64(pp.timers[0].when))</code></span>
+<span class="codeline" id="line-1029"><code>	}</code></span>
+<span class="codeline" id="line-1030"><code>}</code></span>
+<span class="codeline" id="line-1031"><code></code></span>
+<span class="codeline" id="line-1032"><code>// updateTimerModifiedEarliest updates the recorded nextwhen field of the</code></span>
+<span class="codeline" id="line-1033"><code>// earlier timerModifiedEarier value.</code></span>
+<span class="codeline" id="line-1034"><code>// The timers for pp will not be locked.</code></span>
+<span class="codeline" id="line-1035"><code>func updateTimerModifiedEarliest(pp *p, nextwhen int64) {</code></span>
+<span class="codeline" id="line-1036"><code>	for {</code></span>
+<span class="codeline" id="line-1037"><code>		old := atomic.Load64(&amp;pp.timerModifiedEarliest)</code></span>
+<span class="codeline" id="line-1038"><code>		if old != 0 &amp;&amp; int64(old) &lt; nextwhen {</code></span>
+<span class="codeline" id="line-1039"><code>			return</code></span>
+<span class="codeline" id="line-1040"><code>		}</code></span>
+<span class="codeline" id="line-1041"><code>		if atomic.Cas64(&amp;pp.timerModifiedEarliest, old, uint64(nextwhen)) {</code></span>
+<span class="codeline" id="line-1042"><code>			return</code></span>
+<span class="codeline" id="line-1043"><code>		}</code></span>
+<span class="codeline" id="line-1044"><code>	}</code></span>
+<span class="codeline" id="line-1045"><code>}</code></span>
+<span class="codeline" id="line-1046"><code></code></span>
+<span class="codeline" id="line-1047"><code>// timeSleepUntil returns the time when the next timer should fire,</code></span>
+<span class="codeline" id="line-1048"><code>// and the P that holds the timer heap that that timer is on.</code></span>
+<span class="codeline" id="line-1049"><code>// This is only called by sysmon and checkdead.</code></span>
+<span class="codeline" id="line-1050"><code>func timeSleepUntil() (int64, *p) {</code></span>
+<span class="codeline" id="line-1051"><code>	next := int64(maxWhen)</code></span>
+<span class="codeline" id="line-1052"><code>	var pret *p</code></span>
+<span class="codeline" id="line-1053"><code></code></span>
+<span class="codeline" id="line-1054"><code>	// Prevent allp slice changes. This is like retake.</code></span>
+<span class="codeline" id="line-1055"><code>	lock(&amp;allpLock)</code></span>
+<span class="codeline" id="line-1056"><code>	for _, pp := range allp {</code></span>
+<span class="codeline" id="line-1057"><code>		if pp == nil {</code></span>
+<span class="codeline" id="line-1058"><code>			// This can happen if procresize has grown</code></span>
+<span class="codeline" id="line-1059"><code>			// allp but not yet created new Ps.</code></span>
+<span class="codeline" id="line-1060"><code>			continue</code></span>
+<span class="codeline" id="line-1061"><code>		}</code></span>
+<span class="codeline" id="line-1062"><code></code></span>
+<span class="codeline" id="line-1063"><code>		w := int64(atomic.Load64(&amp;pp.timer0When))</code></span>
+<span class="codeline" id="line-1064"><code>		if w != 0 &amp;&amp; w &lt; next {</code></span>
+<span class="codeline" id="line-1065"><code>			next = w</code></span>
+<span class="codeline" id="line-1066"><code>			pret = pp</code></span>
+<span class="codeline" id="line-1067"><code>		}</code></span>
+<span class="codeline" id="line-1068"><code></code></span>
+<span class="codeline" id="line-1069"><code>		w = int64(atomic.Load64(&amp;pp.timerModifiedEarliest))</code></span>
+<span class="codeline" id="line-1070"><code>		if w != 0 &amp;&amp; w &lt; next {</code></span>
+<span class="codeline" id="line-1071"><code>			next = w</code></span>
+<span class="codeline" id="line-1072"><code>			pret = pp</code></span>
+<span class="codeline" id="line-1073"><code>		}</code></span>
+<span class="codeline" id="line-1074"><code>	}</code></span>
+<span class="codeline" id="line-1075"><code>	unlock(&amp;allpLock)</code></span>
+<span class="codeline" id="line-1076"><code></code></span>
+<span class="codeline" id="line-1077"><code>	return next, pret</code></span>
+<span class="codeline" id="line-1078"><code>}</code></span>
+<span class="codeline" id="line-1079"><code></code></span>
+<span class="codeline" id="line-1080"><code>// Heap maintenance algorithms.</code></span>
+<span class="codeline" id="line-1081"><code>// These algorithms check for slice index errors manually.</code></span>
+<span class="codeline" id="line-1082"><code>// Slice index error can happen if the program is using racy</code></span>
+<span class="codeline" id="line-1083"><code>// access to timers. We don't want to panic here, because</code></span>
+<span class="codeline" id="line-1084"><code>// it will cause the program to crash with a mysterious</code></span>
+<span class="codeline" id="line-1085"><code>// "panic holding locks" message. Instead, we panic while not</code></span>
+<span class="codeline" id="line-1086"><code>// holding a lock.</code></span>
+<span class="codeline" id="line-1087"><code></code></span>
+<span class="codeline" id="line-1088"><code>func siftupTimer(t []*timer, i int) {</code></span>
+<span class="codeline" id="line-1089"><code>	if i &gt;= len(t) {</code></span>
+<span class="codeline" id="line-1090"><code>		badTimer()</code></span>
+<span class="codeline" id="line-1091"><code>	}</code></span>
+<span class="codeline" id="line-1092"><code>	when := t[i].when</code></span>
+<span class="codeline" id="line-1093"><code>	if when &lt;= 0 {</code></span>
+<span class="codeline" id="line-1094"><code>		badTimer()</code></span>
+<span class="codeline" id="line-1095"><code>	}</code></span>
+<span class="codeline" id="line-1096"><code>	tmp := t[i]</code></span>
+<span class="codeline" id="line-1097"><code>	for i &gt; 0 {</code></span>
+<span class="codeline" id="line-1098"><code>		p := (i - 1) / 4 // parent</code></span>
+<span class="codeline" id="line-1099"><code>		if when &gt;= t[p].when {</code></span>
+<span class="codeline" id="line-1100"><code>			break</code></span>
+<span class="codeline" id="line-1101"><code>		}</code></span>
+<span class="codeline" id="line-1102"><code>		t[i] = t[p]</code></span>
+<span class="codeline" id="line-1103"><code>		i = p</code></span>
+<span class="codeline" id="line-1104"><code>	}</code></span>
+<span class="codeline" id="line-1105"><code>	if tmp != t[i] {</code></span>
+<span class="codeline" id="line-1106"><code>		t[i] = tmp</code></span>
+<span class="codeline" id="line-1107"><code>	}</code></span>
+<span class="codeline" id="line-1108"><code>}</code></span>
+<span class="codeline" id="line-1109"><code></code></span>
+<span class="codeline" id="line-1110"><code>func siftdownTimer(t []*timer, i int) {</code></span>
+<span class="codeline" id="line-1111"><code>	n := len(t)</code></span>
+<span class="codeline" id="line-1112"><code>	if i &gt;= n {</code></span>
+<span class="codeline" id="line-1113"><code>		badTimer()</code></span>
+<span class="codeline" id="line-1114"><code>	}</code></span>
+<span class="codeline" id="line-1115"><code>	when := t[i].when</code></span>
+<span class="codeline" id="line-1116"><code>	if when &lt;= 0 {</code></span>
+<span class="codeline" id="line-1117"><code>		badTimer()</code></span>
+<span class="codeline" id="line-1118"><code>	}</code></span>
+<span class="codeline" id="line-1119"><code>	tmp := t[i]</code></span>
+<span class="codeline" id="line-1120"><code>	for {</code></span>
+<span class="codeline" id="line-1121"><code>		c := i*4 + 1 // left child</code></span>
+<span class="codeline" id="line-1122"><code>		c3 := c + 2  // mid child</code></span>
+<span class="codeline" id="line-1123"><code>		if c &gt;= n {</code></span>
+<span class="codeline" id="line-1124"><code>			break</code></span>
+<span class="codeline" id="line-1125"><code>		}</code></span>
+<span class="codeline" id="line-1126"><code>		w := t[c].when</code></span>
+<span class="codeline" id="line-1127"><code>		if c+1 &lt; n &amp;&amp; t[c+1].when &lt; w {</code></span>
+<span class="codeline" id="line-1128"><code>			w = t[c+1].when</code></span>
+<span class="codeline" id="line-1129"><code>			c++</code></span>
+<span class="codeline" id="line-1130"><code>		}</code></span>
+<span class="codeline" id="line-1131"><code>		if c3 &lt; n {</code></span>
+<span class="codeline" id="line-1132"><code>			w3 := t[c3].when</code></span>
+<span class="codeline" id="line-1133"><code>			if c3+1 &lt; n &amp;&amp; t[c3+1].when &lt; w3 {</code></span>
+<span class="codeline" id="line-1134"><code>				w3 = t[c3+1].when</code></span>
+<span class="codeline" id="line-1135"><code>				c3++</code></span>
+<span class="codeline" id="line-1136"><code>			}</code></span>
+<span class="codeline" id="line-1137"><code>			if w3 &lt; w {</code></span>
+<span class="codeline" id="line-1138"><code>				w = w3</code></span>
+<span class="codeline" id="line-1139"><code>				c = c3</code></span>
+<span class="codeline" id="line-1140"><code>			}</code></span>
+<span class="codeline" id="line-1141"><code>		}</code></span>
+<span class="codeline" id="line-1142"><code>		if w &gt;= when {</code></span>
+<span class="codeline" id="line-1143"><code>			break</code></span>
+<span class="codeline" id="line-1144"><code>		}</code></span>
+<span class="codeline" id="line-1145"><code>		t[i] = t[c]</code></span>
+<span class="codeline" id="line-1146"><code>		i = c</code></span>
+<span class="codeline" id="line-1147"><code>	}</code></span>
+<span class="codeline" id="line-1148"><code>	if tmp != t[i] {</code></span>
+<span class="codeline" id="line-1149"><code>		t[i] = tmp</code></span>
+<span class="codeline" id="line-1150"><code>	}</code></span>
+<span class="codeline" id="line-1151"><code>}</code></span>
+<span class="codeline" id="line-1152"><code></code></span>
+<span class="codeline" id="line-1153"><code>// badTimer is called if the timer data structures have been corrupted,</code></span>
+<span class="codeline" id="line-1154"><code>// presumably due to racy use by the program. We panic here rather than</code></span>
+<span class="codeline" id="line-1155"><code>// panicing due to invalid slice access while holding locks.</code></span>
+<span class="codeline" id="line-1156"><code>// See issue #25686.</code></span>
+<span class="codeline" id="line-1157"><code>func badTimer() {</code></span>
+<span class="codeline" id="line-1158"><code>	throw("timer data corruption")</code></span>
+<span class="codeline" id="line-1159"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

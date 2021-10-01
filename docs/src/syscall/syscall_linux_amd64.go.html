@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: syscall_linux_amd64.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	syscall_linux_amd64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package syscall</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// archHonorsR2 captures the fact that r2 is honored by the</code></span>
+<span class="codeline" id="line-8"><code>// runtime.GOARCH.  Syscall conventions are generally r1, r2, err :=</code></span>
+<span class="codeline" id="line-9"><code>// syscall(trap, ...).  Not all architectures define r2 in their</code></span>
+<span class="codeline" id="line-10"><code>// ABI. See "man syscall".</code></span>
+<span class="codeline" id="line-11"><code>const archHonorsR2 = true</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>const _SYS_setgroups = SYS_SETGROUPS</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>//sys	Dup2(oldfd int, newfd int) (err error)</code></span>
+<span class="codeline" id="line-16"><code>//sysnb	EpollCreate(size int) (fd int, err error)</code></span>
+<span class="codeline" id="line-17"><code>//sys	Fchown(fd int, uid int, gid int) (err error)</code></span>
+<span class="codeline" id="line-18"><code>//sys	Fstat(fd int, stat *Stat_t) (err error)</code></span>
+<span class="codeline" id="line-19"><code>//sys	Fstatfs(fd int, buf *Statfs_t) (err error)</code></span>
+<span class="codeline" id="line-20"><code>//sys	Ftruncate(fd int, length int64) (err error)</code></span>
+<span class="codeline" id="line-21"><code>//sysnb	Getegid() (egid int)</code></span>
+<span class="codeline" id="line-22"><code>//sysnb	Geteuid() (euid int)</code></span>
+<span class="codeline" id="line-23"><code>//sysnb	Getgid() (gid int)</code></span>
+<span class="codeline" id="line-24"><code>//sysnb	Getrlimit(resource int, rlim *Rlimit) (err error)</code></span>
+<span class="codeline" id="line-25"><code>//sysnb	Getuid() (uid int)</code></span>
+<span class="codeline" id="line-26"><code>//sysnb	InotifyInit() (fd int, err error)</code></span>
+<span class="codeline" id="line-27"><code>//sys	Ioperm(from int, num int, on int) (err error)</code></span>
+<span class="codeline" id="line-28"><code>//sys	Iopl(level int) (err error)</code></span>
+<span class="codeline" id="line-29"><code>//sys	Listen(s int, n int) (err error)</code></span>
+<span class="codeline" id="line-30"><code>//sys	Pause() (err error)</code></span>
+<span class="codeline" id="line-31"><code>//sys	Pread(fd int, p []byte, offset int64) (n int, err error) = SYS_PREAD64</code></span>
+<span class="codeline" id="line-32"><code>//sys	Pwrite(fd int, p []byte, offset int64) (n int, err error) = SYS_PWRITE64</code></span>
+<span class="codeline" id="line-33"><code>//sys	Renameat(olddirfd int, oldpath string, newdirfd int, newpath string) (err error)</code></span>
+<span class="codeline" id="line-34"><code>//sys	Seek(fd int, offset int64, whence int) (off int64, err error) = SYS_LSEEK</code></span>
+<span class="codeline" id="line-35"><code>//sys	Select(nfd int, r *FdSet, w *FdSet, e *FdSet, timeout *Timeval) (n int, err error)</code></span>
+<span class="codeline" id="line-36"><code>//sys	sendfile(outfd int, infd int, offset *int64, count int) (written int, err error)</code></span>
+<span class="codeline" id="line-37"><code>//sys	Setfsgid(gid int) (err error)</code></span>
+<span class="codeline" id="line-38"><code>//sys	Setfsuid(uid int) (err error)</code></span>
+<span class="codeline" id="line-39"><code>//sysnb	Setrlimit(resource int, rlim *Rlimit) (err error)</code></span>
+<span class="codeline" id="line-40"><code>//sys	Shutdown(fd int, how int) (err error)</code></span>
+<span class="codeline" id="line-41"><code>//sys	Splice(rfd int, roff *int64, wfd int, woff *int64, len int, flags int) (n int64, err error)</code></span>
+<span class="codeline" id="line-42"><code>//sys	Statfs(path string, buf *Statfs_t) (err error)</code></span>
+<span class="codeline" id="line-43"><code>//sys	SyncFileRange(fd int, off int64, n int64, flags int) (err error)</code></span>
+<span class="codeline" id="line-44"><code>//sys	Truncate(path string, length int64) (err error)</code></span>
+<span class="codeline" id="line-45"><code>//sys	Ustat(dev int, ubuf *Ustat_t) (err error)</code></span>
+<span class="codeline" id="line-46"><code>//sys	accept(s int, rsa *RawSockaddrAny, addrlen *_Socklen) (fd int, err error)</code></span>
+<span class="codeline" id="line-47"><code>//sys	accept4(s int, rsa *RawSockaddrAny, addrlen *_Socklen, flags int) (fd int, err error)</code></span>
+<span class="codeline" id="line-48"><code>//sys	bind(s int, addr unsafe.Pointer, addrlen _Socklen) (err error)</code></span>
+<span class="codeline" id="line-49"><code>//sys	connect(s int, addr unsafe.Pointer, addrlen _Socklen) (err error)</code></span>
+<span class="codeline" id="line-50"><code>//sys	fstatat(fd int, path string, stat *Stat_t, flags int) (err error) = SYS_NEWFSTATAT</code></span>
+<span class="codeline" id="line-51"><code>//sysnb	getgroups(n int, list *_Gid_t) (nn int, err error)</code></span>
+<span class="codeline" id="line-52"><code>//sys	getsockopt(s int, level int, name int, val unsafe.Pointer, vallen *_Socklen) (err error)</code></span>
+<span class="codeline" id="line-53"><code>//sys	setsockopt(s int, level int, name int, val unsafe.Pointer, vallen uintptr) (err error)</code></span>
+<span class="codeline" id="line-54"><code>//sysnb	socket(domain int, typ int, proto int) (fd int, err error)</code></span>
+<span class="codeline" id="line-55"><code>//sysnb	socketpair(domain int, typ int, proto int, fd *[2]int32) (err error)</code></span>
+<span class="codeline" id="line-56"><code>//sysnb	getpeername(fd int, rsa *RawSockaddrAny, addrlen *_Socklen) (err error)</code></span>
+<span class="codeline" id="line-57"><code>//sysnb	getsockname(fd int, rsa *RawSockaddrAny, addrlen *_Socklen) (err error)</code></span>
+<span class="codeline" id="line-58"><code>//sys	recvfrom(fd int, p []byte, flags int, from *RawSockaddrAny, fromlen *_Socklen) (n int, err error)</code></span>
+<span class="codeline" id="line-59"><code>//sys	sendto(s int, buf []byte, flags int, to unsafe.Pointer, addrlen _Socklen) (err error)</code></span>
+<span class="codeline" id="line-60"><code>//sys	recvmsg(s int, msg *Msghdr, flags int) (n int, err error)</code></span>
+<span class="codeline" id="line-61"><code>//sys	sendmsg(s int, msg *Msghdr, flags int) (n int, err error)</code></span>
+<span class="codeline" id="line-62"><code>//sys	mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int64) (xaddr uintptr, err error)</code></span>
+<span class="codeline" id="line-63"><code>//sys	EpollWait(epfd int, events []EpollEvent, msec int) (n int, err error)</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>func Stat(path string, stat *Stat_t) (err error) {</code></span>
+<span class="codeline" id="line-66"><code>	return fstatat(_AT_FDCWD, path, stat, 0)</code></span>
+<span class="codeline" id="line-67"><code>}</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>func Lchown(path string, uid int, gid int) (err error) {</code></span>
+<span class="codeline" id="line-70"><code>	return Fchownat(_AT_FDCWD, path, uid, gid, _AT_SYMLINK_NOFOLLOW)</code></span>
+<span class="codeline" id="line-71"><code>}</code></span>
+<span class="codeline" id="line-72"><code></code></span>
+<span class="codeline" id="line-73"><code>func Lstat(path string, stat *Stat_t) (err error) {</code></span>
+<span class="codeline" id="line-74"><code>	return fstatat(_AT_FDCWD, path, stat, _AT_SYMLINK_NOFOLLOW)</code></span>
+<span class="codeline" id="line-75"><code>}</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>//sys	futimesat(dirfd int, path string, times *[2]Timeval) (err error)</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>//go:noescape</code></span>
+<span class="codeline" id="line-80"><code>func gettimeofday(tv *Timeval) (err Errno)</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>func Gettimeofday(tv *Timeval) (err error) {</code></span>
+<span class="codeline" id="line-83"><code>	errno := gettimeofday(tv)</code></span>
+<span class="codeline" id="line-84"><code>	if errno != 0 {</code></span>
+<span class="codeline" id="line-85"><code>		return errno</code></span>
+<span class="codeline" id="line-86"><code>	}</code></span>
+<span class="codeline" id="line-87"><code>	return nil</code></span>
+<span class="codeline" id="line-88"><code>}</code></span>
+<span class="codeline" id="line-89"><code></code></span>
+<span class="codeline" id="line-90"><code>func Time(t *Time_t) (tt Time_t, err error) {</code></span>
+<span class="codeline" id="line-91"><code>	var tv Timeval</code></span>
+<span class="codeline" id="line-92"><code>	errno := gettimeofday(&amp;tv)</code></span>
+<span class="codeline" id="line-93"><code>	if errno != 0 {</code></span>
+<span class="codeline" id="line-94"><code>		return 0, errno</code></span>
+<span class="codeline" id="line-95"><code>	}</code></span>
+<span class="codeline" id="line-96"><code>	if t != nil {</code></span>
+<span class="codeline" id="line-97"><code>		*t = Time_t(tv.Sec)</code></span>
+<span class="codeline" id="line-98"><code>	}</code></span>
+<span class="codeline" id="line-99"><code>	return Time_t(tv.Sec), nil</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>//sys	Utime(path string, buf *Utimbuf) (err error)</code></span>
+<span class="codeline" id="line-103"><code>//sys	utimes(path string, times *[2]Timeval) (err error)</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>func setTimespec(sec, nsec int64) Timespec {</code></span>
+<span class="codeline" id="line-106"><code>	return Timespec{Sec: sec, Nsec: nsec}</code></span>
+<span class="codeline" id="line-107"><code>}</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>func setTimeval(sec, usec int64) Timeval {</code></span>
+<span class="codeline" id="line-110"><code>	return Timeval{Sec: sec, Usec: usec}</code></span>
+<span class="codeline" id="line-111"><code>}</code></span>
+<span class="codeline" id="line-112"><code></code></span>
+<span class="codeline" id="line-113"><code>//sysnb	pipe(p *[2]_C_int) (err error)</code></span>
+<span class="codeline" id="line-114"><code></code></span>
+<span class="codeline" id="line-115"><code>func Pipe(p []int) (err error) {</code></span>
+<span class="codeline" id="line-116"><code>	if len(p) != 2 {</code></span>
+<span class="codeline" id="line-117"><code>		return EINVAL</code></span>
+<span class="codeline" id="line-118"><code>	}</code></span>
+<span class="codeline" id="line-119"><code>	var pp [2]_C_int</code></span>
+<span class="codeline" id="line-120"><code>	err = pipe(&amp;pp)</code></span>
+<span class="codeline" id="line-121"><code>	p[0] = int(pp[0])</code></span>
+<span class="codeline" id="line-122"><code>	p[1] = int(pp[1])</code></span>
+<span class="codeline" id="line-123"><code>	return</code></span>
+<span class="codeline" id="line-124"><code>}</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>//sysnb pipe2(p *[2]_C_int, flags int) (err error)</code></span>
+<span class="codeline" id="line-127"><code></code></span>
+<span class="codeline" id="line-128"><code>func Pipe2(p []int, flags int) (err error) {</code></span>
+<span class="codeline" id="line-129"><code>	if len(p) != 2 {</code></span>
+<span class="codeline" id="line-130"><code>		return EINVAL</code></span>
+<span class="codeline" id="line-131"><code>	}</code></span>
+<span class="codeline" id="line-132"><code>	var pp [2]_C_int</code></span>
+<span class="codeline" id="line-133"><code>	err = pipe2(&amp;pp, flags)</code></span>
+<span class="codeline" id="line-134"><code>	p[0] = int(pp[0])</code></span>
+<span class="codeline" id="line-135"><code>	p[1] = int(pp[1])</code></span>
+<span class="codeline" id="line-136"><code>	return</code></span>
+<span class="codeline" id="line-137"><code>}</code></span>
+<span class="codeline" id="line-138"><code></code></span>
+<span class="codeline" id="line-139"><code>func (r *PtraceRegs) PC() uint64 { return r.Rip }</code></span>
+<span class="codeline" id="line-140"><code></code></span>
+<span class="codeline" id="line-141"><code>func (r *PtraceRegs) SetPC(pc uint64) { r.Rip = pc }</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>func (iov *Iovec) SetLen(length int) {</code></span>
+<span class="codeline" id="line-144"><code>	iov.Len = uint64(length)</code></span>
+<span class="codeline" id="line-145"><code>}</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>func (msghdr *Msghdr) SetControllen(length int) {</code></span>
+<span class="codeline" id="line-148"><code>	msghdr.Controllen = uint64(length)</code></span>
+<span class="codeline" id="line-149"><code>}</code></span>
+<span class="codeline" id="line-150"><code></code></span>
+<span class="codeline" id="line-151"><code>func (cmsg *Cmsghdr) SetLen(length int) {</code></span>
+<span class="codeline" id="line-152"><code>	cmsg.Len = uint64(length)</code></span>
+<span class="codeline" id="line-153"><code>}</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>func rawVforkSyscall(trap, a1 uintptr) (r1 uintptr, err Errno)</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

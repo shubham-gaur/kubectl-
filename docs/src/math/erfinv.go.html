@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: erfinv.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	erfinv.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>/*</code></span>
+<span class="codeline" id="line-8"><code>	Inverse of the floating-point error function.</code></span>
+<span class="codeline" id="line-9"><code>*/</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// This implementation is based on the rational approximation</code></span>
+<span class="codeline" id="line-12"><code>// of percentage points of normal distribution available from</code></span>
+<span class="codeline" id="line-13"><code>// https://www.jstor.org/stable/2347330.</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>const (</code></span>
+<span class="codeline" id="line-16"><code>	// Coefficients for approximation to erf in |x| &lt;= 0.85</code></span>
+<span class="codeline" id="line-17"><code>	a0 = 1.1975323115670912564578e0</code></span>
+<span class="codeline" id="line-18"><code>	a1 = 4.7072688112383978012285e1</code></span>
+<span class="codeline" id="line-19"><code>	a2 = 6.9706266534389598238465e2</code></span>
+<span class="codeline" id="line-20"><code>	a3 = 4.8548868893843886794648e3</code></span>
+<span class="codeline" id="line-21"><code>	a4 = 1.6235862515167575384252e4</code></span>
+<span class="codeline" id="line-22"><code>	a5 = 2.3782041382114385731252e4</code></span>
+<span class="codeline" id="line-23"><code>	a6 = 1.1819493347062294404278e4</code></span>
+<span class="codeline" id="line-24"><code>	a7 = 8.8709406962545514830200e2</code></span>
+<span class="codeline" id="line-25"><code>	b0 = 1.0000000000000000000e0</code></span>
+<span class="codeline" id="line-26"><code>	b1 = 4.2313330701600911252e1</code></span>
+<span class="codeline" id="line-27"><code>	b2 = 6.8718700749205790830e2</code></span>
+<span class="codeline" id="line-28"><code>	b3 = 5.3941960214247511077e3</code></span>
+<span class="codeline" id="line-29"><code>	b4 = 2.1213794301586595867e4</code></span>
+<span class="codeline" id="line-30"><code>	b5 = 3.9307895800092710610e4</code></span>
+<span class="codeline" id="line-31"><code>	b6 = 2.8729085735721942674e4</code></span>
+<span class="codeline" id="line-32"><code>	b7 = 5.2264952788528545610e3</code></span>
+<span class="codeline" id="line-33"><code>	// Coefficients for approximation to erf in 0.85 &lt; |x| &lt;= 1-2*exp(-25)</code></span>
+<span class="codeline" id="line-34"><code>	c0 = 1.42343711074968357734e0</code></span>
+<span class="codeline" id="line-35"><code>	c1 = 4.63033784615654529590e0</code></span>
+<span class="codeline" id="line-36"><code>	c2 = 5.76949722146069140550e0</code></span>
+<span class="codeline" id="line-37"><code>	c3 = 3.64784832476320460504e0</code></span>
+<span class="codeline" id="line-38"><code>	c4 = 1.27045825245236838258e0</code></span>
+<span class="codeline" id="line-39"><code>	c5 = 2.41780725177450611770e-1</code></span>
+<span class="codeline" id="line-40"><code>	c6 = 2.27238449892691845833e-2</code></span>
+<span class="codeline" id="line-41"><code>	c7 = 7.74545014278341407640e-4</code></span>
+<span class="codeline" id="line-42"><code>	d0 = 1.4142135623730950488016887e0</code></span>
+<span class="codeline" id="line-43"><code>	d1 = 2.9036514445419946173133295e0</code></span>
+<span class="codeline" id="line-44"><code>	d2 = 2.3707661626024532365971225e0</code></span>
+<span class="codeline" id="line-45"><code>	d3 = 9.7547832001787427186894837e-1</code></span>
+<span class="codeline" id="line-46"><code>	d4 = 2.0945065210512749128288442e-1</code></span>
+<span class="codeline" id="line-47"><code>	d5 = 2.1494160384252876777097297e-2</code></span>
+<span class="codeline" id="line-48"><code>	d6 = 7.7441459065157709165577218e-4</code></span>
+<span class="codeline" id="line-49"><code>	d7 = 1.4859850019840355905497876e-9</code></span>
+<span class="codeline" id="line-50"><code>	// Coefficients for approximation to erf in 1-2*exp(-25) &lt; |x| &lt; 1</code></span>
+<span class="codeline" id="line-51"><code>	e0 = 6.65790464350110377720e0</code></span>
+<span class="codeline" id="line-52"><code>	e1 = 5.46378491116411436990e0</code></span>
+<span class="codeline" id="line-53"><code>	e2 = 1.78482653991729133580e0</code></span>
+<span class="codeline" id="line-54"><code>	e3 = 2.96560571828504891230e-1</code></span>
+<span class="codeline" id="line-55"><code>	e4 = 2.65321895265761230930e-2</code></span>
+<span class="codeline" id="line-56"><code>	e5 = 1.24266094738807843860e-3</code></span>
+<span class="codeline" id="line-57"><code>	e6 = 2.71155556874348757815e-5</code></span>
+<span class="codeline" id="line-58"><code>	e7 = 2.01033439929228813265e-7</code></span>
+<span class="codeline" id="line-59"><code>	f0 = 1.414213562373095048801689e0</code></span>
+<span class="codeline" id="line-60"><code>	f1 = 8.482908416595164588112026e-1</code></span>
+<span class="codeline" id="line-61"><code>	f2 = 1.936480946950659106176712e-1</code></span>
+<span class="codeline" id="line-62"><code>	f3 = 2.103693768272068968719679e-2</code></span>
+<span class="codeline" id="line-63"><code>	f4 = 1.112800997078859844711555e-3</code></span>
+<span class="codeline" id="line-64"><code>	f5 = 2.611088405080593625138020e-5</code></span>
+<span class="codeline" id="line-65"><code>	f6 = 2.010321207683943062279931e-7</code></span>
+<span class="codeline" id="line-66"><code>	f7 = 2.891024605872965461538222e-15</code></span>
+<span class="codeline" id="line-67"><code>)</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>// Erfinv returns the inverse error function of x.</code></span>
+<span class="codeline" id="line-70"><code>//</code></span>
+<span class="codeline" id="line-71"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-72"><code>//	Erfinv(1) = +Inf</code></span>
+<span class="codeline" id="line-73"><code>//	Erfinv(-1) = -Inf</code></span>
+<span class="codeline" id="line-74"><code>//	Erfinv(x) = NaN if x &lt; -1 or x &gt; 1</code></span>
+<span class="codeline" id="line-75"><code>//	Erfinv(NaN) = NaN</code></span>
+<span class="codeline" id="line-76"><code>func Erfinv(x float64) float64 {</code></span>
+<span class="codeline" id="line-77"><code>	// special cases</code></span>
+<span class="codeline" id="line-78"><code>	if IsNaN(x) || x &lt;= -1 || x &gt;= 1 {</code></span>
+<span class="codeline" id="line-79"><code>		if x == -1 || x == 1 {</code></span>
+<span class="codeline" id="line-80"><code>			return Inf(int(x))</code></span>
+<span class="codeline" id="line-81"><code>		}</code></span>
+<span class="codeline" id="line-82"><code>		return NaN()</code></span>
+<span class="codeline" id="line-83"><code>	}</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>	sign := false</code></span>
+<span class="codeline" id="line-86"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-87"><code>		x = -x</code></span>
+<span class="codeline" id="line-88"><code>		sign = true</code></span>
+<span class="codeline" id="line-89"><code>	}</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>	var ans float64</code></span>
+<span class="codeline" id="line-92"><code>	if x &lt;= 0.85 { // |x| &lt;= 0.85</code></span>
+<span class="codeline" id="line-93"><code>		r := 0.180625 - 0.25*x*x</code></span>
+<span class="codeline" id="line-94"><code>		z1 := ((((((a7*r+a6)*r+a5)*r+a4)*r+a3)*r+a2)*r+a1)*r + a0</code></span>
+<span class="codeline" id="line-95"><code>		z2 := ((((((b7*r+b6)*r+b5)*r+b4)*r+b3)*r+b2)*r+b1)*r + b0</code></span>
+<span class="codeline" id="line-96"><code>		ans = (x * z1) / z2</code></span>
+<span class="codeline" id="line-97"><code>	} else {</code></span>
+<span class="codeline" id="line-98"><code>		var z1, z2 float64</code></span>
+<span class="codeline" id="line-99"><code>		r := Sqrt(Ln2 - Log(1.0-x))</code></span>
+<span class="codeline" id="line-100"><code>		if r &lt;= 5.0 {</code></span>
+<span class="codeline" id="line-101"><code>			r -= 1.6</code></span>
+<span class="codeline" id="line-102"><code>			z1 = ((((((c7*r+c6)*r+c5)*r+c4)*r+c3)*r+c2)*r+c1)*r + c0</code></span>
+<span class="codeline" id="line-103"><code>			z2 = ((((((d7*r+d6)*r+d5)*r+d4)*r+d3)*r+d2)*r+d1)*r + d0</code></span>
+<span class="codeline" id="line-104"><code>		} else {</code></span>
+<span class="codeline" id="line-105"><code>			r -= 5.0</code></span>
+<span class="codeline" id="line-106"><code>			z1 = ((((((e7*r+e6)*r+e5)*r+e4)*r+e3)*r+e2)*r+e1)*r + e0</code></span>
+<span class="codeline" id="line-107"><code>			z2 = ((((((f7*r+f6)*r+f5)*r+f4)*r+f3)*r+f2)*r+f1)*r + f0</code></span>
+<span class="codeline" id="line-108"><code>		}</code></span>
+<span class="codeline" id="line-109"><code>		ans = z1 / z2</code></span>
+<span class="codeline" id="line-110"><code>	}</code></span>
+<span class="codeline" id="line-111"><code></code></span>
+<span class="codeline" id="line-112"><code>	if sign {</code></span>
+<span class="codeline" id="line-113"><code>		return -ans</code></span>
+<span class="codeline" id="line-114"><code>	}</code></span>
+<span class="codeline" id="line-115"><code>	return ans</code></span>
+<span class="codeline" id="line-116"><code>}</code></span>
+<span class="codeline" id="line-117"><code></code></span>
+<span class="codeline" id="line-118"><code>// Erfcinv returns the inverse of Erfc(x).</code></span>
+<span class="codeline" id="line-119"><code>//</code></span>
+<span class="codeline" id="line-120"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-121"><code>//	Erfcinv(0) = +Inf</code></span>
+<span class="codeline" id="line-122"><code>//	Erfcinv(2) = -Inf</code></span>
+<span class="codeline" id="line-123"><code>//	Erfcinv(x) = NaN if x &lt; 0 or x &gt; 2</code></span>
+<span class="codeline" id="line-124"><code>//	Erfcinv(NaN) = NaN</code></span>
+<span class="codeline" id="line-125"><code>func Erfcinv(x float64) float64 {</code></span>
+<span class="codeline" id="line-126"><code>	return Erfinv(1 - x)</code></span>
+<span class="codeline" id="line-127"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: file_posix.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	file_posix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd js,wasm linux netbsd openbsd solaris windows</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package os</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"runtime"</code></span>
+<span class="codeline" id="line-11"><code>	"syscall"</code></span>
+<span class="codeline" id="line-12"><code>	"time"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>func sigpipe() // implemented in package runtime</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// Close closes the File, rendering it unusable for I/O.</code></span>
+<span class="codeline" id="line-18"><code>// On files that support SetDeadline, any pending I/O operations will</code></span>
+<span class="codeline" id="line-19"><code>// be canceled and return immediately with an error.</code></span>
+<span class="codeline" id="line-20"><code>// Close will return an error if it has already been called.</code></span>
+<span class="codeline" id="line-21"><code>func (f *File) Close() error {</code></span>
+<span class="codeline" id="line-22"><code>	if f == nil {</code></span>
+<span class="codeline" id="line-23"><code>		return ErrInvalid</code></span>
+<span class="codeline" id="line-24"><code>	}</code></span>
+<span class="codeline" id="line-25"><code>	return f.file.close()</code></span>
+<span class="codeline" id="line-26"><code>}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>// read reads up to len(b) bytes from the File.</code></span>
+<span class="codeline" id="line-29"><code>// It returns the number of bytes read and an error, if any.</code></span>
+<span class="codeline" id="line-30"><code>func (f *File) read(b []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-31"><code>	n, err = f.pfd.Read(b)</code></span>
+<span class="codeline" id="line-32"><code>	runtime.KeepAlive(f)</code></span>
+<span class="codeline" id="line-33"><code>	return n, err</code></span>
+<span class="codeline" id="line-34"><code>}</code></span>
+<span class="codeline" id="line-35"><code></code></span>
+<span class="codeline" id="line-36"><code>// pread reads len(b) bytes from the File starting at byte offset off.</code></span>
+<span class="codeline" id="line-37"><code>// It returns the number of bytes read and the error, if any.</code></span>
+<span class="codeline" id="line-38"><code>// EOF is signaled by a zero count with err set to nil.</code></span>
+<span class="codeline" id="line-39"><code>func (f *File) pread(b []byte, off int64) (n int, err error) {</code></span>
+<span class="codeline" id="line-40"><code>	n, err = f.pfd.Pread(b, off)</code></span>
+<span class="codeline" id="line-41"><code>	runtime.KeepAlive(f)</code></span>
+<span class="codeline" id="line-42"><code>	return n, err</code></span>
+<span class="codeline" id="line-43"><code>}</code></span>
+<span class="codeline" id="line-44"><code></code></span>
+<span class="codeline" id="line-45"><code>// write writes len(b) bytes to the File.</code></span>
+<span class="codeline" id="line-46"><code>// It returns the number of bytes written and an error, if any.</code></span>
+<span class="codeline" id="line-47"><code>func (f *File) write(b []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-48"><code>	n, err = f.pfd.Write(b)</code></span>
+<span class="codeline" id="line-49"><code>	runtime.KeepAlive(f)</code></span>
+<span class="codeline" id="line-50"><code>	return n, err</code></span>
+<span class="codeline" id="line-51"><code>}</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>// pwrite writes len(b) bytes to the File starting at byte offset off.</code></span>
+<span class="codeline" id="line-54"><code>// It returns the number of bytes written and an error, if any.</code></span>
+<span class="codeline" id="line-55"><code>func (f *File) pwrite(b []byte, off int64) (n int, err error) {</code></span>
+<span class="codeline" id="line-56"><code>	n, err = f.pfd.Pwrite(b, off)</code></span>
+<span class="codeline" id="line-57"><code>	runtime.KeepAlive(f)</code></span>
+<span class="codeline" id="line-58"><code>	return n, err</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>// syscallMode returns the syscall-specific mode bits from Go's portable mode bits.</code></span>
+<span class="codeline" id="line-62"><code>func syscallMode(i FileMode) (o uint32) {</code></span>
+<span class="codeline" id="line-63"><code>	o |= uint32(i.Perm())</code></span>
+<span class="codeline" id="line-64"><code>	if i&amp;ModeSetuid != 0 {</code></span>
+<span class="codeline" id="line-65"><code>		o |= syscall.S_ISUID</code></span>
+<span class="codeline" id="line-66"><code>	}</code></span>
+<span class="codeline" id="line-67"><code>	if i&amp;ModeSetgid != 0 {</code></span>
+<span class="codeline" id="line-68"><code>		o |= syscall.S_ISGID</code></span>
+<span class="codeline" id="line-69"><code>	}</code></span>
+<span class="codeline" id="line-70"><code>	if i&amp;ModeSticky != 0 {</code></span>
+<span class="codeline" id="line-71"><code>		o |= syscall.S_ISVTX</code></span>
+<span class="codeline" id="line-72"><code>	}</code></span>
+<span class="codeline" id="line-73"><code>	// No mapping for Go's ModeTemporary (plan9 only).</code></span>
+<span class="codeline" id="line-74"><code>	return</code></span>
+<span class="codeline" id="line-75"><code>}</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>// See docs in file.go:Chmod.</code></span>
+<span class="codeline" id="line-78"><code>func chmod(name string, mode FileMode) error {</code></span>
+<span class="codeline" id="line-79"><code>	longName := fixLongPath(name)</code></span>
+<span class="codeline" id="line-80"><code>	e := ignoringEINTR(func() error {</code></span>
+<span class="codeline" id="line-81"><code>		return syscall.Chmod(longName, syscallMode(mode))</code></span>
+<span class="codeline" id="line-82"><code>	})</code></span>
+<span class="codeline" id="line-83"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-84"><code>		return &amp;PathError{Op: "chmod", Path: name, Err: e}</code></span>
+<span class="codeline" id="line-85"><code>	}</code></span>
+<span class="codeline" id="line-86"><code>	return nil</code></span>
+<span class="codeline" id="line-87"><code>}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>// See docs in file.go:(*File).Chmod.</code></span>
+<span class="codeline" id="line-90"><code>func (f *File) chmod(mode FileMode) error {</code></span>
+<span class="codeline" id="line-91"><code>	if err := f.checkValid("chmod"); err != nil {</code></span>
+<span class="codeline" id="line-92"><code>		return err</code></span>
+<span class="codeline" id="line-93"><code>	}</code></span>
+<span class="codeline" id="line-94"><code>	if e := f.pfd.Fchmod(syscallMode(mode)); e != nil {</code></span>
+<span class="codeline" id="line-95"><code>		return f.wrapErr("chmod", e)</code></span>
+<span class="codeline" id="line-96"><code>	}</code></span>
+<span class="codeline" id="line-97"><code>	return nil</code></span>
+<span class="codeline" id="line-98"><code>}</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>// Chown changes the numeric uid and gid of the named file.</code></span>
+<span class="codeline" id="line-101"><code>// If the file is a symbolic link, it changes the uid and gid of the link's target.</code></span>
+<span class="codeline" id="line-102"><code>// A uid or gid of -1 means to not change that value.</code></span>
+<span class="codeline" id="line-103"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-104"><code>//</code></span>
+<span class="codeline" id="line-105"><code>// On Windows or Plan 9, Chown always returns the syscall.EWINDOWS or</code></span>
+<span class="codeline" id="line-106"><code>// EPLAN9 error, wrapped in *PathError.</code></span>
+<span class="codeline" id="line-107"><code>func Chown(name string, uid, gid int) error {</code></span>
+<span class="codeline" id="line-108"><code>	e := ignoringEINTR(func() error {</code></span>
+<span class="codeline" id="line-109"><code>		return syscall.Chown(name, uid, gid)</code></span>
+<span class="codeline" id="line-110"><code>	})</code></span>
+<span class="codeline" id="line-111"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-112"><code>		return &amp;PathError{Op: "chown", Path: name, Err: e}</code></span>
+<span class="codeline" id="line-113"><code>	}</code></span>
+<span class="codeline" id="line-114"><code>	return nil</code></span>
+<span class="codeline" id="line-115"><code>}</code></span>
+<span class="codeline" id="line-116"><code></code></span>
+<span class="codeline" id="line-117"><code>// Lchown changes the numeric uid and gid of the named file.</code></span>
+<span class="codeline" id="line-118"><code>// If the file is a symbolic link, it changes the uid and gid of the link itself.</code></span>
+<span class="codeline" id="line-119"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-120"><code>//</code></span>
+<span class="codeline" id="line-121"><code>// On Windows, it always returns the syscall.EWINDOWS error, wrapped</code></span>
+<span class="codeline" id="line-122"><code>// in *PathError.</code></span>
+<span class="codeline" id="line-123"><code>func Lchown(name string, uid, gid int) error {</code></span>
+<span class="codeline" id="line-124"><code>	e := ignoringEINTR(func() error {</code></span>
+<span class="codeline" id="line-125"><code>		return syscall.Lchown(name, uid, gid)</code></span>
+<span class="codeline" id="line-126"><code>	})</code></span>
+<span class="codeline" id="line-127"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-128"><code>		return &amp;PathError{Op: "lchown", Path: name, Err: e}</code></span>
+<span class="codeline" id="line-129"><code>	}</code></span>
+<span class="codeline" id="line-130"><code>	return nil</code></span>
+<span class="codeline" id="line-131"><code>}</code></span>
+<span class="codeline" id="line-132"><code></code></span>
+<span class="codeline" id="line-133"><code>// Chown changes the numeric uid and gid of the named file.</code></span>
+<span class="codeline" id="line-134"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-135"><code>//</code></span>
+<span class="codeline" id="line-136"><code>// On Windows, it always returns the syscall.EWINDOWS error, wrapped</code></span>
+<span class="codeline" id="line-137"><code>// in *PathError.</code></span>
+<span class="codeline" id="line-138"><code>func (f *File) Chown(uid, gid int) error {</code></span>
+<span class="codeline" id="line-139"><code>	if err := f.checkValid("chown"); err != nil {</code></span>
+<span class="codeline" id="line-140"><code>		return err</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>	if e := f.pfd.Fchown(uid, gid); e != nil {</code></span>
+<span class="codeline" id="line-143"><code>		return f.wrapErr("chown", e)</code></span>
+<span class="codeline" id="line-144"><code>	}</code></span>
+<span class="codeline" id="line-145"><code>	return nil</code></span>
+<span class="codeline" id="line-146"><code>}</code></span>
+<span class="codeline" id="line-147"><code></code></span>
+<span class="codeline" id="line-148"><code>// Truncate changes the size of the file.</code></span>
+<span class="codeline" id="line-149"><code>// It does not change the I/O offset.</code></span>
+<span class="codeline" id="line-150"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-151"><code>func (f *File) Truncate(size int64) error {</code></span>
+<span class="codeline" id="line-152"><code>	if err := f.checkValid("truncate"); err != nil {</code></span>
+<span class="codeline" id="line-153"><code>		return err</code></span>
+<span class="codeline" id="line-154"><code>	}</code></span>
+<span class="codeline" id="line-155"><code>	if e := f.pfd.Ftruncate(size); e != nil {</code></span>
+<span class="codeline" id="line-156"><code>		return f.wrapErr("truncate", e)</code></span>
+<span class="codeline" id="line-157"><code>	}</code></span>
+<span class="codeline" id="line-158"><code>	return nil</code></span>
+<span class="codeline" id="line-159"><code>}</code></span>
+<span class="codeline" id="line-160"><code></code></span>
+<span class="codeline" id="line-161"><code>// Sync commits the current contents of the file to stable storage.</code></span>
+<span class="codeline" id="line-162"><code>// Typically, this means flushing the file system's in-memory copy</code></span>
+<span class="codeline" id="line-163"><code>// of recently written data to disk.</code></span>
+<span class="codeline" id="line-164"><code>func (f *File) Sync() error {</code></span>
+<span class="codeline" id="line-165"><code>	if err := f.checkValid("sync"); err != nil {</code></span>
+<span class="codeline" id="line-166"><code>		return err</code></span>
+<span class="codeline" id="line-167"><code>	}</code></span>
+<span class="codeline" id="line-168"><code>	if e := f.pfd.Fsync(); e != nil {</code></span>
+<span class="codeline" id="line-169"><code>		return f.wrapErr("sync", e)</code></span>
+<span class="codeline" id="line-170"><code>	}</code></span>
+<span class="codeline" id="line-171"><code>	return nil</code></span>
+<span class="codeline" id="line-172"><code>}</code></span>
+<span class="codeline" id="line-173"><code></code></span>
+<span class="codeline" id="line-174"><code>// Chtimes changes the access and modification times of the named</code></span>
+<span class="codeline" id="line-175"><code>// file, similar to the Unix utime() or utimes() functions.</code></span>
+<span class="codeline" id="line-176"><code>//</code></span>
+<span class="codeline" id="line-177"><code>// The underlying filesystem may truncate or round the values to a</code></span>
+<span class="codeline" id="line-178"><code>// less precise time unit.</code></span>
+<span class="codeline" id="line-179"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-180"><code>func Chtimes(name string, atime time.Time, mtime time.Time) error {</code></span>
+<span class="codeline" id="line-181"><code>	var utimes [2]syscall.Timespec</code></span>
+<span class="codeline" id="line-182"><code>	utimes[0] = syscall.NsecToTimespec(atime.UnixNano())</code></span>
+<span class="codeline" id="line-183"><code>	utimes[1] = syscall.NsecToTimespec(mtime.UnixNano())</code></span>
+<span class="codeline" id="line-184"><code>	if e := syscall.UtimesNano(fixLongPath(name), utimes[0:]); e != nil {</code></span>
+<span class="codeline" id="line-185"><code>		return &amp;PathError{Op: "chtimes", Path: name, Err: e}</code></span>
+<span class="codeline" id="line-186"><code>	}</code></span>
+<span class="codeline" id="line-187"><code>	return nil</code></span>
+<span class="codeline" id="line-188"><code>}</code></span>
+<span class="codeline" id="line-189"><code></code></span>
+<span class="codeline" id="line-190"><code>// Chdir changes the current working directory to the file,</code></span>
+<span class="codeline" id="line-191"><code>// which must be a directory.</code></span>
+<span class="codeline" id="line-192"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-193"><code>func (f *File) Chdir() error {</code></span>
+<span class="codeline" id="line-194"><code>	if err := f.checkValid("chdir"); err != nil {</code></span>
+<span class="codeline" id="line-195"><code>		return err</code></span>
+<span class="codeline" id="line-196"><code>	}</code></span>
+<span class="codeline" id="line-197"><code>	if e := f.pfd.Fchdir(); e != nil {</code></span>
+<span class="codeline" id="line-198"><code>		return f.wrapErr("chdir", e)</code></span>
+<span class="codeline" id="line-199"><code>	}</code></span>
+<span class="codeline" id="line-200"><code>	return nil</code></span>
+<span class="codeline" id="line-201"><code>}</code></span>
+<span class="codeline" id="line-202"><code></code></span>
+<span class="codeline" id="line-203"><code>// setDeadline sets the read and write deadline.</code></span>
+<span class="codeline" id="line-204"><code>func (f *File) setDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-205"><code>	if err := f.checkValid("SetDeadline"); err != nil {</code></span>
+<span class="codeline" id="line-206"><code>		return err</code></span>
+<span class="codeline" id="line-207"><code>	}</code></span>
+<span class="codeline" id="line-208"><code>	return f.pfd.SetDeadline(t)</code></span>
+<span class="codeline" id="line-209"><code>}</code></span>
+<span class="codeline" id="line-210"><code></code></span>
+<span class="codeline" id="line-211"><code>// setReadDeadline sets the read deadline.</code></span>
+<span class="codeline" id="line-212"><code>func (f *File) setReadDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-213"><code>	if err := f.checkValid("SetReadDeadline"); err != nil {</code></span>
+<span class="codeline" id="line-214"><code>		return err</code></span>
+<span class="codeline" id="line-215"><code>	}</code></span>
+<span class="codeline" id="line-216"><code>	return f.pfd.SetReadDeadline(t)</code></span>
+<span class="codeline" id="line-217"><code>}</code></span>
+<span class="codeline" id="line-218"><code></code></span>
+<span class="codeline" id="line-219"><code>// setWriteDeadline sets the write deadline.</code></span>
+<span class="codeline" id="line-220"><code>func (f *File) setWriteDeadline(t time.Time) error {</code></span>
+<span class="codeline" id="line-221"><code>	if err := f.checkValid("SetWriteDeadline"); err != nil {</code></span>
+<span class="codeline" id="line-222"><code>		return err</code></span>
+<span class="codeline" id="line-223"><code>	}</code></span>
+<span class="codeline" id="line-224"><code>	return f.pfd.SetWriteDeadline(t)</code></span>
+<span class="codeline" id="line-225"><code>}</code></span>
+<span class="codeline" id="line-226"><code></code></span>
+<span class="codeline" id="line-227"><code>// checkValid checks whether f is valid for use.</code></span>
+<span class="codeline" id="line-228"><code>// If not, it returns an appropriate error, perhaps incorporating the operation name op.</code></span>
+<span class="codeline" id="line-229"><code>func (f *File) checkValid(op string) error {</code></span>
+<span class="codeline" id="line-230"><code>	if f == nil {</code></span>
+<span class="codeline" id="line-231"><code>		return ErrInvalid</code></span>
+<span class="codeline" id="line-232"><code>	}</code></span>
+<span class="codeline" id="line-233"><code>	return nil</code></span>
+<span class="codeline" id="line-234"><code>}</code></span>
+<span class="codeline" id="line-235"><code></code></span>
+<span class="codeline" id="line-236"><code>// ignoringEINTR makes a function call and repeats it if it returns an</code></span>
+<span class="codeline" id="line-237"><code>// EINTR error. This appears to be required even though we install all</code></span>
+<span class="codeline" id="line-238"><code>// signal handlers with SA_RESTART: see #22838, #38033, #38836, #40846.</code></span>
+<span class="codeline" id="line-239"><code>// Also #20400 and #36644 are issues in which a signal handler is</code></span>
+<span class="codeline" id="line-240"><code>// installed without setting SA_RESTART. None of these are the common case,</code></span>
+<span class="codeline" id="line-241"><code>// but there are enough of them that it seems that we can't avoid</code></span>
+<span class="codeline" id="line-242"><code>// an EINTR loop.</code></span>
+<span class="codeline" id="line-243"><code>func ignoringEINTR(fn func() error) error {</code></span>
+<span class="codeline" id="line-244"><code>	for {</code></span>
+<span class="codeline" id="line-245"><code>		err := fn()</code></span>
+<span class="codeline" id="line-246"><code>		if err != syscall.EINTR {</code></span>
+<span class="codeline" id="line-247"><code>			return err</code></span>
+<span class="codeline" id="line-248"><code>		}</code></span>
+<span class="codeline" id="line-249"><code>	}</code></span>
+<span class="codeline" id="line-250"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

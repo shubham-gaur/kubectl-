@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: os_linux_generic.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	os_linux_generic.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build !mips</code></span>
+<span class="codeline" id="line-6"><code>// +build !mipsle</code></span>
+<span class="codeline" id="line-7"><code>// +build !mips64</code></span>
+<span class="codeline" id="line-8"><code>// +build !mips64le</code></span>
+<span class="codeline" id="line-9"><code>// +build !s390x</code></span>
+<span class="codeline" id="line-10"><code>// +build !ppc64</code></span>
+<span class="codeline" id="line-11"><code>// +build linux</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>package runtime</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>const (</code></span>
+<span class="codeline" id="line-16"><code>	_SS_DISABLE  = 2</code></span>
+<span class="codeline" id="line-17"><code>	_NSIG        = 65</code></span>
+<span class="codeline" id="line-18"><code>	_SI_USER     = 0</code></span>
+<span class="codeline" id="line-19"><code>	_SIG_BLOCK   = 0</code></span>
+<span class="codeline" id="line-20"><code>	_SIG_UNBLOCK = 1</code></span>
+<span class="codeline" id="line-21"><code>	_SIG_SETMASK = 2</code></span>
+<span class="codeline" id="line-22"><code>)</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>// It's hard to tease out exactly how big a Sigset is, but</code></span>
+<span class="codeline" id="line-25"><code>// rt_sigprocmask crashes if we get it wrong, so if binaries</code></span>
+<span class="codeline" id="line-26"><code>// are running, this is right.</code></span>
+<span class="codeline" id="line-27"><code>type sigset [2]uint32</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>var sigset_all = sigset{^uint32(0), ^uint32(0)}</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-32"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-33"><code>func sigaddset(mask *sigset, i int) {</code></span>
+<span class="codeline" id="line-34"><code>	(*mask)[(i-1)/32] |= 1 &lt;&lt; ((uint32(i) - 1) &amp; 31)</code></span>
+<span class="codeline" id="line-35"><code>}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>func sigdelset(mask *sigset, i int) {</code></span>
+<span class="codeline" id="line-38"><code>	(*mask)[(i-1)/32] &amp;^= 1 &lt;&lt; ((uint32(i) - 1) &amp; 31)</code></span>
+<span class="codeline" id="line-39"><code>}</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-42"><code>func sigfillset(mask *uint64) {</code></span>
+<span class="codeline" id="line-43"><code>	*mask = ^uint64(0)</code></span>
+<span class="codeline" id="line-44"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

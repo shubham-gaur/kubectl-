@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: logger.go in package github.com/shubham-gaur/kubectl++/logger</title>
+<link href="../../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	logger.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../../pkg/github.com/shubham-gaur/kubectl++/logger.html">github.com/shubham-gaur/kubectl++/logger</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>package logger</code></span>
+<span class="codeline" id="line-2"><code></code></span>
+<span class="codeline" id="line-3"><code>import (</code></span>
+<span class="codeline" id="line-4"><code>	"encoding/json"</code></span>
+<span class="codeline" id="line-5"><code>	"fmt"</code></span>
+<span class="codeline" id="line-6"><code>	"log"</code></span>
+<span class="codeline" id="line-7"><code>	"os"</code></span>
+<span class="codeline" id="line-8"><code>	"runtime"</code></span>
+<span class="codeline" id="line-9"><code>	"strings"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>var (</code></span>
+<span class="codeline" id="line-13"><code>	Error    *log.Logger</code></span>
+<span class="codeline" id="line-14"><code>	Warning  *log.Logger</code></span>
+<span class="codeline" id="line-15"><code>	Info     *log.Logger</code></span>
+<span class="codeline" id="line-16"><code>	Debug    *log.Logger</code></span>
+<span class="codeline" id="line-17"><code>	Critical *log.Logger</code></span>
+<span class="codeline" id="line-18"><code>)</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>var (</code></span>
+<span class="codeline" id="line-21"><code>	Black   = Color("\033[1;30m%s\033[0m")</code></span>
+<span class="codeline" id="line-22"><code>	Red     = Color("\033[1;31m%s\033[0m")</code></span>
+<span class="codeline" id="line-23"><code>	Green   = Color("\033[1;32m%s\033[0m")</code></span>
+<span class="codeline" id="line-24"><code>	Yellow  = Color("\033[1;33m%s\033[0m")</code></span>
+<span class="codeline" id="line-25"><code>	Purple  = Color("\033[1;34m%s\033[0m")</code></span>
+<span class="codeline" id="line-26"><code>	Magenta = Color("\033[1;35m%s\033[0m")</code></span>
+<span class="codeline" id="line-27"><code>	Teal    = Color("\033[1;36m%s\033[0m")</code></span>
+<span class="codeline" id="line-28"><code>	White   = Color("\033[1;37m%s\033[0m")</code></span>
+<span class="codeline" id="line-29"><code>	IGreen  = Color("\033[1;92m%s\033[0m")</code></span>
+<span class="codeline" id="line-30"><code>	IYellow = Color("\033[1;93m%s\033[0m")</code></span>
+<span class="codeline" id="line-31"><code>	ICyan   = Color("\033[1;96m%s\033[0m")</code></span>
+<span class="codeline" id="line-32"><code>)</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>var (</code></span>
+<span class="codeline" id="line-35"><code>	info     = ICyan</code></span>
+<span class="codeline" id="line-36"><code>	warn     = IYellow</code></span>
+<span class="codeline" id="line-37"><code>	error    = Red</code></span>
+<span class="codeline" id="line-38"><code>	debug    = IGreen</code></span>
+<span class="codeline" id="line-39"><code>	critical = Red</code></span>
+<span class="codeline" id="line-40"><code>)</code></span>
+<span class="codeline" id="line-41"><code></code></span>
+<span class="codeline" id="line-42"><code>func Color(colorString string) func(...interface{}) string {</code></span>
+<span class="codeline" id="line-43"><code>	sprint := func(args ...interface{}) string {</code></span>
+<span class="codeline" id="line-44"><code>		return fmt.Sprintf(colorString,</code></span>
+<span class="codeline" id="line-45"><code>			fmt.Sprint(args...))</code></span>
+<span class="codeline" id="line-46"><code>	}</code></span>
+<span class="codeline" id="line-47"><code>	return sprint</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>func init() {</code></span>
+<span class="codeline" id="line-51"><code>	// file, err := os.OpenFile("logs.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)</code></span>
+<span class="codeline" id="line-52"><code>	// if err != nil {</code></span>
+<span class="codeline" id="line-53"><code>	// 	log.Info.Print(err)</code></span>
+<span class="codeline" id="line-54"><code>	// }</code></span>
+<span class="codeline" id="line-55"><code>	Info = log.New(os.Stdout, info("[kubectl++|INFO.....] "), log.Lmsgprefix)</code></span>
+<span class="codeline" id="line-56"><code>	Warning = log.New(os.Stdout, warn("[kubectl++|WARNING?!] "), log.Lmsgprefix)</code></span>
+<span class="codeline" id="line-57"><code>	Error = log.New(os.Stderr, error("[kubectl++|ERROR___X] "), log.Lmsgprefix)</code></span>
+<span class="codeline" id="line-58"><code>	Debug = log.New(os.Stdout, debug("[kubectl++|DEBUG__??] "), log.Ldate|log.Ltime|log.Lshortfile)</code></span>
+<span class="codeline" id="line-59"><code>	Critical = log.New(os.Stdout, critical("[kubectl++|CRITICAL_‼] "), log.Ldate|log.Ltime|log.Llongfile)</code></span>
+<span class="codeline" id="line-60"><code>}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>func PrintDebugMap(funcName string, m interface{}) {</code></span>
+<span class="codeline" id="line-63"><code>	data, err := json.MarshalIndent(m, "", "\t|")</code></span>
+<span class="codeline" id="line-64"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-65"><code>		log.Printf("logger:: json parse err: ", err)</code></span>
+<span class="codeline" id="line-66"><code>		return</code></span>
+<span class="codeline" id="line-67"><code>	}</code></span>
+<span class="codeline" id="line-68"><code>	Debug.Printf("%v:\n%v", funcName, string(data))</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>func PrintSpecial(funcName string, output string) {</code></span>
+<span class="codeline" id="line-72"><code>	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")</code></span>
+<span class="codeline" id="line-73"><code>	fmt.Print(output)</code></span>
+<span class="codeline" id="line-74"><code>	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")</code></span>
+<span class="codeline" id="line-75"><code>	Info.Printf("[✔️ ] Command executed successfully 😄 ")</code></span>
+<span class="codeline" id="line-76"><code>}</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>func GetCurrentFunctionName() string {</code></span>
+<span class="codeline" id="line-79"><code>	funcName := strings.Split(getFrame(1).Function, "/")</code></span>
+<span class="codeline" id="line-80"><code>	return fmt.Sprintf("%-10v |", funcName[len(funcName)-1])</code></span>
+<span class="codeline" id="line-81"><code>}</code></span>
+<span class="codeline" id="line-82"><code></code></span>
+<span class="codeline" id="line-83"><code>func GetCallerFunctionName() string {</code></span>
+<span class="codeline" id="line-84"><code>	return getFrame(2).Function</code></span>
+<span class="codeline" id="line-85"><code>}</code></span>
+<span class="codeline" id="line-86"><code></code></span>
+<span class="codeline" id="line-87"><code>func getFrame(skipFrames int) runtime.Frame {</code></span>
+<span class="codeline" id="line-88"><code>	// We need the frame at index skipFrames+2, since we never want runtime.Callers and getFrame</code></span>
+<span class="codeline" id="line-89"><code>	targetFrameIndex := skipFrames + 2</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>	// Set size to targetFrameIndex+2 to ensure we have room for one more caller than we need</code></span>
+<span class="codeline" id="line-92"><code>	programCounters := make([]uintptr, targetFrameIndex+2)</code></span>
+<span class="codeline" id="line-93"><code>	n := runtime.Callers(0, programCounters)</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>	frame := runtime.Frame{Function: "unknown"}</code></span>
+<span class="codeline" id="line-96"><code>	if n &gt; 0 {</code></span>
+<span class="codeline" id="line-97"><code>		frames := runtime.CallersFrames(programCounters[:n])</code></span>
+<span class="codeline" id="line-98"><code>		for more, frameIndex := true, 0; more &amp;&amp; frameIndex &lt;= targetFrameIndex; frameIndex++ {</code></span>
+<span class="codeline" id="line-99"><code>			var frameCandidate runtime.Frame</code></span>
+<span class="codeline" id="line-100"><code>			frameCandidate, more = frames.Next()</code></span>
+<span class="codeline" id="line-101"><code>			if frameIndex == targetFrameIndex {</code></span>
+<span class="codeline" id="line-102"><code>				frame = frameCandidate</code></span>
+<span class="codeline" id="line-103"><code>			}</code></span>
+<span class="codeline" id="line-104"><code>		}</code></span>
+<span class="codeline" id="line-105"><code>	}</code></span>
+<span class="codeline" id="line-106"><code>	return frame</code></span>
+<span class="codeline" id="line-107"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

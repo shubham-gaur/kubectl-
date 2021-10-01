@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: gamma.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	gamma.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// The original C code, the long comment, and the constants</code></span>
+<span class="codeline" id="line-8"><code>// below are from http://netlib.sandia.gov/cephes/cprob/gamma.c.</code></span>
+<span class="codeline" id="line-9"><code>// The go code is a simplified version of the original C.</code></span>
+<span class="codeline" id="line-10"><code>//</code></span>
+<span class="codeline" id="line-11"><code>//      tgamma.c</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>//      Gamma function</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// SYNOPSIS:</code></span>
+<span class="codeline" id="line-16"><code>//</code></span>
+<span class="codeline" id="line-17"><code>// double x, y, tgamma();</code></span>
+<span class="codeline" id="line-18"><code>// extern int signgam;</code></span>
+<span class="codeline" id="line-19"><code>//</code></span>
+<span class="codeline" id="line-20"><code>// y = tgamma( x );</code></span>
+<span class="codeline" id="line-21"><code>//</code></span>
+<span class="codeline" id="line-22"><code>// DESCRIPTION:</code></span>
+<span class="codeline" id="line-23"><code>//</code></span>
+<span class="codeline" id="line-24"><code>// Returns gamma function of the argument. The result is</code></span>
+<span class="codeline" id="line-25"><code>// correctly signed, and the sign (+1 or -1) is also</code></span>
+<span class="codeline" id="line-26"><code>// returned in a global (extern) variable named signgam.</code></span>
+<span class="codeline" id="line-27"><code>// This variable is also filled in by the logarithmic gamma</code></span>
+<span class="codeline" id="line-28"><code>// function lgamma().</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>// Arguments |x| &lt;= 34 are reduced by recurrence and the function</code></span>
+<span class="codeline" id="line-31"><code>// approximated by a rational function of degree 6/7 in the</code></span>
+<span class="codeline" id="line-32"><code>// interval (2,3).  Large arguments are handled by Stirling's</code></span>
+<span class="codeline" id="line-33"><code>// formula. Large negative arguments are made positive using</code></span>
+<span class="codeline" id="line-34"><code>// a reflection formula.</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>// ACCURACY:</code></span>
+<span class="codeline" id="line-37"><code>//</code></span>
+<span class="codeline" id="line-38"><code>//                      Relative error:</code></span>
+<span class="codeline" id="line-39"><code>// arithmetic   domain     # trials      peak         rms</code></span>
+<span class="codeline" id="line-40"><code>//    DEC      -34, 34      10000       1.3e-16     2.5e-17</code></span>
+<span class="codeline" id="line-41"><code>//    IEEE    -170,-33      20000       2.3e-15     3.3e-16</code></span>
+<span class="codeline" id="line-42"><code>//    IEEE     -33,  33     20000       9.4e-16     2.2e-16</code></span>
+<span class="codeline" id="line-43"><code>//    IEEE      33, 171.6   20000       2.3e-15     3.2e-16</code></span>
+<span class="codeline" id="line-44"><code>//</code></span>
+<span class="codeline" id="line-45"><code>// Error for arguments outside the test range will be larger</code></span>
+<span class="codeline" id="line-46"><code>// owing to error amplification by the exponential function.</code></span>
+<span class="codeline" id="line-47"><code>//</code></span>
+<span class="codeline" id="line-48"><code>// Cephes Math Library Release 2.8:  June, 2000</code></span>
+<span class="codeline" id="line-49"><code>// Copyright 1984, 1987, 1989, 1992, 2000 by Stephen L. Moshier</code></span>
+<span class="codeline" id="line-50"><code>//</code></span>
+<span class="codeline" id="line-51"><code>// The readme file at http://netlib.sandia.gov/cephes/ says:</code></span>
+<span class="codeline" id="line-52"><code>//    Some software in this archive may be from the book _Methods and</code></span>
+<span class="codeline" id="line-53"><code>// Programs for Mathematical Functions_ (Prentice-Hall or Simon &amp; Schuster</code></span>
+<span class="codeline" id="line-54"><code>// International, 1989) or from the Cephes Mathematical Library, a</code></span>
+<span class="codeline" id="line-55"><code>// commercial product. In either event, it is copyrighted by the author.</code></span>
+<span class="codeline" id="line-56"><code>// What you see here may be used freely but it comes with no support or</code></span>
+<span class="codeline" id="line-57"><code>// guarantee.</code></span>
+<span class="codeline" id="line-58"><code>//</code></span>
+<span class="codeline" id="line-59"><code>//   The two known misprints in the book are repaired here in the</code></span>
+<span class="codeline" id="line-60"><code>// source listings for the gamma function and the incomplete beta</code></span>
+<span class="codeline" id="line-61"><code>// integral.</code></span>
+<span class="codeline" id="line-62"><code>//</code></span>
+<span class="codeline" id="line-63"><code>//   Stephen L. Moshier</code></span>
+<span class="codeline" id="line-64"><code>//   moshier@na-net.ornl.gov</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>var _gamP = [...]float64{</code></span>
+<span class="codeline" id="line-67"><code>	1.60119522476751861407e-04,</code></span>
+<span class="codeline" id="line-68"><code>	1.19135147006586384913e-03,</code></span>
+<span class="codeline" id="line-69"><code>	1.04213797561761569935e-02,</code></span>
+<span class="codeline" id="line-70"><code>	4.76367800457137231464e-02,</code></span>
+<span class="codeline" id="line-71"><code>	2.07448227648435975150e-01,</code></span>
+<span class="codeline" id="line-72"><code>	4.94214826801497100753e-01,</code></span>
+<span class="codeline" id="line-73"><code>	9.99999999999999996796e-01,</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+<span class="codeline" id="line-75"><code>var _gamQ = [...]float64{</code></span>
+<span class="codeline" id="line-76"><code>	-2.31581873324120129819e-05,</code></span>
+<span class="codeline" id="line-77"><code>	5.39605580493303397842e-04,</code></span>
+<span class="codeline" id="line-78"><code>	-4.45641913851797240494e-03,</code></span>
+<span class="codeline" id="line-79"><code>	1.18139785222060435552e-02,</code></span>
+<span class="codeline" id="line-80"><code>	3.58236398605498653373e-02,</code></span>
+<span class="codeline" id="line-81"><code>	-2.34591795718243348568e-01,</code></span>
+<span class="codeline" id="line-82"><code>	7.14304917030273074085e-02,</code></span>
+<span class="codeline" id="line-83"><code>	1.00000000000000000320e+00,</code></span>
+<span class="codeline" id="line-84"><code>}</code></span>
+<span class="codeline" id="line-85"><code>var _gamS = [...]float64{</code></span>
+<span class="codeline" id="line-86"><code>	7.87311395793093628397e-04,</code></span>
+<span class="codeline" id="line-87"><code>	-2.29549961613378126380e-04,</code></span>
+<span class="codeline" id="line-88"><code>	-2.68132617805781232825e-03,</code></span>
+<span class="codeline" id="line-89"><code>	3.47222221605458667310e-03,</code></span>
+<span class="codeline" id="line-90"><code>	8.33333333333482257126e-02,</code></span>
+<span class="codeline" id="line-91"><code>}</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>// Gamma function computed by Stirling's formula.</code></span>
+<span class="codeline" id="line-94"><code>// The pair of results must be multiplied together to get the actual answer.</code></span>
+<span class="codeline" id="line-95"><code>// The multiplication is left to the caller so that, if careful, the caller can avoid</code></span>
+<span class="codeline" id="line-96"><code>// infinity for 172 &lt;= x &lt;= 180.</code></span>
+<span class="codeline" id="line-97"><code>// The polynomial is valid for 33 &lt;= x &lt;= 172; larger values are only used</code></span>
+<span class="codeline" id="line-98"><code>// in reciprocal and produce denormalized floats. The lower precision there</code></span>
+<span class="codeline" id="line-99"><code>// masks any imprecision in the polynomial.</code></span>
+<span class="codeline" id="line-100"><code>func stirling(x float64) (float64, float64) {</code></span>
+<span class="codeline" id="line-101"><code>	if x &gt; 200 {</code></span>
+<span class="codeline" id="line-102"><code>		return Inf(1), 1</code></span>
+<span class="codeline" id="line-103"><code>	}</code></span>
+<span class="codeline" id="line-104"><code>	const (</code></span>
+<span class="codeline" id="line-105"><code>		SqrtTwoPi   = 2.506628274631000502417</code></span>
+<span class="codeline" id="line-106"><code>		MaxStirling = 143.01608</code></span>
+<span class="codeline" id="line-107"><code>	)</code></span>
+<span class="codeline" id="line-108"><code>	w := 1 / x</code></span>
+<span class="codeline" id="line-109"><code>	w = 1 + w*((((_gamS[0]*w+_gamS[1])*w+_gamS[2])*w+_gamS[3])*w+_gamS[4])</code></span>
+<span class="codeline" id="line-110"><code>	y1 := Exp(x)</code></span>
+<span class="codeline" id="line-111"><code>	y2 := 1.0</code></span>
+<span class="codeline" id="line-112"><code>	if x &gt; MaxStirling { // avoid Pow() overflow</code></span>
+<span class="codeline" id="line-113"><code>		v := Pow(x, 0.5*x-0.25)</code></span>
+<span class="codeline" id="line-114"><code>		y1, y2 = v, v/y1</code></span>
+<span class="codeline" id="line-115"><code>	} else {</code></span>
+<span class="codeline" id="line-116"><code>		y1 = Pow(x, x-0.5) / y1</code></span>
+<span class="codeline" id="line-117"><code>	}</code></span>
+<span class="codeline" id="line-118"><code>	return y1, SqrtTwoPi * w * y2</code></span>
+<span class="codeline" id="line-119"><code>}</code></span>
+<span class="codeline" id="line-120"><code></code></span>
+<span class="codeline" id="line-121"><code>// Gamma returns the Gamma function of x.</code></span>
+<span class="codeline" id="line-122"><code>//</code></span>
+<span class="codeline" id="line-123"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-124"><code>//	Gamma(+Inf) = +Inf</code></span>
+<span class="codeline" id="line-125"><code>//	Gamma(+0) = +Inf</code></span>
+<span class="codeline" id="line-126"><code>//	Gamma(-0) = -Inf</code></span>
+<span class="codeline" id="line-127"><code>//	Gamma(x) = NaN for integer x &lt; 0</code></span>
+<span class="codeline" id="line-128"><code>//	Gamma(-Inf) = NaN</code></span>
+<span class="codeline" id="line-129"><code>//	Gamma(NaN) = NaN</code></span>
+<span class="codeline" id="line-130"><code>func Gamma(x float64) float64 {</code></span>
+<span class="codeline" id="line-131"><code>	const Euler = 0.57721566490153286060651209008240243104215933593992 // A001620</code></span>
+<span class="codeline" id="line-132"><code>	// special cases</code></span>
+<span class="codeline" id="line-133"><code>	switch {</code></span>
+<span class="codeline" id="line-134"><code>	case isNegInt(x) || IsInf(x, -1) || IsNaN(x):</code></span>
+<span class="codeline" id="line-135"><code>		return NaN()</code></span>
+<span class="codeline" id="line-136"><code>	case IsInf(x, 1):</code></span>
+<span class="codeline" id="line-137"><code>		return Inf(1)</code></span>
+<span class="codeline" id="line-138"><code>	case x == 0:</code></span>
+<span class="codeline" id="line-139"><code>		if Signbit(x) {</code></span>
+<span class="codeline" id="line-140"><code>			return Inf(-1)</code></span>
+<span class="codeline" id="line-141"><code>		}</code></span>
+<span class="codeline" id="line-142"><code>		return Inf(1)</code></span>
+<span class="codeline" id="line-143"><code>	}</code></span>
+<span class="codeline" id="line-144"><code>	q := Abs(x)</code></span>
+<span class="codeline" id="line-145"><code>	p := Floor(q)</code></span>
+<span class="codeline" id="line-146"><code>	if q &gt; 33 {</code></span>
+<span class="codeline" id="line-147"><code>		if x &gt;= 0 {</code></span>
+<span class="codeline" id="line-148"><code>			y1, y2 := stirling(x)</code></span>
+<span class="codeline" id="line-149"><code>			return y1 * y2</code></span>
+<span class="codeline" id="line-150"><code>		}</code></span>
+<span class="codeline" id="line-151"><code>		// Note: x is negative but (checked above) not a negative integer,</code></span>
+<span class="codeline" id="line-152"><code>		// so x must be small enough to be in range for conversion to int64.</code></span>
+<span class="codeline" id="line-153"><code>		// If |x| were &gt;= 2⁶³ it would have to be an integer.</code></span>
+<span class="codeline" id="line-154"><code>		signgam := 1</code></span>
+<span class="codeline" id="line-155"><code>		if ip := int64(p); ip&amp;1 == 0 {</code></span>
+<span class="codeline" id="line-156"><code>			signgam = -1</code></span>
+<span class="codeline" id="line-157"><code>		}</code></span>
+<span class="codeline" id="line-158"><code>		z := q - p</code></span>
+<span class="codeline" id="line-159"><code>		if z &gt; 0.5 {</code></span>
+<span class="codeline" id="line-160"><code>			p = p + 1</code></span>
+<span class="codeline" id="line-161"><code>			z = q - p</code></span>
+<span class="codeline" id="line-162"><code>		}</code></span>
+<span class="codeline" id="line-163"><code>		z = q * Sin(Pi*z)</code></span>
+<span class="codeline" id="line-164"><code>		if z == 0 {</code></span>
+<span class="codeline" id="line-165"><code>			return Inf(signgam)</code></span>
+<span class="codeline" id="line-166"><code>		}</code></span>
+<span class="codeline" id="line-167"><code>		sq1, sq2 := stirling(q)</code></span>
+<span class="codeline" id="line-168"><code>		absz := Abs(z)</code></span>
+<span class="codeline" id="line-169"><code>		d := absz * sq1 * sq2</code></span>
+<span class="codeline" id="line-170"><code>		if IsInf(d, 0) {</code></span>
+<span class="codeline" id="line-171"><code>			z = Pi / absz / sq1 / sq2</code></span>
+<span class="codeline" id="line-172"><code>		} else {</code></span>
+<span class="codeline" id="line-173"><code>			z = Pi / d</code></span>
+<span class="codeline" id="line-174"><code>		}</code></span>
+<span class="codeline" id="line-175"><code>		return float64(signgam) * z</code></span>
+<span class="codeline" id="line-176"><code>	}</code></span>
+<span class="codeline" id="line-177"><code></code></span>
+<span class="codeline" id="line-178"><code>	// Reduce argument</code></span>
+<span class="codeline" id="line-179"><code>	z := 1.0</code></span>
+<span class="codeline" id="line-180"><code>	for x &gt;= 3 {</code></span>
+<span class="codeline" id="line-181"><code>		x = x - 1</code></span>
+<span class="codeline" id="line-182"><code>		z = z * x</code></span>
+<span class="codeline" id="line-183"><code>	}</code></span>
+<span class="codeline" id="line-184"><code>	for x &lt; 0 {</code></span>
+<span class="codeline" id="line-185"><code>		if x &gt; -1e-09 {</code></span>
+<span class="codeline" id="line-186"><code>			goto small</code></span>
+<span class="codeline" id="line-187"><code>		}</code></span>
+<span class="codeline" id="line-188"><code>		z = z / x</code></span>
+<span class="codeline" id="line-189"><code>		x = x + 1</code></span>
+<span class="codeline" id="line-190"><code>	}</code></span>
+<span class="codeline" id="line-191"><code>	for x &lt; 2 {</code></span>
+<span class="codeline" id="line-192"><code>		if x &lt; 1e-09 {</code></span>
+<span class="codeline" id="line-193"><code>			goto small</code></span>
+<span class="codeline" id="line-194"><code>		}</code></span>
+<span class="codeline" id="line-195"><code>		z = z / x</code></span>
+<span class="codeline" id="line-196"><code>		x = x + 1</code></span>
+<span class="codeline" id="line-197"><code>	}</code></span>
+<span class="codeline" id="line-198"><code></code></span>
+<span class="codeline" id="line-199"><code>	if x == 2 {</code></span>
+<span class="codeline" id="line-200"><code>		return z</code></span>
+<span class="codeline" id="line-201"><code>	}</code></span>
+<span class="codeline" id="line-202"><code></code></span>
+<span class="codeline" id="line-203"><code>	x = x - 2</code></span>
+<span class="codeline" id="line-204"><code>	p = (((((x*_gamP[0]+_gamP[1])*x+_gamP[2])*x+_gamP[3])*x+_gamP[4])*x+_gamP[5])*x + _gamP[6]</code></span>
+<span class="codeline" id="line-205"><code>	q = ((((((x*_gamQ[0]+_gamQ[1])*x+_gamQ[2])*x+_gamQ[3])*x+_gamQ[4])*x+_gamQ[5])*x+_gamQ[6])*x + _gamQ[7]</code></span>
+<span class="codeline" id="line-206"><code>	return z * p / q</code></span>
+<span class="codeline" id="line-207"><code></code></span>
+<span class="codeline" id="line-208"><code>small:</code></span>
+<span class="codeline" id="line-209"><code>	if x == 0 {</code></span>
+<span class="codeline" id="line-210"><code>		return Inf(1)</code></span>
+<span class="codeline" id="line-211"><code>	}</code></span>
+<span class="codeline" id="line-212"><code>	return z / ((1 + Euler*x) * x)</code></span>
+<span class="codeline" id="line-213"><code>}</code></span>
+<span class="codeline" id="line-214"><code></code></span>
+<span class="codeline" id="line-215"><code>func isNegInt(x float64) bool {</code></span>
+<span class="codeline" id="line-216"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-217"><code>		_, xf := Modf(x)</code></span>
+<span class="codeline" id="line-218"><code>		return xf == 0</code></span>
+<span class="codeline" id="line-219"><code>	}</code></span>
+<span class="codeline" id="line-220"><code>	return false</code></span>
+<span class="codeline" id="line-221"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

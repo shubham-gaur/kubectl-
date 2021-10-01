@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sendfile_linux.go in package internal/poll</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sendfile_linux.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/poll.html">internal/poll</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package poll</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "syscall"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// maxSendfileSize is the largest chunk size we ask the kernel to copy</code></span>
+<span class="codeline" id="line-10"><code>// at a time.</code></span>
+<span class="codeline" id="line-11"><code>const maxSendfileSize int = 4 &lt;&lt; 20</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// SendFile wraps the sendfile system call.</code></span>
+<span class="codeline" id="line-14"><code>func SendFile(dstFD *FD, src int, remain int64) (int64, error) {</code></span>
+<span class="codeline" id="line-15"><code>	if err := dstFD.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-16"><code>		return 0, err</code></span>
+<span class="codeline" id="line-17"><code>	}</code></span>
+<span class="codeline" id="line-18"><code>	defer dstFD.writeUnlock()</code></span>
+<span class="codeline" id="line-19"><code>	if err := dstFD.pd.prepareWrite(dstFD.isFile); err != nil {</code></span>
+<span class="codeline" id="line-20"><code>		return 0, err</code></span>
+<span class="codeline" id="line-21"><code>	}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>	dst := int(dstFD.Sysfd)</code></span>
+<span class="codeline" id="line-24"><code>	var written int64</code></span>
+<span class="codeline" id="line-25"><code>	var err error</code></span>
+<span class="codeline" id="line-26"><code>	for remain &gt; 0 {</code></span>
+<span class="codeline" id="line-27"><code>		n := maxSendfileSize</code></span>
+<span class="codeline" id="line-28"><code>		if int64(n) &gt; remain {</code></span>
+<span class="codeline" id="line-29"><code>			n = int(remain)</code></span>
+<span class="codeline" id="line-30"><code>		}</code></span>
+<span class="codeline" id="line-31"><code>		n, err1 := syscall.Sendfile(dst, src, nil, n)</code></span>
+<span class="codeline" id="line-32"><code>		if n &gt; 0 {</code></span>
+<span class="codeline" id="line-33"><code>			written += int64(n)</code></span>
+<span class="codeline" id="line-34"><code>			remain -= int64(n)</code></span>
+<span class="codeline" id="line-35"><code>		} else if n == 0 &amp;&amp; err1 == nil {</code></span>
+<span class="codeline" id="line-36"><code>			break</code></span>
+<span class="codeline" id="line-37"><code>		}</code></span>
+<span class="codeline" id="line-38"><code>		if err1 == syscall.EINTR {</code></span>
+<span class="codeline" id="line-39"><code>			continue</code></span>
+<span class="codeline" id="line-40"><code>		}</code></span>
+<span class="codeline" id="line-41"><code>		if err1 == syscall.EAGAIN {</code></span>
+<span class="codeline" id="line-42"><code>			if err1 = dstFD.pd.waitWrite(dstFD.isFile); err1 == nil {</code></span>
+<span class="codeline" id="line-43"><code>				continue</code></span>
+<span class="codeline" id="line-44"><code>			}</code></span>
+<span class="codeline" id="line-45"><code>		}</code></span>
+<span class="codeline" id="line-46"><code>		if err1 != nil {</code></span>
+<span class="codeline" id="line-47"><code>			// This includes syscall.ENOSYS (no kernel</code></span>
+<span class="codeline" id="line-48"><code>			// support) and syscall.EINVAL (fd types which</code></span>
+<span class="codeline" id="line-49"><code>			// don't implement sendfile)</code></span>
+<span class="codeline" id="line-50"><code>			err = err1</code></span>
+<span class="codeline" id="line-51"><code>			break</code></span>
+<span class="codeline" id="line-52"><code>		}</code></span>
+<span class="codeline" id="line-53"><code>	}</code></span>
+<span class="codeline" id="line-54"><code>	return written, err</code></span>
+<span class="codeline" id="line-55"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

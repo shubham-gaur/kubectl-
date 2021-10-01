@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: splice_linux.go in package internal/poll</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	splice_linux.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/poll.html">internal/poll</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package poll</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/syscall/unix"</code></span>
+<span class="codeline" id="line-9"><code>	"sync/atomic"</code></span>
+<span class="codeline" id="line-10"><code>	"syscall"</code></span>
+<span class="codeline" id="line-11"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>const (</code></span>
+<span class="codeline" id="line-15"><code>	// spliceNonblock makes calls to splice(2) non-blocking.</code></span>
+<span class="codeline" id="line-16"><code>	spliceNonblock = 0x2</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>	// maxSpliceSize is the maximum amount of data Splice asks</code></span>
+<span class="codeline" id="line-19"><code>	// the kernel to move in a single call to splice(2).</code></span>
+<span class="codeline" id="line-20"><code>	maxSpliceSize = 4 &lt;&lt; 20</code></span>
+<span class="codeline" id="line-21"><code>)</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>// Splice transfers at most remain bytes of data from src to dst, using the</code></span>
+<span class="codeline" id="line-24"><code>// splice system call to minimize copies of data from and to userspace.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// Splice creates a temporary pipe, to serve as a buffer for the data transfer.</code></span>
+<span class="codeline" id="line-27"><code>// src and dst must both be stream-oriented sockets.</code></span>
+<span class="codeline" id="line-28"><code>//</code></span>
+<span class="codeline" id="line-29"><code>// If err != nil, sc is the system call which caused the error.</code></span>
+<span class="codeline" id="line-30"><code>func Splice(dst, src *FD, remain int64) (written int64, handled bool, sc string, err error) {</code></span>
+<span class="codeline" id="line-31"><code>	prfd, pwfd, sc, err := newTempPipe()</code></span>
+<span class="codeline" id="line-32"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-33"><code>		return 0, false, sc, err</code></span>
+<span class="codeline" id="line-34"><code>	}</code></span>
+<span class="codeline" id="line-35"><code>	defer destroyTempPipe(prfd, pwfd)</code></span>
+<span class="codeline" id="line-36"><code>	var inPipe, n int</code></span>
+<span class="codeline" id="line-37"><code>	for err == nil &amp;&amp; remain &gt; 0 {</code></span>
+<span class="codeline" id="line-38"><code>		max := maxSpliceSize</code></span>
+<span class="codeline" id="line-39"><code>		if int64(max) &gt; remain {</code></span>
+<span class="codeline" id="line-40"><code>			max = int(remain)</code></span>
+<span class="codeline" id="line-41"><code>		}</code></span>
+<span class="codeline" id="line-42"><code>		inPipe, err = spliceDrain(pwfd, src, max)</code></span>
+<span class="codeline" id="line-43"><code>		// The operation is considered handled if splice returns no</code></span>
+<span class="codeline" id="line-44"><code>		// error, or an error other than EINVAL. An EINVAL means the</code></span>
+<span class="codeline" id="line-45"><code>		// kernel does not support splice for the socket type of src.</code></span>
+<span class="codeline" id="line-46"><code>		// The failed syscall does not consume any data so it is safe</code></span>
+<span class="codeline" id="line-47"><code>		// to fall back to a generic copy.</code></span>
+<span class="codeline" id="line-48"><code>		//</code></span>
+<span class="codeline" id="line-49"><code>		// spliceDrain should never return EAGAIN, so if err != nil,</code></span>
+<span class="codeline" id="line-50"><code>		// Splice cannot continue.</code></span>
+<span class="codeline" id="line-51"><code>		//</code></span>
+<span class="codeline" id="line-52"><code>		// If inPipe == 0 &amp;&amp; err == nil, src is at EOF, and the</code></span>
+<span class="codeline" id="line-53"><code>		// transfer is complete.</code></span>
+<span class="codeline" id="line-54"><code>		handled = handled || (err != syscall.EINVAL)</code></span>
+<span class="codeline" id="line-55"><code>		if err != nil || (inPipe == 0 &amp;&amp; err == nil) {</code></span>
+<span class="codeline" id="line-56"><code>			break</code></span>
+<span class="codeline" id="line-57"><code>		}</code></span>
+<span class="codeline" id="line-58"><code>		n, err = splicePump(dst, prfd, inPipe)</code></span>
+<span class="codeline" id="line-59"><code>		if n &gt; 0 {</code></span>
+<span class="codeline" id="line-60"><code>			written += int64(n)</code></span>
+<span class="codeline" id="line-61"><code>			remain -= int64(n)</code></span>
+<span class="codeline" id="line-62"><code>		}</code></span>
+<span class="codeline" id="line-63"><code>	}</code></span>
+<span class="codeline" id="line-64"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-65"><code>		return written, handled, "splice", err</code></span>
+<span class="codeline" id="line-66"><code>	}</code></span>
+<span class="codeline" id="line-67"><code>	return written, true, "", nil</code></span>
+<span class="codeline" id="line-68"><code>}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>// spliceDrain moves data from a socket to a pipe.</code></span>
+<span class="codeline" id="line-71"><code>//</code></span>
+<span class="codeline" id="line-72"><code>// Invariant: when entering spliceDrain, the pipe is empty. It is either in its</code></span>
+<span class="codeline" id="line-73"><code>// initial state, or splicePump has emptied it previously.</code></span>
+<span class="codeline" id="line-74"><code>//</code></span>
+<span class="codeline" id="line-75"><code>// Given this, spliceDrain can reasonably assume that the pipe is ready for</code></span>
+<span class="codeline" id="line-76"><code>// writing, so if splice returns EAGAIN, it must be because the socket is not</code></span>
+<span class="codeline" id="line-77"><code>// ready for reading.</code></span>
+<span class="codeline" id="line-78"><code>//</code></span>
+<span class="codeline" id="line-79"><code>// If spliceDrain returns (0, nil), src is at EOF.</code></span>
+<span class="codeline" id="line-80"><code>func spliceDrain(pipefd int, sock *FD, max int) (int, error) {</code></span>
+<span class="codeline" id="line-81"><code>	if err := sock.readLock(); err != nil {</code></span>
+<span class="codeline" id="line-82"><code>		return 0, err</code></span>
+<span class="codeline" id="line-83"><code>	}</code></span>
+<span class="codeline" id="line-84"><code>	defer sock.readUnlock()</code></span>
+<span class="codeline" id="line-85"><code>	if err := sock.pd.prepareRead(sock.isFile); err != nil {</code></span>
+<span class="codeline" id="line-86"><code>		return 0, err</code></span>
+<span class="codeline" id="line-87"><code>	}</code></span>
+<span class="codeline" id="line-88"><code>	for {</code></span>
+<span class="codeline" id="line-89"><code>		n, err := splice(pipefd, sock.Sysfd, max, spliceNonblock)</code></span>
+<span class="codeline" id="line-90"><code>		if err == syscall.EINTR {</code></span>
+<span class="codeline" id="line-91"><code>			continue</code></span>
+<span class="codeline" id="line-92"><code>		}</code></span>
+<span class="codeline" id="line-93"><code>		if err != syscall.EAGAIN {</code></span>
+<span class="codeline" id="line-94"><code>			return n, err</code></span>
+<span class="codeline" id="line-95"><code>		}</code></span>
+<span class="codeline" id="line-96"><code>		if err := sock.pd.waitRead(sock.isFile); err != nil {</code></span>
+<span class="codeline" id="line-97"><code>			return n, err</code></span>
+<span class="codeline" id="line-98"><code>		}</code></span>
+<span class="codeline" id="line-99"><code>	}</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>// splicePump moves all the buffered data from a pipe to a socket.</code></span>
+<span class="codeline" id="line-103"><code>//</code></span>
+<span class="codeline" id="line-104"><code>// Invariant: when entering splicePump, there are exactly inPipe</code></span>
+<span class="codeline" id="line-105"><code>// bytes of data in the pipe, from a previous call to spliceDrain.</code></span>
+<span class="codeline" id="line-106"><code>//</code></span>
+<span class="codeline" id="line-107"><code>// By analogy to the condition from spliceDrain, splicePump</code></span>
+<span class="codeline" id="line-108"><code>// only needs to poll the socket for readiness, if splice returns</code></span>
+<span class="codeline" id="line-109"><code>// EAGAIN.</code></span>
+<span class="codeline" id="line-110"><code>//</code></span>
+<span class="codeline" id="line-111"><code>// If splicePump cannot move all the data in a single call to</code></span>
+<span class="codeline" id="line-112"><code>// splice(2), it loops over the buffered data until it has written</code></span>
+<span class="codeline" id="line-113"><code>// all of it to the socket. This behavior is similar to the Write</code></span>
+<span class="codeline" id="line-114"><code>// step of an io.Copy in userspace.</code></span>
+<span class="codeline" id="line-115"><code>func splicePump(sock *FD, pipefd int, inPipe int) (int, error) {</code></span>
+<span class="codeline" id="line-116"><code>	if err := sock.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-117"><code>		return 0, err</code></span>
+<span class="codeline" id="line-118"><code>	}</code></span>
+<span class="codeline" id="line-119"><code>	defer sock.writeUnlock()</code></span>
+<span class="codeline" id="line-120"><code>	if err := sock.pd.prepareWrite(sock.isFile); err != nil {</code></span>
+<span class="codeline" id="line-121"><code>		return 0, err</code></span>
+<span class="codeline" id="line-122"><code>	}</code></span>
+<span class="codeline" id="line-123"><code>	written := 0</code></span>
+<span class="codeline" id="line-124"><code>	for inPipe &gt; 0 {</code></span>
+<span class="codeline" id="line-125"><code>		n, err := splice(sock.Sysfd, pipefd, inPipe, spliceNonblock)</code></span>
+<span class="codeline" id="line-126"><code>		// Here, the condition n == 0 &amp;&amp; err == nil should never be</code></span>
+<span class="codeline" id="line-127"><code>		// observed, since Splice controls the write side of the pipe.</code></span>
+<span class="codeline" id="line-128"><code>		if n &gt; 0 {</code></span>
+<span class="codeline" id="line-129"><code>			inPipe -= n</code></span>
+<span class="codeline" id="line-130"><code>			written += n</code></span>
+<span class="codeline" id="line-131"><code>			continue</code></span>
+<span class="codeline" id="line-132"><code>		}</code></span>
+<span class="codeline" id="line-133"><code>		if err != syscall.EAGAIN {</code></span>
+<span class="codeline" id="line-134"><code>			return written, err</code></span>
+<span class="codeline" id="line-135"><code>		}</code></span>
+<span class="codeline" id="line-136"><code>		if err := sock.pd.waitWrite(sock.isFile); err != nil {</code></span>
+<span class="codeline" id="line-137"><code>			return written, err</code></span>
+<span class="codeline" id="line-138"><code>		}</code></span>
+<span class="codeline" id="line-139"><code>	}</code></span>
+<span class="codeline" id="line-140"><code>	return written, nil</code></span>
+<span class="codeline" id="line-141"><code>}</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>// splice wraps the splice system call. Since the current implementation</code></span>
+<span class="codeline" id="line-144"><code>// only uses splice on sockets and pipes, the offset arguments are unused.</code></span>
+<span class="codeline" id="line-145"><code>// splice returns int instead of int64, because callers never ask it to</code></span>
+<span class="codeline" id="line-146"><code>// move more data in a single call than can fit in an int32.</code></span>
+<span class="codeline" id="line-147"><code>func splice(out int, in int, max int, flags int) (int, error) {</code></span>
+<span class="codeline" id="line-148"><code>	n, err := syscall.Splice(in, nil, out, nil, max, flags)</code></span>
+<span class="codeline" id="line-149"><code>	return int(n), err</code></span>
+<span class="codeline" id="line-150"><code>}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>var disableSplice unsafe.Pointer</code></span>
+<span class="codeline" id="line-153"><code></code></span>
+<span class="codeline" id="line-154"><code>// newTempPipe sets up a temporary pipe for a splice operation.</code></span>
+<span class="codeline" id="line-155"><code>func newTempPipe() (prfd, pwfd int, sc string, err error) {</code></span>
+<span class="codeline" id="line-156"><code>	p := (*bool)(atomic.LoadPointer(&amp;disableSplice))</code></span>
+<span class="codeline" id="line-157"><code>	if p != nil &amp;&amp; *p {</code></span>
+<span class="codeline" id="line-158"><code>		return -1, -1, "splice", syscall.EINVAL</code></span>
+<span class="codeline" id="line-159"><code>	}</code></span>
+<span class="codeline" id="line-160"><code></code></span>
+<span class="codeline" id="line-161"><code>	var fds [2]int</code></span>
+<span class="codeline" id="line-162"><code>	// pipe2 was added in 2.6.27 and our minimum requirement is 2.6.23, so it</code></span>
+<span class="codeline" id="line-163"><code>	// might not be implemented. Falling back to pipe is possible, but prior to</code></span>
+<span class="codeline" id="line-164"><code>	// 2.6.29 splice returns -EAGAIN instead of 0 when the connection is</code></span>
+<span class="codeline" id="line-165"><code>	// closed.</code></span>
+<span class="codeline" id="line-166"><code>	const flags = syscall.O_CLOEXEC | syscall.O_NONBLOCK</code></span>
+<span class="codeline" id="line-167"><code>	if err := syscall.Pipe2(fds[:], flags); err != nil {</code></span>
+<span class="codeline" id="line-168"><code>		return -1, -1, "pipe2", err</code></span>
+<span class="codeline" id="line-169"><code>	}</code></span>
+<span class="codeline" id="line-170"><code></code></span>
+<span class="codeline" id="line-171"><code>	if p == nil {</code></span>
+<span class="codeline" id="line-172"><code>		p = new(bool)</code></span>
+<span class="codeline" id="line-173"><code>		defer atomic.StorePointer(&amp;disableSplice, unsafe.Pointer(p))</code></span>
+<span class="codeline" id="line-174"><code></code></span>
+<span class="codeline" id="line-175"><code>		// F_GETPIPE_SZ was added in 2.6.35, which does not have the -EAGAIN bug.</code></span>
+<span class="codeline" id="line-176"><code>		if _, _, errno := syscall.Syscall(unix.FcntlSyscall, uintptr(fds[0]), syscall.F_GETPIPE_SZ, 0); errno != 0 {</code></span>
+<span class="codeline" id="line-177"><code>			*p = true</code></span>
+<span class="codeline" id="line-178"><code>			destroyTempPipe(fds[0], fds[1])</code></span>
+<span class="codeline" id="line-179"><code>			return -1, -1, "fcntl", errno</code></span>
+<span class="codeline" id="line-180"><code>		}</code></span>
+<span class="codeline" id="line-181"><code>	}</code></span>
+<span class="codeline" id="line-182"><code></code></span>
+<span class="codeline" id="line-183"><code>	return fds[0], fds[1], "", nil</code></span>
+<span class="codeline" id="line-184"><code>}</code></span>
+<span class="codeline" id="line-185"><code></code></span>
+<span class="codeline" id="line-186"><code>// destroyTempPipe destroys a temporary pipe.</code></span>
+<span class="codeline" id="line-187"><code>func destroyTempPipe(prfd, pwfd int) error {</code></span>
+<span class="codeline" id="line-188"><code>	err := CloseFunc(prfd)</code></span>
+<span class="codeline" id="line-189"><code>	err1 := CloseFunc(pwfd)</code></span>
+<span class="codeline" id="line-190"><code>	if err == nil {</code></span>
+<span class="codeline" id="line-191"><code>		return err1</code></span>
+<span class="codeline" id="line-192"><code>	}</code></span>
+<span class="codeline" id="line-193"><code>	return err</code></span>
+<span class="codeline" id="line-194"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mutex.go in package sync</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mutex.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/sync.html">sync</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package sync provides basic synchronization primitives such as mutual</code></span>
+<span class="codeline" id="line-6"><code>// exclusion locks. Other than the Once and WaitGroup types, most are intended</code></span>
+<span class="codeline" id="line-7"><code>// for use by low-level library routines. Higher-level synchronization is</code></span>
+<span class="codeline" id="line-8"><code>// better done via channels and communication.</code></span>
+<span class="codeline" id="line-9"><code>//</code></span>
+<span class="codeline" id="line-10"><code>// Values containing the types defined in this package should not be copied.</code></span></div><span class="codeline" id="line-11"><code>package sync</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>import (</code></span>
+<span class="codeline" id="line-14"><code>	"internal/race"</code></span>
+<span class="codeline" id="line-15"><code>	"sync/atomic"</code></span>
+<span class="codeline" id="line-16"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-17"><code>)</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>func throw(string) // provided by runtime</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>// A Mutex is a mutual exclusion lock.</code></span>
+<span class="codeline" id="line-22"><code>// The zero value for a Mutex is an unlocked mutex.</code></span>
+<span class="codeline" id="line-23"><code>//</code></span>
+<span class="codeline" id="line-24"><code>// A Mutex must not be copied after first use.</code></span>
+<span class="codeline" id="line-25"><code>type Mutex struct {</code></span>
+<span class="codeline" id="line-26"><code>	state int32</code></span>
+<span class="codeline" id="line-27"><code>	sema  uint32</code></span>
+<span class="codeline" id="line-28"><code>}</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>// A Locker represents an object that can be locked and unlocked.</code></span>
+<span class="codeline" id="line-31"><code>type Locker interface {</code></span>
+<span class="codeline" id="line-32"><code>	Lock()</code></span>
+<span class="codeline" id="line-33"><code>	Unlock()</code></span>
+<span class="codeline" id="line-34"><code>}</code></span>
+<span class="codeline" id="line-35"><code></code></span>
+<span class="codeline" id="line-36"><code>const (</code></span>
+<span class="codeline" id="line-37"><code>	mutexLocked = 1 &lt;&lt; iota // mutex is locked</code></span>
+<span class="codeline" id="line-38"><code>	mutexWoken</code></span>
+<span class="codeline" id="line-39"><code>	mutexStarving</code></span>
+<span class="codeline" id="line-40"><code>	mutexWaiterShift = iota</code></span>
+<span class="codeline" id="line-41"><code></code></span>
+<span class="codeline" id="line-42"><code>	// Mutex fairness.</code></span>
+<span class="codeline" id="line-43"><code>	//</code></span>
+<span class="codeline" id="line-44"><code>	// Mutex can be in 2 modes of operations: normal and starvation.</code></span>
+<span class="codeline" id="line-45"><code>	// In normal mode waiters are queued in FIFO order, but a woken up waiter</code></span>
+<span class="codeline" id="line-46"><code>	// does not own the mutex and competes with new arriving goroutines over</code></span>
+<span class="codeline" id="line-47"><code>	// the ownership. New arriving goroutines have an advantage -- they are</code></span>
+<span class="codeline" id="line-48"><code>	// already running on CPU and there can be lots of them, so a woken up</code></span>
+<span class="codeline" id="line-49"><code>	// waiter has good chances of losing. In such case it is queued at front</code></span>
+<span class="codeline" id="line-50"><code>	// of the wait queue. If a waiter fails to acquire the mutex for more than 1ms,</code></span>
+<span class="codeline" id="line-51"><code>	// it switches mutex to the starvation mode.</code></span>
+<span class="codeline" id="line-52"><code>	//</code></span>
+<span class="codeline" id="line-53"><code>	// In starvation mode ownership of the mutex is directly handed off from</code></span>
+<span class="codeline" id="line-54"><code>	// the unlocking goroutine to the waiter at the front of the queue.</code></span>
+<span class="codeline" id="line-55"><code>	// New arriving goroutines don't try to acquire the mutex even if it appears</code></span>
+<span class="codeline" id="line-56"><code>	// to be unlocked, and don't try to spin. Instead they queue themselves at</code></span>
+<span class="codeline" id="line-57"><code>	// the tail of the wait queue.</code></span>
+<span class="codeline" id="line-58"><code>	//</code></span>
+<span class="codeline" id="line-59"><code>	// If a waiter receives ownership of the mutex and sees that either</code></span>
+<span class="codeline" id="line-60"><code>	// (1) it is the last waiter in the queue, or (2) it waited for less than 1 ms,</code></span>
+<span class="codeline" id="line-61"><code>	// it switches mutex back to normal operation mode.</code></span>
+<span class="codeline" id="line-62"><code>	//</code></span>
+<span class="codeline" id="line-63"><code>	// Normal mode has considerably better performance as a goroutine can acquire</code></span>
+<span class="codeline" id="line-64"><code>	// a mutex several times in a row even if there are blocked waiters.</code></span>
+<span class="codeline" id="line-65"><code>	// Starvation mode is important to prevent pathological cases of tail latency.</code></span>
+<span class="codeline" id="line-66"><code>	starvationThresholdNs = 1e6</code></span>
+<span class="codeline" id="line-67"><code>)</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>// Lock locks m.</code></span>
+<span class="codeline" id="line-70"><code>// If the lock is already in use, the calling goroutine</code></span>
+<span class="codeline" id="line-71"><code>// blocks until the mutex is available.</code></span>
+<span class="codeline" id="line-72"><code>func (m *Mutex) Lock() {</code></span>
+<span class="codeline" id="line-73"><code>	// Fast path: grab unlocked mutex.</code></span>
+<span class="codeline" id="line-74"><code>	if atomic.CompareAndSwapInt32(&amp;m.state, 0, mutexLocked) {</code></span>
+<span class="codeline" id="line-75"><code>		if race.Enabled {</code></span>
+<span class="codeline" id="line-76"><code>			race.Acquire(unsafe.Pointer(m))</code></span>
+<span class="codeline" id="line-77"><code>		}</code></span>
+<span class="codeline" id="line-78"><code>		return</code></span>
+<span class="codeline" id="line-79"><code>	}</code></span>
+<span class="codeline" id="line-80"><code>	// Slow path (outlined so that the fast path can be inlined)</code></span>
+<span class="codeline" id="line-81"><code>	m.lockSlow()</code></span>
+<span class="codeline" id="line-82"><code>}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>func (m *Mutex) lockSlow() {</code></span>
+<span class="codeline" id="line-85"><code>	var waitStartTime int64</code></span>
+<span class="codeline" id="line-86"><code>	starving := false</code></span>
+<span class="codeline" id="line-87"><code>	awoke := false</code></span>
+<span class="codeline" id="line-88"><code>	iter := 0</code></span>
+<span class="codeline" id="line-89"><code>	old := m.state</code></span>
+<span class="codeline" id="line-90"><code>	for {</code></span>
+<span class="codeline" id="line-91"><code>		// Don't spin in starvation mode, ownership is handed off to waiters</code></span>
+<span class="codeline" id="line-92"><code>		// so we won't be able to acquire the mutex anyway.</code></span>
+<span class="codeline" id="line-93"><code>		if old&amp;(mutexLocked|mutexStarving) == mutexLocked &amp;&amp; runtime_canSpin(iter) {</code></span>
+<span class="codeline" id="line-94"><code>			// Active spinning makes sense.</code></span>
+<span class="codeline" id="line-95"><code>			// Try to set mutexWoken flag to inform Unlock</code></span>
+<span class="codeline" id="line-96"><code>			// to not wake other blocked goroutines.</code></span>
+<span class="codeline" id="line-97"><code>			if !awoke &amp;&amp; old&amp;mutexWoken == 0 &amp;&amp; old&gt;&gt;mutexWaiterShift != 0 &amp;&amp;</code></span>
+<span class="codeline" id="line-98"><code>				atomic.CompareAndSwapInt32(&amp;m.state, old, old|mutexWoken) {</code></span>
+<span class="codeline" id="line-99"><code>				awoke = true</code></span>
+<span class="codeline" id="line-100"><code>			}</code></span>
+<span class="codeline" id="line-101"><code>			runtime_doSpin()</code></span>
+<span class="codeline" id="line-102"><code>			iter++</code></span>
+<span class="codeline" id="line-103"><code>			old = m.state</code></span>
+<span class="codeline" id="line-104"><code>			continue</code></span>
+<span class="codeline" id="line-105"><code>		}</code></span>
+<span class="codeline" id="line-106"><code>		new := old</code></span>
+<span class="codeline" id="line-107"><code>		// Don't try to acquire starving mutex, new arriving goroutines must queue.</code></span>
+<span class="codeline" id="line-108"><code>		if old&amp;mutexStarving == 0 {</code></span>
+<span class="codeline" id="line-109"><code>			new |= mutexLocked</code></span>
+<span class="codeline" id="line-110"><code>		}</code></span>
+<span class="codeline" id="line-111"><code>		if old&amp;(mutexLocked|mutexStarving) != 0 {</code></span>
+<span class="codeline" id="line-112"><code>			new += 1 &lt;&lt; mutexWaiterShift</code></span>
+<span class="codeline" id="line-113"><code>		}</code></span>
+<span class="codeline" id="line-114"><code>		// The current goroutine switches mutex to starvation mode.</code></span>
+<span class="codeline" id="line-115"><code>		// But if the mutex is currently unlocked, don't do the switch.</code></span>
+<span class="codeline" id="line-116"><code>		// Unlock expects that starving mutex has waiters, which will not</code></span>
+<span class="codeline" id="line-117"><code>		// be true in this case.</code></span>
+<span class="codeline" id="line-118"><code>		if starving &amp;&amp; old&amp;mutexLocked != 0 {</code></span>
+<span class="codeline" id="line-119"><code>			new |= mutexStarving</code></span>
+<span class="codeline" id="line-120"><code>		}</code></span>
+<span class="codeline" id="line-121"><code>		if awoke {</code></span>
+<span class="codeline" id="line-122"><code>			// The goroutine has been woken from sleep,</code></span>
+<span class="codeline" id="line-123"><code>			// so we need to reset the flag in either case.</code></span>
+<span class="codeline" id="line-124"><code>			if new&amp;mutexWoken == 0 {</code></span>
+<span class="codeline" id="line-125"><code>				throw("sync: inconsistent mutex state")</code></span>
+<span class="codeline" id="line-126"><code>			}</code></span>
+<span class="codeline" id="line-127"><code>			new &amp;^= mutexWoken</code></span>
+<span class="codeline" id="line-128"><code>		}</code></span>
+<span class="codeline" id="line-129"><code>		if atomic.CompareAndSwapInt32(&amp;m.state, old, new) {</code></span>
+<span class="codeline" id="line-130"><code>			if old&amp;(mutexLocked|mutexStarving) == 0 {</code></span>
+<span class="codeline" id="line-131"><code>				break // locked the mutex with CAS</code></span>
+<span class="codeline" id="line-132"><code>			}</code></span>
+<span class="codeline" id="line-133"><code>			// If we were already waiting before, queue at the front of the queue.</code></span>
+<span class="codeline" id="line-134"><code>			queueLifo := waitStartTime != 0</code></span>
+<span class="codeline" id="line-135"><code>			if waitStartTime == 0 {</code></span>
+<span class="codeline" id="line-136"><code>				waitStartTime = runtime_nanotime()</code></span>
+<span class="codeline" id="line-137"><code>			}</code></span>
+<span class="codeline" id="line-138"><code>			runtime_SemacquireMutex(&amp;m.sema, queueLifo, 1)</code></span>
+<span class="codeline" id="line-139"><code>			starving = starving || runtime_nanotime()-waitStartTime &gt; starvationThresholdNs</code></span>
+<span class="codeline" id="line-140"><code>			old = m.state</code></span>
+<span class="codeline" id="line-141"><code>			if old&amp;mutexStarving != 0 {</code></span>
+<span class="codeline" id="line-142"><code>				// If this goroutine was woken and mutex is in starvation mode,</code></span>
+<span class="codeline" id="line-143"><code>				// ownership was handed off to us but mutex is in somewhat</code></span>
+<span class="codeline" id="line-144"><code>				// inconsistent state: mutexLocked is not set and we are still</code></span>
+<span class="codeline" id="line-145"><code>				// accounted as waiter. Fix that.</code></span>
+<span class="codeline" id="line-146"><code>				if old&amp;(mutexLocked|mutexWoken) != 0 || old&gt;&gt;mutexWaiterShift == 0 {</code></span>
+<span class="codeline" id="line-147"><code>					throw("sync: inconsistent mutex state")</code></span>
+<span class="codeline" id="line-148"><code>				}</code></span>
+<span class="codeline" id="line-149"><code>				delta := int32(mutexLocked - 1&lt;&lt;mutexWaiterShift)</code></span>
+<span class="codeline" id="line-150"><code>				if !starving || old&gt;&gt;mutexWaiterShift == 1 {</code></span>
+<span class="codeline" id="line-151"><code>					// Exit starvation mode.</code></span>
+<span class="codeline" id="line-152"><code>					// Critical to do it here and consider wait time.</code></span>
+<span class="codeline" id="line-153"><code>					// Starvation mode is so inefficient, that two goroutines</code></span>
+<span class="codeline" id="line-154"><code>					// can go lock-step infinitely once they switch mutex</code></span>
+<span class="codeline" id="line-155"><code>					// to starvation mode.</code></span>
+<span class="codeline" id="line-156"><code>					delta -= mutexStarving</code></span>
+<span class="codeline" id="line-157"><code>				}</code></span>
+<span class="codeline" id="line-158"><code>				atomic.AddInt32(&amp;m.state, delta)</code></span>
+<span class="codeline" id="line-159"><code>				break</code></span>
+<span class="codeline" id="line-160"><code>			}</code></span>
+<span class="codeline" id="line-161"><code>			awoke = true</code></span>
+<span class="codeline" id="line-162"><code>			iter = 0</code></span>
+<span class="codeline" id="line-163"><code>		} else {</code></span>
+<span class="codeline" id="line-164"><code>			old = m.state</code></span>
+<span class="codeline" id="line-165"><code>		}</code></span>
+<span class="codeline" id="line-166"><code>	}</code></span>
+<span class="codeline" id="line-167"><code></code></span>
+<span class="codeline" id="line-168"><code>	if race.Enabled {</code></span>
+<span class="codeline" id="line-169"><code>		race.Acquire(unsafe.Pointer(m))</code></span>
+<span class="codeline" id="line-170"><code>	}</code></span>
+<span class="codeline" id="line-171"><code>}</code></span>
+<span class="codeline" id="line-172"><code></code></span>
+<span class="codeline" id="line-173"><code>// Unlock unlocks m.</code></span>
+<span class="codeline" id="line-174"><code>// It is a run-time error if m is not locked on entry to Unlock.</code></span>
+<span class="codeline" id="line-175"><code>//</code></span>
+<span class="codeline" id="line-176"><code>// A locked Mutex is not associated with a particular goroutine.</code></span>
+<span class="codeline" id="line-177"><code>// It is allowed for one goroutine to lock a Mutex and then</code></span>
+<span class="codeline" id="line-178"><code>// arrange for another goroutine to unlock it.</code></span>
+<span class="codeline" id="line-179"><code>func (m *Mutex) Unlock() {</code></span>
+<span class="codeline" id="line-180"><code>	if race.Enabled {</code></span>
+<span class="codeline" id="line-181"><code>		_ = m.state</code></span>
+<span class="codeline" id="line-182"><code>		race.Release(unsafe.Pointer(m))</code></span>
+<span class="codeline" id="line-183"><code>	}</code></span>
+<span class="codeline" id="line-184"><code></code></span>
+<span class="codeline" id="line-185"><code>	// Fast path: drop lock bit.</code></span>
+<span class="codeline" id="line-186"><code>	new := atomic.AddInt32(&amp;m.state, -mutexLocked)</code></span>
+<span class="codeline" id="line-187"><code>	if new != 0 {</code></span>
+<span class="codeline" id="line-188"><code>		// Outlined slow path to allow inlining the fast path.</code></span>
+<span class="codeline" id="line-189"><code>		// To hide unlockSlow during tracing we skip one extra frame when tracing GoUnblock.</code></span>
+<span class="codeline" id="line-190"><code>		m.unlockSlow(new)</code></span>
+<span class="codeline" id="line-191"><code>	}</code></span>
+<span class="codeline" id="line-192"><code>}</code></span>
+<span class="codeline" id="line-193"><code></code></span>
+<span class="codeline" id="line-194"><code>func (m *Mutex) unlockSlow(new int32) {</code></span>
+<span class="codeline" id="line-195"><code>	if (new+mutexLocked)&amp;mutexLocked == 0 {</code></span>
+<span class="codeline" id="line-196"><code>		throw("sync: unlock of unlocked mutex")</code></span>
+<span class="codeline" id="line-197"><code>	}</code></span>
+<span class="codeline" id="line-198"><code>	if new&amp;mutexStarving == 0 {</code></span>
+<span class="codeline" id="line-199"><code>		old := new</code></span>
+<span class="codeline" id="line-200"><code>		for {</code></span>
+<span class="codeline" id="line-201"><code>			// If there are no waiters or a goroutine has already</code></span>
+<span class="codeline" id="line-202"><code>			// been woken or grabbed the lock, no need to wake anyone.</code></span>
+<span class="codeline" id="line-203"><code>			// In starvation mode ownership is directly handed off from unlocking</code></span>
+<span class="codeline" id="line-204"><code>			// goroutine to the next waiter. We are not part of this chain,</code></span>
+<span class="codeline" id="line-205"><code>			// since we did not observe mutexStarving when we unlocked the mutex above.</code></span>
+<span class="codeline" id="line-206"><code>			// So get off the way.</code></span>
+<span class="codeline" id="line-207"><code>			if old&gt;&gt;mutexWaiterShift == 0 || old&amp;(mutexLocked|mutexWoken|mutexStarving) != 0 {</code></span>
+<span class="codeline" id="line-208"><code>				return</code></span>
+<span class="codeline" id="line-209"><code>			}</code></span>
+<span class="codeline" id="line-210"><code>			// Grab the right to wake someone.</code></span>
+<span class="codeline" id="line-211"><code>			new = (old - 1&lt;&lt;mutexWaiterShift) | mutexWoken</code></span>
+<span class="codeline" id="line-212"><code>			if atomic.CompareAndSwapInt32(&amp;m.state, old, new) {</code></span>
+<span class="codeline" id="line-213"><code>				runtime_Semrelease(&amp;m.sema, false, 1)</code></span>
+<span class="codeline" id="line-214"><code>				return</code></span>
+<span class="codeline" id="line-215"><code>			}</code></span>
+<span class="codeline" id="line-216"><code>			old = m.state</code></span>
+<span class="codeline" id="line-217"><code>		}</code></span>
+<span class="codeline" id="line-218"><code>	} else {</code></span>
+<span class="codeline" id="line-219"><code>		// Starving mode: handoff mutex ownership to the next waiter, and yield</code></span>
+<span class="codeline" id="line-220"><code>		// our time slice so that the next waiter can start to run immediately.</code></span>
+<span class="codeline" id="line-221"><code>		// Note: mutexLocked is not set, the waiter will set it after wakeup.</code></span>
+<span class="codeline" id="line-222"><code>		// But mutex is still considered locked if mutexStarving is set,</code></span>
+<span class="codeline" id="line-223"><code>		// so new coming goroutines won't acquire it.</code></span>
+<span class="codeline" id="line-224"><code>		runtime_Semrelease(&amp;m.sema, true, 1)</code></span>
+<span class="codeline" id="line-225"><code>	}</code></span>
+<span class="codeline" id="line-226"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

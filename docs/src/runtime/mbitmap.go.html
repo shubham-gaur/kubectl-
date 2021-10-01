@@ -1,0 +1,2051 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mbitmap.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mbitmap.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Garbage collector: type and heap bitmaps.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// Stack, data, and bss bitmaps</code></span>
+<span class="codeline" id="line-8"><code>//</code></span>
+<span class="codeline" id="line-9"><code>// Stack frames and global variables in the data and bss sections are</code></span>
+<span class="codeline" id="line-10"><code>// described by bitmaps with 1 bit per pointer-sized word. A "1" bit</code></span>
+<span class="codeline" id="line-11"><code>// means the word is a live pointer to be visited by the GC (referred to</code></span>
+<span class="codeline" id="line-12"><code>// as "pointer"). A "0" bit means the word should be ignored by GC</code></span>
+<span class="codeline" id="line-13"><code>// (referred to as "scalar", though it could be a dead pointer value).</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// Heap bitmap</code></span>
+<span class="codeline" id="line-16"><code>//</code></span>
+<span class="codeline" id="line-17"><code>// The heap bitmap comprises 2 bits for each pointer-sized word in the heap,</code></span>
+<span class="codeline" id="line-18"><code>// stored in the heapArena metadata backing each heap arena.</code></span>
+<span class="codeline" id="line-19"><code>// That is, if ha is the heapArena for the arena starting a start,</code></span>
+<span class="codeline" id="line-20"><code>// then ha.bitmap[0] holds the 2-bit entries for the four words start</code></span>
+<span class="codeline" id="line-21"><code>// through start+3*ptrSize, ha.bitmap[1] holds the entries for</code></span>
+<span class="codeline" id="line-22"><code>// start+4*ptrSize through start+7*ptrSize, and so on.</code></span>
+<span class="codeline" id="line-23"><code>//</code></span>
+<span class="codeline" id="line-24"><code>// In each 2-bit entry, the lower bit is a pointer/scalar bit, just</code></span>
+<span class="codeline" id="line-25"><code>// like in the stack/data bitmaps described above. The upper bit</code></span>
+<span class="codeline" id="line-26"><code>// indicates scan/dead: a "1" value ("scan") indicates that there may</code></span>
+<span class="codeline" id="line-27"><code>// be pointers in later words of the allocation, and a "0" value</code></span>
+<span class="codeline" id="line-28"><code>// ("dead") indicates there are no more pointers in the allocation. If</code></span>
+<span class="codeline" id="line-29"><code>// the upper bit is 0, the lower bit must also be 0, and this</code></span>
+<span class="codeline" id="line-30"><code>// indicates scanning can ignore the rest of the allocation.</code></span>
+<span class="codeline" id="line-31"><code>//</code></span>
+<span class="codeline" id="line-32"><code>// The 2-bit entries are split when written into the byte, so that the top half</code></span>
+<span class="codeline" id="line-33"><code>// of the byte contains 4 high (scan) bits and the bottom half contains 4 low</code></span>
+<span class="codeline" id="line-34"><code>// (pointer) bits. This form allows a copy from the 1-bit to the 4-bit form to</code></span>
+<span class="codeline" id="line-35"><code>// keep the pointer bits contiguous, instead of having to space them out.</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// The code makes use of the fact that the zero value for a heap</code></span>
+<span class="codeline" id="line-38"><code>// bitmap means scalar/dead. This property must be preserved when</code></span>
+<span class="codeline" id="line-39"><code>// modifying the encoding.</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>// The bitmap for noscan spans is not maintained. Code must ensure</code></span>
+<span class="codeline" id="line-42"><code>// that an object is scannable before consulting its bitmap by</code></span>
+<span class="codeline" id="line-43"><code>// checking either the noscan bit in the span or by consulting its</code></span>
+<span class="codeline" id="line-44"><code>// type's information.</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>package runtime</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>import (</code></span>
+<span class="codeline" id="line-49"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-50"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-51"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-52"><code>)</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>const (</code></span>
+<span class="codeline" id="line-55"><code>	bitPointer = 1 &lt;&lt; 0</code></span>
+<span class="codeline" id="line-56"><code>	bitScan    = 1 &lt;&lt; 4</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>	heapBitsShift      = 1     // shift offset between successive bitPointer or bitScan entries</code></span>
+<span class="codeline" id="line-59"><code>	wordsPerBitmapByte = 8 / 2 // heap words described by one bitmap byte</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>	// all scan/pointer bits in a byte</code></span>
+<span class="codeline" id="line-62"><code>	bitScanAll    = bitScan | bitScan&lt;&lt;heapBitsShift | bitScan&lt;&lt;(2*heapBitsShift) | bitScan&lt;&lt;(3*heapBitsShift)</code></span>
+<span class="codeline" id="line-63"><code>	bitPointerAll = bitPointer | bitPointer&lt;&lt;heapBitsShift | bitPointer&lt;&lt;(2*heapBitsShift) | bitPointer&lt;&lt;(3*heapBitsShift)</code></span>
+<span class="codeline" id="line-64"><code>)</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>// addb returns the byte pointer p+n.</code></span>
+<span class="codeline" id="line-67"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-68"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-69"><code>func addb(p *byte, n uintptr) *byte {</code></span>
+<span class="codeline" id="line-70"><code>	// Note: wrote out full expression instead of calling add(p, n)</code></span>
+<span class="codeline" id="line-71"><code>	// to reduce the number of temporaries generated by the</code></span>
+<span class="codeline" id="line-72"><code>	// compiler for this trivial expression during inlining.</code></span>
+<span class="codeline" id="line-73"><code>	return (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) + n))</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>// subtractb returns the byte pointer p-n.</code></span>
+<span class="codeline" id="line-77"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-78"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-79"><code>func subtractb(p *byte, n uintptr) *byte {</code></span>
+<span class="codeline" id="line-80"><code>	// Note: wrote out full expression instead of calling add(p, -n)</code></span>
+<span class="codeline" id="line-81"><code>	// to reduce the number of temporaries generated by the</code></span>
+<span class="codeline" id="line-82"><code>	// compiler for this trivial expression during inlining.</code></span>
+<span class="codeline" id="line-83"><code>	return (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) - n))</code></span>
+<span class="codeline" id="line-84"><code>}</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>// add1 returns the byte pointer p+1.</code></span>
+<span class="codeline" id="line-87"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-88"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-89"><code>func add1(p *byte) *byte {</code></span>
+<span class="codeline" id="line-90"><code>	// Note: wrote out full expression instead of calling addb(p, 1)</code></span>
+<span class="codeline" id="line-91"><code>	// to reduce the number of temporaries generated by the</code></span>
+<span class="codeline" id="line-92"><code>	// compiler for this trivial expression during inlining.</code></span>
+<span class="codeline" id="line-93"><code>	return (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) + 1))</code></span>
+<span class="codeline" id="line-94"><code>}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>// subtract1 returns the byte pointer p-1.</code></span>
+<span class="codeline" id="line-97"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-98"><code>//</code></span>
+<span class="codeline" id="line-99"><code>// nosplit because it is used during write barriers and must not be preempted.</code></span>
+<span class="codeline" id="line-100"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-101"><code>func subtract1(p *byte) *byte {</code></span>
+<span class="codeline" id="line-102"><code>	// Note: wrote out full expression instead of calling subtractb(p, 1)</code></span>
+<span class="codeline" id="line-103"><code>	// to reduce the number of temporaries generated by the</code></span>
+<span class="codeline" id="line-104"><code>	// compiler for this trivial expression during inlining.</code></span>
+<span class="codeline" id="line-105"><code>	return (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) - 1))</code></span>
+<span class="codeline" id="line-106"><code>}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>// heapBits provides access to the bitmap bits for a single heap word.</code></span>
+<span class="codeline" id="line-109"><code>// The methods on heapBits take value receivers so that the compiler</code></span>
+<span class="codeline" id="line-110"><code>// can more easily inline calls to those methods and registerize the</code></span>
+<span class="codeline" id="line-111"><code>// struct fields independently.</code></span>
+<span class="codeline" id="line-112"><code>type heapBits struct {</code></span>
+<span class="codeline" id="line-113"><code>	bitp  *uint8</code></span>
+<span class="codeline" id="line-114"><code>	shift uint32</code></span>
+<span class="codeline" id="line-115"><code>	arena uint32 // Index of heap arena containing bitp</code></span>
+<span class="codeline" id="line-116"><code>	last  *uint8 // Last byte arena's bitmap</code></span>
+<span class="codeline" id="line-117"><code>}</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>// Make the compiler check that heapBits.arena is large enough to hold</code></span>
+<span class="codeline" id="line-120"><code>// the maximum arena frame number.</code></span>
+<span class="codeline" id="line-121"><code>var _ = heapBits{arena: (1&lt;&lt;heapAddrBits)/heapArenaBytes - 1}</code></span>
+<span class="codeline" id="line-122"><code></code></span>
+<span class="codeline" id="line-123"><code>// markBits provides access to the mark bit for an object in the heap.</code></span>
+<span class="codeline" id="line-124"><code>// bytep points to the byte holding the mark bit.</code></span>
+<span class="codeline" id="line-125"><code>// mask is a byte with a single bit set that can be &amp;ed with *bytep</code></span>
+<span class="codeline" id="line-126"><code>// to see if the bit has been set.</code></span>
+<span class="codeline" id="line-127"><code>// *m.byte&amp;m.mask != 0 indicates the mark bit is set.</code></span>
+<span class="codeline" id="line-128"><code>// index can be used along with span information to generate</code></span>
+<span class="codeline" id="line-129"><code>// the address of the object in the heap.</code></span>
+<span class="codeline" id="line-130"><code>// We maintain one set of mark bits for allocation and one for</code></span>
+<span class="codeline" id="line-131"><code>// marking purposes.</code></span>
+<span class="codeline" id="line-132"><code>type markBits struct {</code></span>
+<span class="codeline" id="line-133"><code>	bytep *uint8</code></span>
+<span class="codeline" id="line-134"><code>	mask  uint8</code></span>
+<span class="codeline" id="line-135"><code>	index uintptr</code></span>
+<span class="codeline" id="line-136"><code>}</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-139"><code>func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {</code></span>
+<span class="codeline" id="line-140"><code>	bytep, mask := s.allocBits.bitp(allocBitIndex)</code></span>
+<span class="codeline" id="line-141"><code>	return markBits{bytep, mask, allocBitIndex}</code></span>
+<span class="codeline" id="line-142"><code>}</code></span>
+<span class="codeline" id="line-143"><code></code></span>
+<span class="codeline" id="line-144"><code>// refillAllocCache takes 8 bytes s.allocBits starting at whichByte</code></span>
+<span class="codeline" id="line-145"><code>// and negates them so that ctz (count trailing zeros) instructions</code></span>
+<span class="codeline" id="line-146"><code>// can be used. It then places these 8 bytes into the cached 64 bit</code></span>
+<span class="codeline" id="line-147"><code>// s.allocCache.</code></span>
+<span class="codeline" id="line-148"><code>func (s *mspan) refillAllocCache(whichByte uintptr) {</code></span>
+<span class="codeline" id="line-149"><code>	bytes := (*[8]uint8)(unsafe.Pointer(s.allocBits.bytep(whichByte)))</code></span>
+<span class="codeline" id="line-150"><code>	aCache := uint64(0)</code></span>
+<span class="codeline" id="line-151"><code>	aCache |= uint64(bytes[0])</code></span>
+<span class="codeline" id="line-152"><code>	aCache |= uint64(bytes[1]) &lt;&lt; (1 * 8)</code></span>
+<span class="codeline" id="line-153"><code>	aCache |= uint64(bytes[2]) &lt;&lt; (2 * 8)</code></span>
+<span class="codeline" id="line-154"><code>	aCache |= uint64(bytes[3]) &lt;&lt; (3 * 8)</code></span>
+<span class="codeline" id="line-155"><code>	aCache |= uint64(bytes[4]) &lt;&lt; (4 * 8)</code></span>
+<span class="codeline" id="line-156"><code>	aCache |= uint64(bytes[5]) &lt;&lt; (5 * 8)</code></span>
+<span class="codeline" id="line-157"><code>	aCache |= uint64(bytes[6]) &lt;&lt; (6 * 8)</code></span>
+<span class="codeline" id="line-158"><code>	aCache |= uint64(bytes[7]) &lt;&lt; (7 * 8)</code></span>
+<span class="codeline" id="line-159"><code>	s.allocCache = ^aCache</code></span>
+<span class="codeline" id="line-160"><code>}</code></span>
+<span class="codeline" id="line-161"><code></code></span>
+<span class="codeline" id="line-162"><code>// nextFreeIndex returns the index of the next free object in s at</code></span>
+<span class="codeline" id="line-163"><code>// or after s.freeindex.</code></span>
+<span class="codeline" id="line-164"><code>// There are hardware instructions that can be used to make this</code></span>
+<span class="codeline" id="line-165"><code>// faster if profiling warrants it.</code></span>
+<span class="codeline" id="line-166"><code>func (s *mspan) nextFreeIndex() uintptr {</code></span>
+<span class="codeline" id="line-167"><code>	sfreeindex := s.freeindex</code></span>
+<span class="codeline" id="line-168"><code>	snelems := s.nelems</code></span>
+<span class="codeline" id="line-169"><code>	if sfreeindex == snelems {</code></span>
+<span class="codeline" id="line-170"><code>		return sfreeindex</code></span>
+<span class="codeline" id="line-171"><code>	}</code></span>
+<span class="codeline" id="line-172"><code>	if sfreeindex &gt; snelems {</code></span>
+<span class="codeline" id="line-173"><code>		throw("s.freeindex &gt; s.nelems")</code></span>
+<span class="codeline" id="line-174"><code>	}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>	aCache := s.allocCache</code></span>
+<span class="codeline" id="line-177"><code></code></span>
+<span class="codeline" id="line-178"><code>	bitIndex := sys.Ctz64(aCache)</code></span>
+<span class="codeline" id="line-179"><code>	for bitIndex == 64 {</code></span>
+<span class="codeline" id="line-180"><code>		// Move index to start of next cached bits.</code></span>
+<span class="codeline" id="line-181"><code>		sfreeindex = (sfreeindex + 64) &amp;^ (64 - 1)</code></span>
+<span class="codeline" id="line-182"><code>		if sfreeindex &gt;= snelems {</code></span>
+<span class="codeline" id="line-183"><code>			s.freeindex = snelems</code></span>
+<span class="codeline" id="line-184"><code>			return snelems</code></span>
+<span class="codeline" id="line-185"><code>		}</code></span>
+<span class="codeline" id="line-186"><code>		whichByte := sfreeindex / 8</code></span>
+<span class="codeline" id="line-187"><code>		// Refill s.allocCache with the next 64 alloc bits.</code></span>
+<span class="codeline" id="line-188"><code>		s.refillAllocCache(whichByte)</code></span>
+<span class="codeline" id="line-189"><code>		aCache = s.allocCache</code></span>
+<span class="codeline" id="line-190"><code>		bitIndex = sys.Ctz64(aCache)</code></span>
+<span class="codeline" id="line-191"><code>		// nothing available in cached bits</code></span>
+<span class="codeline" id="line-192"><code>		// grab the next 8 bytes and try again.</code></span>
+<span class="codeline" id="line-193"><code>	}</code></span>
+<span class="codeline" id="line-194"><code>	result := sfreeindex + uintptr(bitIndex)</code></span>
+<span class="codeline" id="line-195"><code>	if result &gt;= snelems {</code></span>
+<span class="codeline" id="line-196"><code>		s.freeindex = snelems</code></span>
+<span class="codeline" id="line-197"><code>		return snelems</code></span>
+<span class="codeline" id="line-198"><code>	}</code></span>
+<span class="codeline" id="line-199"><code></code></span>
+<span class="codeline" id="line-200"><code>	s.allocCache &gt;&gt;= uint(bitIndex + 1)</code></span>
+<span class="codeline" id="line-201"><code>	sfreeindex = result + 1</code></span>
+<span class="codeline" id="line-202"><code></code></span>
+<span class="codeline" id="line-203"><code>	if sfreeindex%64 == 0 &amp;&amp; sfreeindex != snelems {</code></span>
+<span class="codeline" id="line-204"><code>		// We just incremented s.freeindex so it isn't 0.</code></span>
+<span class="codeline" id="line-205"><code>		// As each 1 in s.allocCache was encountered and used for allocation</code></span>
+<span class="codeline" id="line-206"><code>		// it was shifted away. At this point s.allocCache contains all 0s.</code></span>
+<span class="codeline" id="line-207"><code>		// Refill s.allocCache so that it corresponds</code></span>
+<span class="codeline" id="line-208"><code>		// to the bits at s.allocBits starting at s.freeindex.</code></span>
+<span class="codeline" id="line-209"><code>		whichByte := sfreeindex / 8</code></span>
+<span class="codeline" id="line-210"><code>		s.refillAllocCache(whichByte)</code></span>
+<span class="codeline" id="line-211"><code>	}</code></span>
+<span class="codeline" id="line-212"><code>	s.freeindex = sfreeindex</code></span>
+<span class="codeline" id="line-213"><code>	return result</code></span>
+<span class="codeline" id="line-214"><code>}</code></span>
+<span class="codeline" id="line-215"><code></code></span>
+<span class="codeline" id="line-216"><code>// isFree reports whether the index'th object in s is unallocated.</code></span>
+<span class="codeline" id="line-217"><code>//</code></span>
+<span class="codeline" id="line-218"><code>// The caller must ensure s.state is mSpanInUse, and there must have</code></span>
+<span class="codeline" id="line-219"><code>// been no preemption points since ensuring this (which could allow a</code></span>
+<span class="codeline" id="line-220"><code>// GC transition, which would allow the state to change).</code></span>
+<span class="codeline" id="line-221"><code>func (s *mspan) isFree(index uintptr) bool {</code></span>
+<span class="codeline" id="line-222"><code>	if index &lt; s.freeindex {</code></span>
+<span class="codeline" id="line-223"><code>		return false</code></span>
+<span class="codeline" id="line-224"><code>	}</code></span>
+<span class="codeline" id="line-225"><code>	bytep, mask := s.allocBits.bitp(index)</code></span>
+<span class="codeline" id="line-226"><code>	return *bytep&amp;mask == 0</code></span>
+<span class="codeline" id="line-227"><code>}</code></span>
+<span class="codeline" id="line-228"><code></code></span>
+<span class="codeline" id="line-229"><code>func (s *mspan) objIndex(p uintptr) uintptr {</code></span>
+<span class="codeline" id="line-230"><code>	byteOffset := p - s.base()</code></span>
+<span class="codeline" id="line-231"><code>	if byteOffset == 0 {</code></span>
+<span class="codeline" id="line-232"><code>		return 0</code></span>
+<span class="codeline" id="line-233"><code>	}</code></span>
+<span class="codeline" id="line-234"><code>	if s.baseMask != 0 {</code></span>
+<span class="codeline" id="line-235"><code>		// s.baseMask is non-0, elemsize is a power of two, so shift by s.divShift</code></span>
+<span class="codeline" id="line-236"><code>		return byteOffset &gt;&gt; s.divShift</code></span>
+<span class="codeline" id="line-237"><code>	}</code></span>
+<span class="codeline" id="line-238"><code>	return uintptr(((uint64(byteOffset) &gt;&gt; s.divShift) * uint64(s.divMul)) &gt;&gt; s.divShift2)</code></span>
+<span class="codeline" id="line-239"><code>}</code></span>
+<span class="codeline" id="line-240"><code></code></span>
+<span class="codeline" id="line-241"><code>func markBitsForAddr(p uintptr) markBits {</code></span>
+<span class="codeline" id="line-242"><code>	s := spanOf(p)</code></span>
+<span class="codeline" id="line-243"><code>	objIndex := s.objIndex(p)</code></span>
+<span class="codeline" id="line-244"><code>	return s.markBitsForIndex(objIndex)</code></span>
+<span class="codeline" id="line-245"><code>}</code></span>
+<span class="codeline" id="line-246"><code></code></span>
+<span class="codeline" id="line-247"><code>func (s *mspan) markBitsForIndex(objIndex uintptr) markBits {</code></span>
+<span class="codeline" id="line-248"><code>	bytep, mask := s.gcmarkBits.bitp(objIndex)</code></span>
+<span class="codeline" id="line-249"><code>	return markBits{bytep, mask, objIndex}</code></span>
+<span class="codeline" id="line-250"><code>}</code></span>
+<span class="codeline" id="line-251"><code></code></span>
+<span class="codeline" id="line-252"><code>func (s *mspan) markBitsForBase() markBits {</code></span>
+<span class="codeline" id="line-253"><code>	return markBits{(*uint8)(s.gcmarkBits), uint8(1), 0}</code></span>
+<span class="codeline" id="line-254"><code>}</code></span>
+<span class="codeline" id="line-255"><code></code></span>
+<span class="codeline" id="line-256"><code>// isMarked reports whether mark bit m is set.</code></span>
+<span class="codeline" id="line-257"><code>func (m markBits) isMarked() bool {</code></span>
+<span class="codeline" id="line-258"><code>	return *m.bytep&amp;m.mask != 0</code></span>
+<span class="codeline" id="line-259"><code>}</code></span>
+<span class="codeline" id="line-260"><code></code></span>
+<span class="codeline" id="line-261"><code>// setMarked sets the marked bit in the markbits, atomically.</code></span>
+<span class="codeline" id="line-262"><code>func (m markBits) setMarked() {</code></span>
+<span class="codeline" id="line-263"><code>	// Might be racing with other updates, so use atomic update always.</code></span>
+<span class="codeline" id="line-264"><code>	// We used to be clever here and use a non-atomic update in certain</code></span>
+<span class="codeline" id="line-265"><code>	// cases, but it's not worth the risk.</code></span>
+<span class="codeline" id="line-266"><code>	atomic.Or8(m.bytep, m.mask)</code></span>
+<span class="codeline" id="line-267"><code>}</code></span>
+<span class="codeline" id="line-268"><code></code></span>
+<span class="codeline" id="line-269"><code>// setMarkedNonAtomic sets the marked bit in the markbits, non-atomically.</code></span>
+<span class="codeline" id="line-270"><code>func (m markBits) setMarkedNonAtomic() {</code></span>
+<span class="codeline" id="line-271"><code>	*m.bytep |= m.mask</code></span>
+<span class="codeline" id="line-272"><code>}</code></span>
+<span class="codeline" id="line-273"><code></code></span>
+<span class="codeline" id="line-274"><code>// clearMarked clears the marked bit in the markbits, atomically.</code></span>
+<span class="codeline" id="line-275"><code>func (m markBits) clearMarked() {</code></span>
+<span class="codeline" id="line-276"><code>	// Might be racing with other updates, so use atomic update always.</code></span>
+<span class="codeline" id="line-277"><code>	// We used to be clever here and use a non-atomic update in certain</code></span>
+<span class="codeline" id="line-278"><code>	// cases, but it's not worth the risk.</code></span>
+<span class="codeline" id="line-279"><code>	atomic.And8(m.bytep, ^m.mask)</code></span>
+<span class="codeline" id="line-280"><code>}</code></span>
+<span class="codeline" id="line-281"><code></code></span>
+<span class="codeline" id="line-282"><code>// markBitsForSpan returns the markBits for the span base address base.</code></span>
+<span class="codeline" id="line-283"><code>func markBitsForSpan(base uintptr) (mbits markBits) {</code></span>
+<span class="codeline" id="line-284"><code>	mbits = markBitsForAddr(base)</code></span>
+<span class="codeline" id="line-285"><code>	if mbits.mask != 1 {</code></span>
+<span class="codeline" id="line-286"><code>		throw("markBitsForSpan: unaligned start")</code></span>
+<span class="codeline" id="line-287"><code>	}</code></span>
+<span class="codeline" id="line-288"><code>	return mbits</code></span>
+<span class="codeline" id="line-289"><code>}</code></span>
+<span class="codeline" id="line-290"><code></code></span>
+<span class="codeline" id="line-291"><code>// advance advances the markBits to the next object in the span.</code></span>
+<span class="codeline" id="line-292"><code>func (m *markBits) advance() {</code></span>
+<span class="codeline" id="line-293"><code>	if m.mask == 1&lt;&lt;7 {</code></span>
+<span class="codeline" id="line-294"><code>		m.bytep = (*uint8)(unsafe.Pointer(uintptr(unsafe.Pointer(m.bytep)) + 1))</code></span>
+<span class="codeline" id="line-295"><code>		m.mask = 1</code></span>
+<span class="codeline" id="line-296"><code>	} else {</code></span>
+<span class="codeline" id="line-297"><code>		m.mask = m.mask &lt;&lt; 1</code></span>
+<span class="codeline" id="line-298"><code>	}</code></span>
+<span class="codeline" id="line-299"><code>	m.index++</code></span>
+<span class="codeline" id="line-300"><code>}</code></span>
+<span class="codeline" id="line-301"><code></code></span>
+<span class="codeline" id="line-302"><code>// heapBitsForAddr returns the heapBits for the address addr.</code></span>
+<span class="codeline" id="line-303"><code>// The caller must ensure addr is in an allocated span.</code></span>
+<span class="codeline" id="line-304"><code>// In particular, be careful not to point past the end of an object.</code></span>
+<span class="codeline" id="line-305"><code>//</code></span>
+<span class="codeline" id="line-306"><code>// nosplit because it is used during write barriers and must not be preempted.</code></span>
+<span class="codeline" id="line-307"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-308"><code>func heapBitsForAddr(addr uintptr) (h heapBits) {</code></span>
+<span class="codeline" id="line-309"><code>	// 2 bits per word, 4 pairs per byte, and a mask is hard coded.</code></span>
+<span class="codeline" id="line-310"><code>	arena := arenaIndex(addr)</code></span>
+<span class="codeline" id="line-311"><code>	ha := mheap_.arenas[arena.l1()][arena.l2()]</code></span>
+<span class="codeline" id="line-312"><code>	// The compiler uses a load for nil checking ha, but in this</code></span>
+<span class="codeline" id="line-313"><code>	// case we'll almost never hit that cache line again, so it</code></span>
+<span class="codeline" id="line-314"><code>	// makes more sense to do a value check.</code></span>
+<span class="codeline" id="line-315"><code>	if ha == nil {</code></span>
+<span class="codeline" id="line-316"><code>		// addr is not in the heap. Return nil heapBits, which</code></span>
+<span class="codeline" id="line-317"><code>		// we expect to crash in the caller.</code></span>
+<span class="codeline" id="line-318"><code>		return</code></span>
+<span class="codeline" id="line-319"><code>	}</code></span>
+<span class="codeline" id="line-320"><code>	h.bitp = &amp;ha.bitmap[(addr/(sys.PtrSize*4))%heapArenaBitmapBytes]</code></span>
+<span class="codeline" id="line-321"><code>	h.shift = uint32((addr / sys.PtrSize) &amp; 3)</code></span>
+<span class="codeline" id="line-322"><code>	h.arena = uint32(arena)</code></span>
+<span class="codeline" id="line-323"><code>	h.last = &amp;ha.bitmap[len(ha.bitmap)-1]</code></span>
+<span class="codeline" id="line-324"><code>	return</code></span>
+<span class="codeline" id="line-325"><code>}</code></span>
+<span class="codeline" id="line-326"><code></code></span>
+<span class="codeline" id="line-327"><code>// badPointer throws bad pointer in heap panic.</code></span>
+<span class="codeline" id="line-328"><code>func badPointer(s *mspan, p, refBase, refOff uintptr) {</code></span>
+<span class="codeline" id="line-329"><code>	// Typically this indicates an incorrect use</code></span>
+<span class="codeline" id="line-330"><code>	// of unsafe or cgo to store a bad pointer in</code></span>
+<span class="codeline" id="line-331"><code>	// the Go heap. It may also indicate a runtime</code></span>
+<span class="codeline" id="line-332"><code>	// bug.</code></span>
+<span class="codeline" id="line-333"><code>	//</code></span>
+<span class="codeline" id="line-334"><code>	// TODO(austin): We could be more aggressive</code></span>
+<span class="codeline" id="line-335"><code>	// and detect pointers to unallocated objects</code></span>
+<span class="codeline" id="line-336"><code>	// in allocated spans.</code></span>
+<span class="codeline" id="line-337"><code>	printlock()</code></span>
+<span class="codeline" id="line-338"><code>	print("runtime: pointer ", hex(p))</code></span>
+<span class="codeline" id="line-339"><code>	state := s.state.get()</code></span>
+<span class="codeline" id="line-340"><code>	if state != mSpanInUse {</code></span>
+<span class="codeline" id="line-341"><code>		print(" to unallocated span")</code></span>
+<span class="codeline" id="line-342"><code>	} else {</code></span>
+<span class="codeline" id="line-343"><code>		print(" to unused region of span")</code></span>
+<span class="codeline" id="line-344"><code>	}</code></span>
+<span class="codeline" id="line-345"><code>	print(" span.base()=", hex(s.base()), " span.limit=", hex(s.limit), " span.state=", state, "\n")</code></span>
+<span class="codeline" id="line-346"><code>	if refBase != 0 {</code></span>
+<span class="codeline" id="line-347"><code>		print("runtime: found in object at *(", hex(refBase), "+", hex(refOff), ")\n")</code></span>
+<span class="codeline" id="line-348"><code>		gcDumpObject("object", refBase, refOff)</code></span>
+<span class="codeline" id="line-349"><code>	}</code></span>
+<span class="codeline" id="line-350"><code>	getg().m.traceback = 2</code></span>
+<span class="codeline" id="line-351"><code>	throw("found bad pointer in Go heap (incorrect use of unsafe or cgo?)")</code></span>
+<span class="codeline" id="line-352"><code>}</code></span>
+<span class="codeline" id="line-353"><code></code></span>
+<span class="codeline" id="line-354"><code>// findObject returns the base address for the heap object containing</code></span>
+<span class="codeline" id="line-355"><code>// the address p, the object's span, and the index of the object in s.</code></span>
+<span class="codeline" id="line-356"><code>// If p does not point into a heap object, it returns base == 0.</code></span>
+<span class="codeline" id="line-357"><code>//</code></span>
+<span class="codeline" id="line-358"><code>// If p points is an invalid heap pointer and debug.invalidptr != 0,</code></span>
+<span class="codeline" id="line-359"><code>// findObject panics.</code></span>
+<span class="codeline" id="line-360"><code>//</code></span>
+<span class="codeline" id="line-361"><code>// refBase and refOff optionally give the base address of the object</code></span>
+<span class="codeline" id="line-362"><code>// in which the pointer p was found and the byte offset at which it</code></span>
+<span class="codeline" id="line-363"><code>// was found. These are used for error reporting.</code></span>
+<span class="codeline" id="line-364"><code>//</code></span>
+<span class="codeline" id="line-365"><code>// It is nosplit so it is safe for p to be a pointer to the current goroutine's stack.</code></span>
+<span class="codeline" id="line-366"><code>// Since p is a uintptr, it would not be adjusted if the stack were to move.</code></span>
+<span class="codeline" id="line-367"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-368"><code>func findObject(p, refBase, refOff uintptr) (base uintptr, s *mspan, objIndex uintptr) {</code></span>
+<span class="codeline" id="line-369"><code>	s = spanOf(p)</code></span>
+<span class="codeline" id="line-370"><code>	// If s is nil, the virtual address has never been part of the heap.</code></span>
+<span class="codeline" id="line-371"><code>	// This pointer may be to some mmap'd region, so we allow it.</code></span>
+<span class="codeline" id="line-372"><code>	if s == nil {</code></span>
+<span class="codeline" id="line-373"><code>		return</code></span>
+<span class="codeline" id="line-374"><code>	}</code></span>
+<span class="codeline" id="line-375"><code>	// If p is a bad pointer, it may not be in s's bounds.</code></span>
+<span class="codeline" id="line-376"><code>	//</code></span>
+<span class="codeline" id="line-377"><code>	// Check s.state to synchronize with span initialization</code></span>
+<span class="codeline" id="line-378"><code>	// before checking other fields. See also spanOfHeap.</code></span>
+<span class="codeline" id="line-379"><code>	if state := s.state.get(); state != mSpanInUse || p &lt; s.base() || p &gt;= s.limit {</code></span>
+<span class="codeline" id="line-380"><code>		// Pointers into stacks are also ok, the runtime manages these explicitly.</code></span>
+<span class="codeline" id="line-381"><code>		if state == mSpanManual {</code></span>
+<span class="codeline" id="line-382"><code>			return</code></span>
+<span class="codeline" id="line-383"><code>		}</code></span>
+<span class="codeline" id="line-384"><code>		// The following ensures that we are rigorous about what data</code></span>
+<span class="codeline" id="line-385"><code>		// structures hold valid pointers.</code></span>
+<span class="codeline" id="line-386"><code>		if debug.invalidptr != 0 {</code></span>
+<span class="codeline" id="line-387"><code>			badPointer(s, p, refBase, refOff)</code></span>
+<span class="codeline" id="line-388"><code>		}</code></span>
+<span class="codeline" id="line-389"><code>		return</code></span>
+<span class="codeline" id="line-390"><code>	}</code></span>
+<span class="codeline" id="line-391"><code>	// If this span holds object of a power of 2 size, just mask off the bits to</code></span>
+<span class="codeline" id="line-392"><code>	// the interior of the object. Otherwise use the size to get the base.</code></span>
+<span class="codeline" id="line-393"><code>	if s.baseMask != 0 {</code></span>
+<span class="codeline" id="line-394"><code>		// optimize for power of 2 sized objects.</code></span>
+<span class="codeline" id="line-395"><code>		base = s.base()</code></span>
+<span class="codeline" id="line-396"><code>		base = base + (p-base)&amp;uintptr(s.baseMask)</code></span>
+<span class="codeline" id="line-397"><code>		objIndex = (base - s.base()) &gt;&gt; s.divShift</code></span>
+<span class="codeline" id="line-398"><code>		// base = p &amp; s.baseMask is faster for small spans,</code></span>
+<span class="codeline" id="line-399"><code>		// but doesn't work for large spans.</code></span>
+<span class="codeline" id="line-400"><code>		// Overall, it's faster to use the more general computation above.</code></span>
+<span class="codeline" id="line-401"><code>	} else {</code></span>
+<span class="codeline" id="line-402"><code>		base = s.base()</code></span>
+<span class="codeline" id="line-403"><code>		if p-base &gt;= s.elemsize {</code></span>
+<span class="codeline" id="line-404"><code>			// n := (p - base) / s.elemsize, using division by multiplication</code></span>
+<span class="codeline" id="line-405"><code>			objIndex = uintptr(p-base) &gt;&gt; s.divShift * uintptr(s.divMul) &gt;&gt; s.divShift2</code></span>
+<span class="codeline" id="line-406"><code>			base += objIndex * s.elemsize</code></span>
+<span class="codeline" id="line-407"><code>		}</code></span>
+<span class="codeline" id="line-408"><code>	}</code></span>
+<span class="codeline" id="line-409"><code>	return</code></span>
+<span class="codeline" id="line-410"><code>}</code></span>
+<span class="codeline" id="line-411"><code></code></span>
+<span class="codeline" id="line-412"><code>// next returns the heapBits describing the next pointer-sized word in memory.</code></span>
+<span class="codeline" id="line-413"><code>// That is, if h describes address p, h.next() describes p+ptrSize.</code></span>
+<span class="codeline" id="line-414"><code>// Note that next does not modify h. The caller must record the result.</code></span>
+<span class="codeline" id="line-415"><code>//</code></span>
+<span class="codeline" id="line-416"><code>// nosplit because it is used during write barriers and must not be preempted.</code></span>
+<span class="codeline" id="line-417"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-418"><code>func (h heapBits) next() heapBits {</code></span>
+<span class="codeline" id="line-419"><code>	if h.shift &lt; 3*heapBitsShift {</code></span>
+<span class="codeline" id="line-420"><code>		h.shift += heapBitsShift</code></span>
+<span class="codeline" id="line-421"><code>	} else if h.bitp != h.last {</code></span>
+<span class="codeline" id="line-422"><code>		h.bitp, h.shift = add1(h.bitp), 0</code></span>
+<span class="codeline" id="line-423"><code>	} else {</code></span>
+<span class="codeline" id="line-424"><code>		// Move to the next arena.</code></span>
+<span class="codeline" id="line-425"><code>		return h.nextArena()</code></span>
+<span class="codeline" id="line-426"><code>	}</code></span>
+<span class="codeline" id="line-427"><code>	return h</code></span>
+<span class="codeline" id="line-428"><code>}</code></span>
+<span class="codeline" id="line-429"><code></code></span>
+<span class="codeline" id="line-430"><code>// nextArena advances h to the beginning of the next heap arena.</code></span>
+<span class="codeline" id="line-431"><code>//</code></span>
+<span class="codeline" id="line-432"><code>// This is a slow-path helper to next. gc's inliner knows that</code></span>
+<span class="codeline" id="line-433"><code>// heapBits.next can be inlined even though it calls this. This is</code></span>
+<span class="codeline" id="line-434"><code>// marked noinline so it doesn't get inlined into next and cause next</code></span>
+<span class="codeline" id="line-435"><code>// to be too big to inline.</code></span>
+<span class="codeline" id="line-436"><code>//</code></span>
+<span class="codeline" id="line-437"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-438"><code>//go:noinline</code></span>
+<span class="codeline" id="line-439"><code>func (h heapBits) nextArena() heapBits {</code></span>
+<span class="codeline" id="line-440"><code>	h.arena++</code></span>
+<span class="codeline" id="line-441"><code>	ai := arenaIdx(h.arena)</code></span>
+<span class="codeline" id="line-442"><code>	l2 := mheap_.arenas[ai.l1()]</code></span>
+<span class="codeline" id="line-443"><code>	if l2 == nil {</code></span>
+<span class="codeline" id="line-444"><code>		// We just passed the end of the object, which</code></span>
+<span class="codeline" id="line-445"><code>		// was also the end of the heap. Poison h. It</code></span>
+<span class="codeline" id="line-446"><code>		// should never be dereferenced at this point.</code></span>
+<span class="codeline" id="line-447"><code>		return heapBits{}</code></span>
+<span class="codeline" id="line-448"><code>	}</code></span>
+<span class="codeline" id="line-449"><code>	ha := l2[ai.l2()]</code></span>
+<span class="codeline" id="line-450"><code>	if ha == nil {</code></span>
+<span class="codeline" id="line-451"><code>		return heapBits{}</code></span>
+<span class="codeline" id="line-452"><code>	}</code></span>
+<span class="codeline" id="line-453"><code>	h.bitp, h.shift = &amp;ha.bitmap[0], 0</code></span>
+<span class="codeline" id="line-454"><code>	h.last = &amp;ha.bitmap[len(ha.bitmap)-1]</code></span>
+<span class="codeline" id="line-455"><code>	return h</code></span>
+<span class="codeline" id="line-456"><code>}</code></span>
+<span class="codeline" id="line-457"><code></code></span>
+<span class="codeline" id="line-458"><code>// forward returns the heapBits describing n pointer-sized words ahead of h in memory.</code></span>
+<span class="codeline" id="line-459"><code>// That is, if h describes address p, h.forward(n) describes p+n*ptrSize.</code></span>
+<span class="codeline" id="line-460"><code>// h.forward(1) is equivalent to h.next(), just slower.</code></span>
+<span class="codeline" id="line-461"><code>// Note that forward does not modify h. The caller must record the result.</code></span>
+<span class="codeline" id="line-462"><code>// bits returns the heap bits for the current word.</code></span>
+<span class="codeline" id="line-463"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-464"><code>func (h heapBits) forward(n uintptr) heapBits {</code></span>
+<span class="codeline" id="line-465"><code>	n += uintptr(h.shift) / heapBitsShift</code></span>
+<span class="codeline" id="line-466"><code>	nbitp := uintptr(unsafe.Pointer(h.bitp)) + n/4</code></span>
+<span class="codeline" id="line-467"><code>	h.shift = uint32(n%4) * heapBitsShift</code></span>
+<span class="codeline" id="line-468"><code>	if nbitp &lt;= uintptr(unsafe.Pointer(h.last)) {</code></span>
+<span class="codeline" id="line-469"><code>		h.bitp = (*uint8)(unsafe.Pointer(nbitp))</code></span>
+<span class="codeline" id="line-470"><code>		return h</code></span>
+<span class="codeline" id="line-471"><code>	}</code></span>
+<span class="codeline" id="line-472"><code></code></span>
+<span class="codeline" id="line-473"><code>	// We're in a new heap arena.</code></span>
+<span class="codeline" id="line-474"><code>	past := nbitp - (uintptr(unsafe.Pointer(h.last)) + 1)</code></span>
+<span class="codeline" id="line-475"><code>	h.arena += 1 + uint32(past/heapArenaBitmapBytes)</code></span>
+<span class="codeline" id="line-476"><code>	ai := arenaIdx(h.arena)</code></span>
+<span class="codeline" id="line-477"><code>	if l2 := mheap_.arenas[ai.l1()]; l2 != nil &amp;&amp; l2[ai.l2()] != nil {</code></span>
+<span class="codeline" id="line-478"><code>		a := l2[ai.l2()]</code></span>
+<span class="codeline" id="line-479"><code>		h.bitp = &amp;a.bitmap[past%heapArenaBitmapBytes]</code></span>
+<span class="codeline" id="line-480"><code>		h.last = &amp;a.bitmap[len(a.bitmap)-1]</code></span>
+<span class="codeline" id="line-481"><code>	} else {</code></span>
+<span class="codeline" id="line-482"><code>		h.bitp, h.last = nil, nil</code></span>
+<span class="codeline" id="line-483"><code>	}</code></span>
+<span class="codeline" id="line-484"><code>	return h</code></span>
+<span class="codeline" id="line-485"><code>}</code></span>
+<span class="codeline" id="line-486"><code></code></span>
+<span class="codeline" id="line-487"><code>// forwardOrBoundary is like forward, but stops at boundaries between</code></span>
+<span class="codeline" id="line-488"><code>// contiguous sections of the bitmap. It returns the number of words</code></span>
+<span class="codeline" id="line-489"><code>// advanced over, which will be &lt;= n.</code></span>
+<span class="codeline" id="line-490"><code>func (h heapBits) forwardOrBoundary(n uintptr) (heapBits, uintptr) {</code></span>
+<span class="codeline" id="line-491"><code>	maxn := 4 * ((uintptr(unsafe.Pointer(h.last)) + 1) - uintptr(unsafe.Pointer(h.bitp)))</code></span>
+<span class="codeline" id="line-492"><code>	if n &gt; maxn {</code></span>
+<span class="codeline" id="line-493"><code>		n = maxn</code></span>
+<span class="codeline" id="line-494"><code>	}</code></span>
+<span class="codeline" id="line-495"><code>	return h.forward(n), n</code></span>
+<span class="codeline" id="line-496"><code>}</code></span>
+<span class="codeline" id="line-497"><code></code></span>
+<span class="codeline" id="line-498"><code>// The caller can test morePointers and isPointer by &amp;-ing with bitScan and bitPointer.</code></span>
+<span class="codeline" id="line-499"><code>// The result includes in its higher bits the bits for subsequent words</code></span>
+<span class="codeline" id="line-500"><code>// described by the same bitmap byte.</code></span>
+<span class="codeline" id="line-501"><code>//</code></span>
+<span class="codeline" id="line-502"><code>// nosplit because it is used during write barriers and must not be preempted.</code></span>
+<span class="codeline" id="line-503"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-504"><code>func (h heapBits) bits() uint32 {</code></span>
+<span class="codeline" id="line-505"><code>	// The (shift &amp; 31) eliminates a test and conditional branch</code></span>
+<span class="codeline" id="line-506"><code>	// from the generated code.</code></span>
+<span class="codeline" id="line-507"><code>	return uint32(*h.bitp) &gt;&gt; (h.shift &amp; 31)</code></span>
+<span class="codeline" id="line-508"><code>}</code></span>
+<span class="codeline" id="line-509"><code></code></span>
+<span class="codeline" id="line-510"><code>// morePointers reports whether this word and all remaining words in this object</code></span>
+<span class="codeline" id="line-511"><code>// are scalars.</code></span>
+<span class="codeline" id="line-512"><code>// h must not describe the second word of the object.</code></span>
+<span class="codeline" id="line-513"><code>func (h heapBits) morePointers() bool {</code></span>
+<span class="codeline" id="line-514"><code>	return h.bits()&amp;bitScan != 0</code></span>
+<span class="codeline" id="line-515"><code>}</code></span>
+<span class="codeline" id="line-516"><code></code></span>
+<span class="codeline" id="line-517"><code>// isPointer reports whether the heap bits describe a pointer word.</code></span>
+<span class="codeline" id="line-518"><code>//</code></span>
+<span class="codeline" id="line-519"><code>// nosplit because it is used during write barriers and must not be preempted.</code></span>
+<span class="codeline" id="line-520"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-521"><code>func (h heapBits) isPointer() bool {</code></span>
+<span class="codeline" id="line-522"><code>	return h.bits()&amp;bitPointer != 0</code></span>
+<span class="codeline" id="line-523"><code>}</code></span>
+<span class="codeline" id="line-524"><code></code></span>
+<span class="codeline" id="line-525"><code>// bulkBarrierPreWrite executes a write barrier</code></span>
+<span class="codeline" id="line-526"><code>// for every pointer slot in the memory range [src, src+size),</code></span>
+<span class="codeline" id="line-527"><code>// using pointer/scalar information from [dst, dst+size).</code></span>
+<span class="codeline" id="line-528"><code>// This executes the write barriers necessary before a memmove.</code></span>
+<span class="codeline" id="line-529"><code>// src, dst, and size must be pointer-aligned.</code></span>
+<span class="codeline" id="line-530"><code>// The range [dst, dst+size) must lie within a single object.</code></span>
+<span class="codeline" id="line-531"><code>// It does not perform the actual writes.</code></span>
+<span class="codeline" id="line-532"><code>//</code></span>
+<span class="codeline" id="line-533"><code>// As a special case, src == 0 indicates that this is being used for a</code></span>
+<span class="codeline" id="line-534"><code>// memclr. bulkBarrierPreWrite will pass 0 for the src of each write</code></span>
+<span class="codeline" id="line-535"><code>// barrier.</code></span>
+<span class="codeline" id="line-536"><code>//</code></span>
+<span class="codeline" id="line-537"><code>// Callers should call bulkBarrierPreWrite immediately before</code></span>
+<span class="codeline" id="line-538"><code>// calling memmove(dst, src, size). This function is marked nosplit</code></span>
+<span class="codeline" id="line-539"><code>// to avoid being preempted; the GC must not stop the goroutine</code></span>
+<span class="codeline" id="line-540"><code>// between the memmove and the execution of the barriers.</code></span>
+<span class="codeline" id="line-541"><code>// The caller is also responsible for cgo pointer checks if this</code></span>
+<span class="codeline" id="line-542"><code>// may be writing Go pointers into non-Go memory.</code></span>
+<span class="codeline" id="line-543"><code>//</code></span>
+<span class="codeline" id="line-544"><code>// The pointer bitmap is not maintained for allocations containing</code></span>
+<span class="codeline" id="line-545"><code>// no pointers at all; any caller of bulkBarrierPreWrite must first</code></span>
+<span class="codeline" id="line-546"><code>// make sure the underlying allocation contains pointers, usually</code></span>
+<span class="codeline" id="line-547"><code>// by checking typ.ptrdata.</code></span>
+<span class="codeline" id="line-548"><code>//</code></span>
+<span class="codeline" id="line-549"><code>// Callers must perform cgo checks if writeBarrier.cgo.</code></span>
+<span class="codeline" id="line-550"><code>//</code></span>
+<span class="codeline" id="line-551"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-552"><code>func bulkBarrierPreWrite(dst, src, size uintptr) {</code></span>
+<span class="codeline" id="line-553"><code>	if (dst|src|size)&amp;(sys.PtrSize-1) != 0 {</code></span>
+<span class="codeline" id="line-554"><code>		throw("bulkBarrierPreWrite: unaligned arguments")</code></span>
+<span class="codeline" id="line-555"><code>	}</code></span>
+<span class="codeline" id="line-556"><code>	if !writeBarrier.needed {</code></span>
+<span class="codeline" id="line-557"><code>		return</code></span>
+<span class="codeline" id="line-558"><code>	}</code></span>
+<span class="codeline" id="line-559"><code>	if s := spanOf(dst); s == nil {</code></span>
+<span class="codeline" id="line-560"><code>		// If dst is a global, use the data or BSS bitmaps to</code></span>
+<span class="codeline" id="line-561"><code>		// execute write barriers.</code></span>
+<span class="codeline" id="line-562"><code>		for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-563"><code>			if datap.data &lt;= dst &amp;&amp; dst &lt; datap.edata {</code></span>
+<span class="codeline" id="line-564"><code>				bulkBarrierBitmap(dst, src, size, dst-datap.data, datap.gcdatamask.bytedata)</code></span>
+<span class="codeline" id="line-565"><code>				return</code></span>
+<span class="codeline" id="line-566"><code>			}</code></span>
+<span class="codeline" id="line-567"><code>		}</code></span>
+<span class="codeline" id="line-568"><code>		for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-569"><code>			if datap.bss &lt;= dst &amp;&amp; dst &lt; datap.ebss {</code></span>
+<span class="codeline" id="line-570"><code>				bulkBarrierBitmap(dst, src, size, dst-datap.bss, datap.gcbssmask.bytedata)</code></span>
+<span class="codeline" id="line-571"><code>				return</code></span>
+<span class="codeline" id="line-572"><code>			}</code></span>
+<span class="codeline" id="line-573"><code>		}</code></span>
+<span class="codeline" id="line-574"><code>		return</code></span>
+<span class="codeline" id="line-575"><code>	} else if s.state.get() != mSpanInUse || dst &lt; s.base() || s.limit &lt;= dst {</code></span>
+<span class="codeline" id="line-576"><code>		// dst was heap memory at some point, but isn't now.</code></span>
+<span class="codeline" id="line-577"><code>		// It can't be a global. It must be either our stack,</code></span>
+<span class="codeline" id="line-578"><code>		// or in the case of direct channel sends, it could be</code></span>
+<span class="codeline" id="line-579"><code>		// another stack. Either way, no need for barriers.</code></span>
+<span class="codeline" id="line-580"><code>		// This will also catch if dst is in a freed span,</code></span>
+<span class="codeline" id="line-581"><code>		// though that should never have.</code></span>
+<span class="codeline" id="line-582"><code>		return</code></span>
+<span class="codeline" id="line-583"><code>	}</code></span>
+<span class="codeline" id="line-584"><code></code></span>
+<span class="codeline" id="line-585"><code>	buf := &amp;getg().m.p.ptr().wbBuf</code></span>
+<span class="codeline" id="line-586"><code>	h := heapBitsForAddr(dst)</code></span>
+<span class="codeline" id="line-587"><code>	if src == 0 {</code></span>
+<span class="codeline" id="line-588"><code>		for i := uintptr(0); i &lt; size; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-589"><code>			if h.isPointer() {</code></span>
+<span class="codeline" id="line-590"><code>				dstx := (*uintptr)(unsafe.Pointer(dst + i))</code></span>
+<span class="codeline" id="line-591"><code>				if !buf.putFast(*dstx, 0) {</code></span>
+<span class="codeline" id="line-592"><code>					wbBufFlush(nil, 0)</code></span>
+<span class="codeline" id="line-593"><code>				}</code></span>
+<span class="codeline" id="line-594"><code>			}</code></span>
+<span class="codeline" id="line-595"><code>			h = h.next()</code></span>
+<span class="codeline" id="line-596"><code>		}</code></span>
+<span class="codeline" id="line-597"><code>	} else {</code></span>
+<span class="codeline" id="line-598"><code>		for i := uintptr(0); i &lt; size; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-599"><code>			if h.isPointer() {</code></span>
+<span class="codeline" id="line-600"><code>				dstx := (*uintptr)(unsafe.Pointer(dst + i))</code></span>
+<span class="codeline" id="line-601"><code>				srcx := (*uintptr)(unsafe.Pointer(src + i))</code></span>
+<span class="codeline" id="line-602"><code>				if !buf.putFast(*dstx, *srcx) {</code></span>
+<span class="codeline" id="line-603"><code>					wbBufFlush(nil, 0)</code></span>
+<span class="codeline" id="line-604"><code>				}</code></span>
+<span class="codeline" id="line-605"><code>			}</code></span>
+<span class="codeline" id="line-606"><code>			h = h.next()</code></span>
+<span class="codeline" id="line-607"><code>		}</code></span>
+<span class="codeline" id="line-608"><code>	}</code></span>
+<span class="codeline" id="line-609"><code>}</code></span>
+<span class="codeline" id="line-610"><code></code></span>
+<span class="codeline" id="line-611"><code>// bulkBarrierPreWriteSrcOnly is like bulkBarrierPreWrite but</code></span>
+<span class="codeline" id="line-612"><code>// does not execute write barriers for [dst, dst+size).</code></span>
+<span class="codeline" id="line-613"><code>//</code></span>
+<span class="codeline" id="line-614"><code>// In addition to the requirements of bulkBarrierPreWrite</code></span>
+<span class="codeline" id="line-615"><code>// callers need to ensure [dst, dst+size) is zeroed.</code></span>
+<span class="codeline" id="line-616"><code>//</code></span>
+<span class="codeline" id="line-617"><code>// This is used for special cases where e.g. dst was just</code></span>
+<span class="codeline" id="line-618"><code>// created and zeroed with malloc.</code></span>
+<span class="codeline" id="line-619"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-620"><code>func bulkBarrierPreWriteSrcOnly(dst, src, size uintptr) {</code></span>
+<span class="codeline" id="line-621"><code>	if (dst|src|size)&amp;(sys.PtrSize-1) != 0 {</code></span>
+<span class="codeline" id="line-622"><code>		throw("bulkBarrierPreWrite: unaligned arguments")</code></span>
+<span class="codeline" id="line-623"><code>	}</code></span>
+<span class="codeline" id="line-624"><code>	if !writeBarrier.needed {</code></span>
+<span class="codeline" id="line-625"><code>		return</code></span>
+<span class="codeline" id="line-626"><code>	}</code></span>
+<span class="codeline" id="line-627"><code>	buf := &amp;getg().m.p.ptr().wbBuf</code></span>
+<span class="codeline" id="line-628"><code>	h := heapBitsForAddr(dst)</code></span>
+<span class="codeline" id="line-629"><code>	for i := uintptr(0); i &lt; size; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-630"><code>		if h.isPointer() {</code></span>
+<span class="codeline" id="line-631"><code>			srcx := (*uintptr)(unsafe.Pointer(src + i))</code></span>
+<span class="codeline" id="line-632"><code>			if !buf.putFast(0, *srcx) {</code></span>
+<span class="codeline" id="line-633"><code>				wbBufFlush(nil, 0)</code></span>
+<span class="codeline" id="line-634"><code>			}</code></span>
+<span class="codeline" id="line-635"><code>		}</code></span>
+<span class="codeline" id="line-636"><code>		h = h.next()</code></span>
+<span class="codeline" id="line-637"><code>	}</code></span>
+<span class="codeline" id="line-638"><code>}</code></span>
+<span class="codeline" id="line-639"><code></code></span>
+<span class="codeline" id="line-640"><code>// bulkBarrierBitmap executes write barriers for copying from [src,</code></span>
+<span class="codeline" id="line-641"><code>// src+size) to [dst, dst+size) using a 1-bit pointer bitmap. src is</code></span>
+<span class="codeline" id="line-642"><code>// assumed to start maskOffset bytes into the data covered by the</code></span>
+<span class="codeline" id="line-643"><code>// bitmap in bits (which may not be a multiple of 8).</code></span>
+<span class="codeline" id="line-644"><code>//</code></span>
+<span class="codeline" id="line-645"><code>// This is used by bulkBarrierPreWrite for writes to data and BSS.</code></span>
+<span class="codeline" id="line-646"><code>//</code></span>
+<span class="codeline" id="line-647"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-648"><code>func bulkBarrierBitmap(dst, src, size, maskOffset uintptr, bits *uint8) {</code></span>
+<span class="codeline" id="line-649"><code>	word := maskOffset / sys.PtrSize</code></span>
+<span class="codeline" id="line-650"><code>	bits = addb(bits, word/8)</code></span>
+<span class="codeline" id="line-651"><code>	mask := uint8(1) &lt;&lt; (word % 8)</code></span>
+<span class="codeline" id="line-652"><code></code></span>
+<span class="codeline" id="line-653"><code>	buf := &amp;getg().m.p.ptr().wbBuf</code></span>
+<span class="codeline" id="line-654"><code>	for i := uintptr(0); i &lt; size; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-655"><code>		if mask == 0 {</code></span>
+<span class="codeline" id="line-656"><code>			bits = addb(bits, 1)</code></span>
+<span class="codeline" id="line-657"><code>			if *bits == 0 {</code></span>
+<span class="codeline" id="line-658"><code>				// Skip 8 words.</code></span>
+<span class="codeline" id="line-659"><code>				i += 7 * sys.PtrSize</code></span>
+<span class="codeline" id="line-660"><code>				continue</code></span>
+<span class="codeline" id="line-661"><code>			}</code></span>
+<span class="codeline" id="line-662"><code>			mask = 1</code></span>
+<span class="codeline" id="line-663"><code>		}</code></span>
+<span class="codeline" id="line-664"><code>		if *bits&amp;mask != 0 {</code></span>
+<span class="codeline" id="line-665"><code>			dstx := (*uintptr)(unsafe.Pointer(dst + i))</code></span>
+<span class="codeline" id="line-666"><code>			if src == 0 {</code></span>
+<span class="codeline" id="line-667"><code>				if !buf.putFast(*dstx, 0) {</code></span>
+<span class="codeline" id="line-668"><code>					wbBufFlush(nil, 0)</code></span>
+<span class="codeline" id="line-669"><code>				}</code></span>
+<span class="codeline" id="line-670"><code>			} else {</code></span>
+<span class="codeline" id="line-671"><code>				srcx := (*uintptr)(unsafe.Pointer(src + i))</code></span>
+<span class="codeline" id="line-672"><code>				if !buf.putFast(*dstx, *srcx) {</code></span>
+<span class="codeline" id="line-673"><code>					wbBufFlush(nil, 0)</code></span>
+<span class="codeline" id="line-674"><code>				}</code></span>
+<span class="codeline" id="line-675"><code>			}</code></span>
+<span class="codeline" id="line-676"><code>		}</code></span>
+<span class="codeline" id="line-677"><code>		mask &lt;&lt;= 1</code></span>
+<span class="codeline" id="line-678"><code>	}</code></span>
+<span class="codeline" id="line-679"><code>}</code></span>
+<span class="codeline" id="line-680"><code></code></span>
+<span class="codeline" id="line-681"><code>// typeBitsBulkBarrier executes a write barrier for every</code></span>
+<span class="codeline" id="line-682"><code>// pointer that would be copied from [src, src+size) to [dst,</code></span>
+<span class="codeline" id="line-683"><code>// dst+size) by a memmove using the type bitmap to locate those</code></span>
+<span class="codeline" id="line-684"><code>// pointer slots.</code></span>
+<span class="codeline" id="line-685"><code>//</code></span>
+<span class="codeline" id="line-686"><code>// The type typ must correspond exactly to [src, src+size) and [dst, dst+size).</code></span>
+<span class="codeline" id="line-687"><code>// dst, src, and size must be pointer-aligned.</code></span>
+<span class="codeline" id="line-688"><code>// The type typ must have a plain bitmap, not a GC program.</code></span>
+<span class="codeline" id="line-689"><code>// The only use of this function is in channel sends, and the</code></span>
+<span class="codeline" id="line-690"><code>// 64 kB channel element limit takes care of this for us.</code></span>
+<span class="codeline" id="line-691"><code>//</code></span>
+<span class="codeline" id="line-692"><code>// Must not be preempted because it typically runs right before memmove,</code></span>
+<span class="codeline" id="line-693"><code>// and the GC must observe them as an atomic action.</code></span>
+<span class="codeline" id="line-694"><code>//</code></span>
+<span class="codeline" id="line-695"><code>// Callers must perform cgo checks if writeBarrier.cgo.</code></span>
+<span class="codeline" id="line-696"><code>//</code></span>
+<span class="codeline" id="line-697"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-698"><code>func typeBitsBulkBarrier(typ *_type, dst, src, size uintptr) {</code></span>
+<span class="codeline" id="line-699"><code>	if typ == nil {</code></span>
+<span class="codeline" id="line-700"><code>		throw("runtime: typeBitsBulkBarrier without type")</code></span>
+<span class="codeline" id="line-701"><code>	}</code></span>
+<span class="codeline" id="line-702"><code>	if typ.size != size {</code></span>
+<span class="codeline" id="line-703"><code>		println("runtime: typeBitsBulkBarrier with type ", typ.string(), " of size ", typ.size, " but memory size", size)</code></span>
+<span class="codeline" id="line-704"><code>		throw("runtime: invalid typeBitsBulkBarrier")</code></span>
+<span class="codeline" id="line-705"><code>	}</code></span>
+<span class="codeline" id="line-706"><code>	if typ.kind&amp;kindGCProg != 0 {</code></span>
+<span class="codeline" id="line-707"><code>		println("runtime: typeBitsBulkBarrier with type ", typ.string(), " with GC prog")</code></span>
+<span class="codeline" id="line-708"><code>		throw("runtime: invalid typeBitsBulkBarrier")</code></span>
+<span class="codeline" id="line-709"><code>	}</code></span>
+<span class="codeline" id="line-710"><code>	if !writeBarrier.needed {</code></span>
+<span class="codeline" id="line-711"><code>		return</code></span>
+<span class="codeline" id="line-712"><code>	}</code></span>
+<span class="codeline" id="line-713"><code>	ptrmask := typ.gcdata</code></span>
+<span class="codeline" id="line-714"><code>	buf := &amp;getg().m.p.ptr().wbBuf</code></span>
+<span class="codeline" id="line-715"><code>	var bits uint32</code></span>
+<span class="codeline" id="line-716"><code>	for i := uintptr(0); i &lt; typ.ptrdata; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-717"><code>		if i&amp;(sys.PtrSize*8-1) == 0 {</code></span>
+<span class="codeline" id="line-718"><code>			bits = uint32(*ptrmask)</code></span>
+<span class="codeline" id="line-719"><code>			ptrmask = addb(ptrmask, 1)</code></span>
+<span class="codeline" id="line-720"><code>		} else {</code></span>
+<span class="codeline" id="line-721"><code>			bits = bits &gt;&gt; 1</code></span>
+<span class="codeline" id="line-722"><code>		}</code></span>
+<span class="codeline" id="line-723"><code>		if bits&amp;1 != 0 {</code></span>
+<span class="codeline" id="line-724"><code>			dstx := (*uintptr)(unsafe.Pointer(dst + i))</code></span>
+<span class="codeline" id="line-725"><code>			srcx := (*uintptr)(unsafe.Pointer(src + i))</code></span>
+<span class="codeline" id="line-726"><code>			if !buf.putFast(*dstx, *srcx) {</code></span>
+<span class="codeline" id="line-727"><code>				wbBufFlush(nil, 0)</code></span>
+<span class="codeline" id="line-728"><code>			}</code></span>
+<span class="codeline" id="line-729"><code>		}</code></span>
+<span class="codeline" id="line-730"><code>	}</code></span>
+<span class="codeline" id="line-731"><code>}</code></span>
+<span class="codeline" id="line-732"><code></code></span>
+<span class="codeline" id="line-733"><code>// The methods operating on spans all require that h has been returned</code></span>
+<span class="codeline" id="line-734"><code>// by heapBitsForSpan and that size, n, total are the span layout description</code></span>
+<span class="codeline" id="line-735"><code>// returned by the mspan's layout method.</code></span>
+<span class="codeline" id="line-736"><code>// If total &gt; size*n, it means that there is extra leftover memory in the span,</code></span>
+<span class="codeline" id="line-737"><code>// usually due to rounding.</code></span>
+<span class="codeline" id="line-738"><code>//</code></span>
+<span class="codeline" id="line-739"><code>// TODO(rsc): Perhaps introduce a different heapBitsSpan type.</code></span>
+<span class="codeline" id="line-740"><code></code></span>
+<span class="codeline" id="line-741"><code>// initSpan initializes the heap bitmap for a span.</code></span>
+<span class="codeline" id="line-742"><code>// If this is a span of pointer-sized objects, it initializes all</code></span>
+<span class="codeline" id="line-743"><code>// words to pointer/scan.</code></span>
+<span class="codeline" id="line-744"><code>// Otherwise, it initializes all words to scalar/dead.</code></span>
+<span class="codeline" id="line-745"><code>func (h heapBits) initSpan(s *mspan) {</code></span>
+<span class="codeline" id="line-746"><code>	// Clear bits corresponding to objects.</code></span>
+<span class="codeline" id="line-747"><code>	nw := (s.npages &lt;&lt; _PageShift) / sys.PtrSize</code></span>
+<span class="codeline" id="line-748"><code>	if nw%wordsPerBitmapByte != 0 {</code></span>
+<span class="codeline" id="line-749"><code>		throw("initSpan: unaligned length")</code></span>
+<span class="codeline" id="line-750"><code>	}</code></span>
+<span class="codeline" id="line-751"><code>	if h.shift != 0 {</code></span>
+<span class="codeline" id="line-752"><code>		throw("initSpan: unaligned base")</code></span>
+<span class="codeline" id="line-753"><code>	}</code></span>
+<span class="codeline" id="line-754"><code>	isPtrs := sys.PtrSize == 8 &amp;&amp; s.elemsize == sys.PtrSize</code></span>
+<span class="codeline" id="line-755"><code>	for nw &gt; 0 {</code></span>
+<span class="codeline" id="line-756"><code>		hNext, anw := h.forwardOrBoundary(nw)</code></span>
+<span class="codeline" id="line-757"><code>		nbyte := anw / wordsPerBitmapByte</code></span>
+<span class="codeline" id="line-758"><code>		if isPtrs {</code></span>
+<span class="codeline" id="line-759"><code>			bitp := h.bitp</code></span>
+<span class="codeline" id="line-760"><code>			for i := uintptr(0); i &lt; nbyte; i++ {</code></span>
+<span class="codeline" id="line-761"><code>				*bitp = bitPointerAll | bitScanAll</code></span>
+<span class="codeline" id="line-762"><code>				bitp = add1(bitp)</code></span>
+<span class="codeline" id="line-763"><code>			}</code></span>
+<span class="codeline" id="line-764"><code>		} else {</code></span>
+<span class="codeline" id="line-765"><code>			memclrNoHeapPointers(unsafe.Pointer(h.bitp), nbyte)</code></span>
+<span class="codeline" id="line-766"><code>		}</code></span>
+<span class="codeline" id="line-767"><code>		h = hNext</code></span>
+<span class="codeline" id="line-768"><code>		nw -= anw</code></span>
+<span class="codeline" id="line-769"><code>	}</code></span>
+<span class="codeline" id="line-770"><code>}</code></span>
+<span class="codeline" id="line-771"><code></code></span>
+<span class="codeline" id="line-772"><code>// countAlloc returns the number of objects allocated in span s by</code></span>
+<span class="codeline" id="line-773"><code>// scanning the allocation bitmap.</code></span>
+<span class="codeline" id="line-774"><code>func (s *mspan) countAlloc() int {</code></span>
+<span class="codeline" id="line-775"><code>	count := 0</code></span>
+<span class="codeline" id="line-776"><code>	bytes := divRoundUp(s.nelems, 8)</code></span>
+<span class="codeline" id="line-777"><code>	// Iterate over each 8-byte chunk and count allocations</code></span>
+<span class="codeline" id="line-778"><code>	// with an intrinsic. Note that newMarkBits guarantees that</code></span>
+<span class="codeline" id="line-779"><code>	// gcmarkBits will be 8-byte aligned, so we don't have to</code></span>
+<span class="codeline" id="line-780"><code>	// worry about edge cases, irrelevant bits will simply be zero.</code></span>
+<span class="codeline" id="line-781"><code>	for i := uintptr(0); i &lt; bytes; i += 8 {</code></span>
+<span class="codeline" id="line-782"><code>		// Extract 64 bits from the byte pointer and get a OnesCount.</code></span>
+<span class="codeline" id="line-783"><code>		// Note that the unsafe cast here doesn't preserve endianness,</code></span>
+<span class="codeline" id="line-784"><code>		// but that's OK. We only care about how many bits are 1, not</code></span>
+<span class="codeline" id="line-785"><code>		// about the order we discover them in.</code></span>
+<span class="codeline" id="line-786"><code>		mrkBits := *(*uint64)(unsafe.Pointer(s.gcmarkBits.bytep(i)))</code></span>
+<span class="codeline" id="line-787"><code>		count += sys.OnesCount64(mrkBits)</code></span>
+<span class="codeline" id="line-788"><code>	}</code></span>
+<span class="codeline" id="line-789"><code>	return count</code></span>
+<span class="codeline" id="line-790"><code>}</code></span>
+<span class="codeline" id="line-791"><code></code></span>
+<span class="codeline" id="line-792"><code>// heapBitsSetType records that the new allocation [x, x+size)</code></span>
+<span class="codeline" id="line-793"><code>// holds in [x, x+dataSize) one or more values of type typ.</code></span>
+<span class="codeline" id="line-794"><code>// (The number of values is given by dataSize / typ.size.)</code></span>
+<span class="codeline" id="line-795"><code>// If dataSize &lt; size, the fragment [x+dataSize, x+size) is</code></span>
+<span class="codeline" id="line-796"><code>// recorded as non-pointer data.</code></span>
+<span class="codeline" id="line-797"><code>// It is known that the type has pointers somewhere;</code></span>
+<span class="codeline" id="line-798"><code>// malloc does not call heapBitsSetType when there are no pointers,</code></span>
+<span class="codeline" id="line-799"><code>// because all free objects are marked as noscan during</code></span>
+<span class="codeline" id="line-800"><code>// heapBitsSweepSpan.</code></span>
+<span class="codeline" id="line-801"><code>//</code></span>
+<span class="codeline" id="line-802"><code>// There can only be one allocation from a given span active at a time,</code></span>
+<span class="codeline" id="line-803"><code>// and the bitmap for a span always falls on byte boundaries,</code></span>
+<span class="codeline" id="line-804"><code>// so there are no write-write races for access to the heap bitmap.</code></span>
+<span class="codeline" id="line-805"><code>// Hence, heapBitsSetType can access the bitmap without atomics.</code></span>
+<span class="codeline" id="line-806"><code>//</code></span>
+<span class="codeline" id="line-807"><code>// There can be read-write races between heapBitsSetType and things</code></span>
+<span class="codeline" id="line-808"><code>// that read the heap bitmap like scanobject. However, since</code></span>
+<span class="codeline" id="line-809"><code>// heapBitsSetType is only used for objects that have not yet been</code></span>
+<span class="codeline" id="line-810"><code>// made reachable, readers will ignore bits being modified by this</code></span>
+<span class="codeline" id="line-811"><code>// function. This does mean this function cannot transiently modify</code></span>
+<span class="codeline" id="line-812"><code>// bits that belong to neighboring objects. Also, on weakly-ordered</code></span>
+<span class="codeline" id="line-813"><code>// machines, callers must execute a store/store (publication) barrier</code></span>
+<span class="codeline" id="line-814"><code>// between calling this function and making the object reachable.</code></span>
+<span class="codeline" id="line-815"><code>func heapBitsSetType(x, size, dataSize uintptr, typ *_type) {</code></span>
+<span class="codeline" id="line-816"><code>	const doubleCheck = false // slow but helpful; enable to test modifications to this code</code></span>
+<span class="codeline" id="line-817"><code></code></span>
+<span class="codeline" id="line-818"><code>	const (</code></span>
+<span class="codeline" id="line-819"><code>		mask1 = bitPointer | bitScan                        // 00010001</code></span>
+<span class="codeline" id="line-820"><code>		mask2 = bitPointer | bitScan | mask1&lt;&lt;heapBitsShift // 00110011</code></span>
+<span class="codeline" id="line-821"><code>		mask3 = bitPointer | bitScan | mask2&lt;&lt;heapBitsShift // 01110111</code></span>
+<span class="codeline" id="line-822"><code>	)</code></span>
+<span class="codeline" id="line-823"><code></code></span>
+<span class="codeline" id="line-824"><code>	// dataSize is always size rounded up to the next malloc size class,</code></span>
+<span class="codeline" id="line-825"><code>	// except in the case of allocating a defer block, in which case</code></span>
+<span class="codeline" id="line-826"><code>	// size is sizeof(_defer{}) (at least 6 words) and dataSize may be</code></span>
+<span class="codeline" id="line-827"><code>	// arbitrarily larger.</code></span>
+<span class="codeline" id="line-828"><code>	//</code></span>
+<span class="codeline" id="line-829"><code>	// The checks for size == sys.PtrSize and size == 2*sys.PtrSize can therefore</code></span>
+<span class="codeline" id="line-830"><code>	// assume that dataSize == size without checking it explicitly.</code></span>
+<span class="codeline" id="line-831"><code></code></span>
+<span class="codeline" id="line-832"><code>	if sys.PtrSize == 8 &amp;&amp; size == sys.PtrSize {</code></span>
+<span class="codeline" id="line-833"><code>		// It's one word and it has pointers, it must be a pointer.</code></span>
+<span class="codeline" id="line-834"><code>		// Since all allocated one-word objects are pointers</code></span>
+<span class="codeline" id="line-835"><code>		// (non-pointers are aggregated into tinySize allocations),</code></span>
+<span class="codeline" id="line-836"><code>		// initSpan sets the pointer bits for us. Nothing to do here.</code></span>
+<span class="codeline" id="line-837"><code>		if doubleCheck {</code></span>
+<span class="codeline" id="line-838"><code>			h := heapBitsForAddr(x)</code></span>
+<span class="codeline" id="line-839"><code>			if !h.isPointer() {</code></span>
+<span class="codeline" id="line-840"><code>				throw("heapBitsSetType: pointer bit missing")</code></span>
+<span class="codeline" id="line-841"><code>			}</code></span>
+<span class="codeline" id="line-842"><code>			if !h.morePointers() {</code></span>
+<span class="codeline" id="line-843"><code>				throw("heapBitsSetType: scan bit missing")</code></span>
+<span class="codeline" id="line-844"><code>			}</code></span>
+<span class="codeline" id="line-845"><code>		}</code></span>
+<span class="codeline" id="line-846"><code>		return</code></span>
+<span class="codeline" id="line-847"><code>	}</code></span>
+<span class="codeline" id="line-848"><code></code></span>
+<span class="codeline" id="line-849"><code>	h := heapBitsForAddr(x)</code></span>
+<span class="codeline" id="line-850"><code>	ptrmask := typ.gcdata // start of 1-bit pointer mask (or GC program, handled below)</code></span>
+<span class="codeline" id="line-851"><code></code></span>
+<span class="codeline" id="line-852"><code>	// 2-word objects only have 4 bitmap bits and 3-word objects only have 6 bitmap bits.</code></span>
+<span class="codeline" id="line-853"><code>	// Therefore, these objects share a heap bitmap byte with the objects next to them.</code></span>
+<span class="codeline" id="line-854"><code>	// These are called out as a special case primarily so the code below can assume all</code></span>
+<span class="codeline" id="line-855"><code>	// objects are at least 4 words long and that their bitmaps start either at the beginning</code></span>
+<span class="codeline" id="line-856"><code>	// of a bitmap byte, or half-way in (h.shift of 0 and 2 respectively).</code></span>
+<span class="codeline" id="line-857"><code></code></span>
+<span class="codeline" id="line-858"><code>	if size == 2*sys.PtrSize {</code></span>
+<span class="codeline" id="line-859"><code>		if typ.size == sys.PtrSize {</code></span>
+<span class="codeline" id="line-860"><code>			// We're allocating a block big enough to hold two pointers.</code></span>
+<span class="codeline" id="line-861"><code>			// On 64-bit, that means the actual object must be two pointers,</code></span>
+<span class="codeline" id="line-862"><code>			// or else we'd have used the one-pointer-sized block.</code></span>
+<span class="codeline" id="line-863"><code>			// On 32-bit, however, this is the 8-byte block, the smallest one.</code></span>
+<span class="codeline" id="line-864"><code>			// So it could be that we're allocating one pointer and this was</code></span>
+<span class="codeline" id="line-865"><code>			// just the smallest block available. Distinguish by checking dataSize.</code></span>
+<span class="codeline" id="line-866"><code>			// (In general the number of instances of typ being allocated is</code></span>
+<span class="codeline" id="line-867"><code>			// dataSize/typ.size.)</code></span>
+<span class="codeline" id="line-868"><code>			if sys.PtrSize == 4 &amp;&amp; dataSize == sys.PtrSize {</code></span>
+<span class="codeline" id="line-869"><code>				// 1 pointer object. On 32-bit machines clear the bit for the</code></span>
+<span class="codeline" id="line-870"><code>				// unused second word.</code></span>
+<span class="codeline" id="line-871"><code>				*h.bitp &amp;^= (bitPointer | bitScan | (bitPointer|bitScan)&lt;&lt;heapBitsShift) &lt;&lt; h.shift</code></span>
+<span class="codeline" id="line-872"><code>				*h.bitp |= (bitPointer | bitScan) &lt;&lt; h.shift</code></span>
+<span class="codeline" id="line-873"><code>			} else {</code></span>
+<span class="codeline" id="line-874"><code>				// 2-element array of pointer.</code></span>
+<span class="codeline" id="line-875"><code>				*h.bitp |= (bitPointer | bitScan | (bitPointer|bitScan)&lt;&lt;heapBitsShift) &lt;&lt; h.shift</code></span>
+<span class="codeline" id="line-876"><code>			}</code></span>
+<span class="codeline" id="line-877"><code>			return</code></span>
+<span class="codeline" id="line-878"><code>		}</code></span>
+<span class="codeline" id="line-879"><code>		// Otherwise typ.size must be 2*sys.PtrSize,</code></span>
+<span class="codeline" id="line-880"><code>		// and typ.kind&amp;kindGCProg == 0.</code></span>
+<span class="codeline" id="line-881"><code>		if doubleCheck {</code></span>
+<span class="codeline" id="line-882"><code>			if typ.size != 2*sys.PtrSize || typ.kind&amp;kindGCProg != 0 {</code></span>
+<span class="codeline" id="line-883"><code>				print("runtime: heapBitsSetType size=", size, " but typ.size=", typ.size, " gcprog=", typ.kind&amp;kindGCProg != 0, "\n")</code></span>
+<span class="codeline" id="line-884"><code>				throw("heapBitsSetType")</code></span>
+<span class="codeline" id="line-885"><code>			}</code></span>
+<span class="codeline" id="line-886"><code>		}</code></span>
+<span class="codeline" id="line-887"><code>		b := uint32(*ptrmask)</code></span>
+<span class="codeline" id="line-888"><code>		hb := b &amp; 3</code></span>
+<span class="codeline" id="line-889"><code>		hb |= bitScanAll &amp; ((bitScan &lt;&lt; (typ.ptrdata / sys.PtrSize)) - 1)</code></span>
+<span class="codeline" id="line-890"><code>		// Clear the bits for this object so we can set the</code></span>
+<span class="codeline" id="line-891"><code>		// appropriate ones.</code></span>
+<span class="codeline" id="line-892"><code>		*h.bitp &amp;^= (bitPointer | bitScan | ((bitPointer | bitScan) &lt;&lt; heapBitsShift)) &lt;&lt; h.shift</code></span>
+<span class="codeline" id="line-893"><code>		*h.bitp |= uint8(hb &lt;&lt; h.shift)</code></span>
+<span class="codeline" id="line-894"><code>		return</code></span>
+<span class="codeline" id="line-895"><code>	} else if size == 3*sys.PtrSize {</code></span>
+<span class="codeline" id="line-896"><code>		b := uint8(*ptrmask)</code></span>
+<span class="codeline" id="line-897"><code>		if doubleCheck {</code></span>
+<span class="codeline" id="line-898"><code>			if b == 0 {</code></span>
+<span class="codeline" id="line-899"><code>				println("runtime: invalid type ", typ.string())</code></span>
+<span class="codeline" id="line-900"><code>				throw("heapBitsSetType: called with non-pointer type")</code></span>
+<span class="codeline" id="line-901"><code>			}</code></span>
+<span class="codeline" id="line-902"><code>			if sys.PtrSize != 8 {</code></span>
+<span class="codeline" id="line-903"><code>				throw("heapBitsSetType: unexpected 3 pointer wide size class on 32 bit")</code></span>
+<span class="codeline" id="line-904"><code>			}</code></span>
+<span class="codeline" id="line-905"><code>			if typ.kind&amp;kindGCProg != 0 {</code></span>
+<span class="codeline" id="line-906"><code>				throw("heapBitsSetType: unexpected GC prog for 3 pointer wide size class")</code></span>
+<span class="codeline" id="line-907"><code>			}</code></span>
+<span class="codeline" id="line-908"><code>			if typ.size == 2*sys.PtrSize {</code></span>
+<span class="codeline" id="line-909"><code>				print("runtime: heapBitsSetType size=", size, " but typ.size=", typ.size, "\n")</code></span>
+<span class="codeline" id="line-910"><code>				throw("heapBitsSetType: inconsistent object sizes")</code></span>
+<span class="codeline" id="line-911"><code>			}</code></span>
+<span class="codeline" id="line-912"><code>		}</code></span>
+<span class="codeline" id="line-913"><code>		if typ.size == sys.PtrSize {</code></span>
+<span class="codeline" id="line-914"><code>			// The type contains a pointer otherwise heapBitsSetType wouldn't have been called.</code></span>
+<span class="codeline" id="line-915"><code>			// Since the type is only 1 pointer wide and contains a pointer, its gcdata must be exactly 1.</code></span>
+<span class="codeline" id="line-916"><code>			if doubleCheck &amp;&amp; *typ.gcdata != 1 {</code></span>
+<span class="codeline" id="line-917"><code>				print("runtime: heapBitsSetType size=", size, " typ.size=", typ.size, "but *typ.gcdata", *typ.gcdata, "\n")</code></span>
+<span class="codeline" id="line-918"><code>				throw("heapBitsSetType: unexpected gcdata for 1 pointer wide type size in 3 pointer wide size class")</code></span>
+<span class="codeline" id="line-919"><code>			}</code></span>
+<span class="codeline" id="line-920"><code>			// 3 element array of pointers. Unrolling ptrmask 3 times into p yields 00000111.</code></span>
+<span class="codeline" id="line-921"><code>			b = 7</code></span>
+<span class="codeline" id="line-922"><code>		}</code></span>
+<span class="codeline" id="line-923"><code></code></span>
+<span class="codeline" id="line-924"><code>		hb := b &amp; 7</code></span>
+<span class="codeline" id="line-925"><code>		// Set bitScan bits for all pointers.</code></span>
+<span class="codeline" id="line-926"><code>		hb |= hb &lt;&lt; wordsPerBitmapByte</code></span>
+<span class="codeline" id="line-927"><code>		// First bitScan bit is always set since the type contains pointers.</code></span>
+<span class="codeline" id="line-928"><code>		hb |= bitScan</code></span>
+<span class="codeline" id="line-929"><code>		// Second bitScan bit needs to also be set if the third bitScan bit is set.</code></span>
+<span class="codeline" id="line-930"><code>		hb |= hb &amp; (bitScan &lt;&lt; (2 * heapBitsShift)) &gt;&gt; 1</code></span>
+<span class="codeline" id="line-931"><code></code></span>
+<span class="codeline" id="line-932"><code>		// For h.shift &gt; 1 heap bits cross a byte boundary and need to be written part</code></span>
+<span class="codeline" id="line-933"><code>		// to h.bitp and part to the next h.bitp.</code></span>
+<span class="codeline" id="line-934"><code>		switch h.shift {</code></span>
+<span class="codeline" id="line-935"><code>		case 0:</code></span>
+<span class="codeline" id="line-936"><code>			*h.bitp &amp;^= mask3 &lt;&lt; 0</code></span>
+<span class="codeline" id="line-937"><code>			*h.bitp |= hb &lt;&lt; 0</code></span>
+<span class="codeline" id="line-938"><code>		case 1:</code></span>
+<span class="codeline" id="line-939"><code>			*h.bitp &amp;^= mask3 &lt;&lt; 1</code></span>
+<span class="codeline" id="line-940"><code>			*h.bitp |= hb &lt;&lt; 1</code></span>
+<span class="codeline" id="line-941"><code>		case 2:</code></span>
+<span class="codeline" id="line-942"><code>			*h.bitp &amp;^= mask2 &lt;&lt; 2</code></span>
+<span class="codeline" id="line-943"><code>			*h.bitp |= (hb &amp; mask2) &lt;&lt; 2</code></span>
+<span class="codeline" id="line-944"><code>			// Two words written to the first byte.</code></span>
+<span class="codeline" id="line-945"><code>			// Advance two words to get to the next byte.</code></span>
+<span class="codeline" id="line-946"><code>			h = h.next().next()</code></span>
+<span class="codeline" id="line-947"><code>			*h.bitp &amp;^= mask1</code></span>
+<span class="codeline" id="line-948"><code>			*h.bitp |= (hb &gt;&gt; 2) &amp; mask1</code></span>
+<span class="codeline" id="line-949"><code>		case 3:</code></span>
+<span class="codeline" id="line-950"><code>			*h.bitp &amp;^= mask1 &lt;&lt; 3</code></span>
+<span class="codeline" id="line-951"><code>			*h.bitp |= (hb &amp; mask1) &lt;&lt; 3</code></span>
+<span class="codeline" id="line-952"><code>			// One word written to the first byte.</code></span>
+<span class="codeline" id="line-953"><code>			// Advance one word to get to the next byte.</code></span>
+<span class="codeline" id="line-954"><code>			h = h.next()</code></span>
+<span class="codeline" id="line-955"><code>			*h.bitp &amp;^= mask2</code></span>
+<span class="codeline" id="line-956"><code>			*h.bitp |= (hb &gt;&gt; 1) &amp; mask2</code></span>
+<span class="codeline" id="line-957"><code>		}</code></span>
+<span class="codeline" id="line-958"><code>		return</code></span>
+<span class="codeline" id="line-959"><code>	}</code></span>
+<span class="codeline" id="line-960"><code></code></span>
+<span class="codeline" id="line-961"><code>	// Copy from 1-bit ptrmask into 2-bit bitmap.</code></span>
+<span class="codeline" id="line-962"><code>	// The basic approach is to use a single uintptr as a bit buffer,</code></span>
+<span class="codeline" id="line-963"><code>	// alternating between reloading the buffer and writing bitmap bytes.</code></span>
+<span class="codeline" id="line-964"><code>	// In general, one load can supply two bitmap byte writes.</code></span>
+<span class="codeline" id="line-965"><code>	// This is a lot of lines of code, but it compiles into relatively few</code></span>
+<span class="codeline" id="line-966"><code>	// machine instructions.</code></span>
+<span class="codeline" id="line-967"><code></code></span>
+<span class="codeline" id="line-968"><code>	outOfPlace := false</code></span>
+<span class="codeline" id="line-969"><code>	if arenaIndex(x+size-1) != arenaIdx(h.arena) || (doubleCheck &amp;&amp; fastrand()%2 == 0) {</code></span>
+<span class="codeline" id="line-970"><code>		// This object spans heap arenas, so the bitmap may be</code></span>
+<span class="codeline" id="line-971"><code>		// discontiguous. Unroll it into the object instead</code></span>
+<span class="codeline" id="line-972"><code>		// and then copy it out.</code></span>
+<span class="codeline" id="line-973"><code>		//</code></span>
+<span class="codeline" id="line-974"><code>		// In doubleCheck mode, we randomly do this anyway to</code></span>
+<span class="codeline" id="line-975"><code>		// stress test the bitmap copying path.</code></span>
+<span class="codeline" id="line-976"><code>		outOfPlace = true</code></span>
+<span class="codeline" id="line-977"><code>		h.bitp = (*uint8)(unsafe.Pointer(x))</code></span>
+<span class="codeline" id="line-978"><code>		h.last = nil</code></span>
+<span class="codeline" id="line-979"><code>	}</code></span>
+<span class="codeline" id="line-980"><code></code></span>
+<span class="codeline" id="line-981"><code>	var (</code></span>
+<span class="codeline" id="line-982"><code>		// Ptrmask input.</code></span>
+<span class="codeline" id="line-983"><code>		p     *byte   // last ptrmask byte read</code></span>
+<span class="codeline" id="line-984"><code>		b     uintptr // ptrmask bits already loaded</code></span>
+<span class="codeline" id="line-985"><code>		nb    uintptr // number of bits in b at next read</code></span>
+<span class="codeline" id="line-986"><code>		endp  *byte   // final ptrmask byte to read (then repeat)</code></span>
+<span class="codeline" id="line-987"><code>		endnb uintptr // number of valid bits in *endp</code></span>
+<span class="codeline" id="line-988"><code>		pbits uintptr // alternate source of bits</code></span>
+<span class="codeline" id="line-989"><code></code></span>
+<span class="codeline" id="line-990"><code>		// Heap bitmap output.</code></span>
+<span class="codeline" id="line-991"><code>		w     uintptr // words processed</code></span>
+<span class="codeline" id="line-992"><code>		nw    uintptr // number of words to process</code></span>
+<span class="codeline" id="line-993"><code>		hbitp *byte   // next heap bitmap byte to write</code></span>
+<span class="codeline" id="line-994"><code>		hb    uintptr // bits being prepared for *hbitp</code></span>
+<span class="codeline" id="line-995"><code>	)</code></span>
+<span class="codeline" id="line-996"><code></code></span>
+<span class="codeline" id="line-997"><code>	hbitp = h.bitp</code></span>
+<span class="codeline" id="line-998"><code></code></span>
+<span class="codeline" id="line-999"><code>	// Handle GC program. Delayed until this part of the code</code></span>
+<span class="codeline" id="line-1000"><code>	// so that we can use the same double-checking mechanism</code></span>
+<span class="codeline" id="line-1001"><code>	// as the 1-bit case. Nothing above could have encountered</code></span>
+<span class="codeline" id="line-1002"><code>	// GC programs: the cases were all too small.</code></span>
+<span class="codeline" id="line-1003"><code>	if typ.kind&amp;kindGCProg != 0 {</code></span>
+<span class="codeline" id="line-1004"><code>		heapBitsSetTypeGCProg(h, typ.ptrdata, typ.size, dataSize, size, addb(typ.gcdata, 4))</code></span>
+<span class="codeline" id="line-1005"><code>		if doubleCheck {</code></span>
+<span class="codeline" id="line-1006"><code>			// Double-check the heap bits written by GC program</code></span>
+<span class="codeline" id="line-1007"><code>			// by running the GC program to create a 1-bit pointer mask</code></span>
+<span class="codeline" id="line-1008"><code>			// and then jumping to the double-check code below.</code></span>
+<span class="codeline" id="line-1009"><code>			// This doesn't catch bugs shared between the 1-bit and 4-bit</code></span>
+<span class="codeline" id="line-1010"><code>			// GC program execution, but it does catch mistakes specific</code></span>
+<span class="codeline" id="line-1011"><code>			// to just one of those and bugs in heapBitsSetTypeGCProg's</code></span>
+<span class="codeline" id="line-1012"><code>			// implementation of arrays.</code></span>
+<span class="codeline" id="line-1013"><code>			lock(&amp;debugPtrmask.lock)</code></span>
+<span class="codeline" id="line-1014"><code>			if debugPtrmask.data == nil {</code></span>
+<span class="codeline" id="line-1015"><code>				debugPtrmask.data = (*byte)(persistentalloc(1&lt;&lt;20, 1, &amp;memstats.other_sys))</code></span>
+<span class="codeline" id="line-1016"><code>			}</code></span>
+<span class="codeline" id="line-1017"><code>			ptrmask = debugPtrmask.data</code></span>
+<span class="codeline" id="line-1018"><code>			runGCProg(addb(typ.gcdata, 4), nil, ptrmask, 1)</code></span>
+<span class="codeline" id="line-1019"><code>		}</code></span>
+<span class="codeline" id="line-1020"><code>		goto Phase4</code></span>
+<span class="codeline" id="line-1021"><code>	}</code></span>
+<span class="codeline" id="line-1022"><code></code></span>
+<span class="codeline" id="line-1023"><code>	// Note about sizes:</code></span>
+<span class="codeline" id="line-1024"><code>	//</code></span>
+<span class="codeline" id="line-1025"><code>	// typ.size is the number of words in the object,</code></span>
+<span class="codeline" id="line-1026"><code>	// and typ.ptrdata is the number of words in the prefix</code></span>
+<span class="codeline" id="line-1027"><code>	// of the object that contains pointers. That is, the final</code></span>
+<span class="codeline" id="line-1028"><code>	// typ.size - typ.ptrdata words contain no pointers.</code></span>
+<span class="codeline" id="line-1029"><code>	// This allows optimization of a common pattern where</code></span>
+<span class="codeline" id="line-1030"><code>	// an object has a small header followed by a large scalar</code></span>
+<span class="codeline" id="line-1031"><code>	// buffer. If we know the pointers are over, we don't have</code></span>
+<span class="codeline" id="line-1032"><code>	// to scan the buffer's heap bitmap at all.</code></span>
+<span class="codeline" id="line-1033"><code>	// The 1-bit ptrmasks are sized to contain only bits for</code></span>
+<span class="codeline" id="line-1034"><code>	// the typ.ptrdata prefix, zero padded out to a full byte</code></span>
+<span class="codeline" id="line-1035"><code>	// of bitmap. This code sets nw (below) so that heap bitmap</code></span>
+<span class="codeline" id="line-1036"><code>	// bits are only written for the typ.ptrdata prefix; if there is</code></span>
+<span class="codeline" id="line-1037"><code>	// more room in the allocated object, the next heap bitmap</code></span>
+<span class="codeline" id="line-1038"><code>	// entry is a 00, indicating that there are no more pointers</code></span>
+<span class="codeline" id="line-1039"><code>	// to scan. So only the ptrmask for the ptrdata bytes is needed.</code></span>
+<span class="codeline" id="line-1040"><code>	//</code></span>
+<span class="codeline" id="line-1041"><code>	// Replicated copies are not as nice: if there is an array of</code></span>
+<span class="codeline" id="line-1042"><code>	// objects with scalar tails, all but the last tail does have to</code></span>
+<span class="codeline" id="line-1043"><code>	// be initialized, because there is no way to say "skip forward".</code></span>
+<span class="codeline" id="line-1044"><code>	// However, because of the possibility of a repeated type with</code></span>
+<span class="codeline" id="line-1045"><code>	// size not a multiple of 4 pointers (one heap bitmap byte),</code></span>
+<span class="codeline" id="line-1046"><code>	// the code already must handle the last ptrmask byte specially</code></span>
+<span class="codeline" id="line-1047"><code>	// by treating it as containing only the bits for endnb pointers,</code></span>
+<span class="codeline" id="line-1048"><code>	// where endnb &lt;= 4. We represent large scalar tails that must</code></span>
+<span class="codeline" id="line-1049"><code>	// be expanded in the replication by setting endnb larger than 4.</code></span>
+<span class="codeline" id="line-1050"><code>	// This will have the effect of reading many bits out of b,</code></span>
+<span class="codeline" id="line-1051"><code>	// but once the real bits are shifted out, b will supply as many</code></span>
+<span class="codeline" id="line-1052"><code>	// zero bits as we try to read, which is exactly what we need.</code></span>
+<span class="codeline" id="line-1053"><code></code></span>
+<span class="codeline" id="line-1054"><code>	p = ptrmask</code></span>
+<span class="codeline" id="line-1055"><code>	if typ.size &lt; dataSize {</code></span>
+<span class="codeline" id="line-1056"><code>		// Filling in bits for an array of typ.</code></span>
+<span class="codeline" id="line-1057"><code>		// Set up for repetition of ptrmask during main loop.</code></span>
+<span class="codeline" id="line-1058"><code>		// Note that ptrmask describes only a prefix of</code></span>
+<span class="codeline" id="line-1059"><code>		const maxBits = sys.PtrSize*8 - 7</code></span>
+<span class="codeline" id="line-1060"><code>		if typ.ptrdata/sys.PtrSize &lt;= maxBits {</code></span>
+<span class="codeline" id="line-1061"><code>			// Entire ptrmask fits in uintptr with room for a byte fragment.</code></span>
+<span class="codeline" id="line-1062"><code>			// Load into pbits and never read from ptrmask again.</code></span>
+<span class="codeline" id="line-1063"><code>			// This is especially important when the ptrmask has</code></span>
+<span class="codeline" id="line-1064"><code>			// fewer than 8 bits in it; otherwise the reload in the middle</code></span>
+<span class="codeline" id="line-1065"><code>			// of the Phase 2 loop would itself need to loop to gather</code></span>
+<span class="codeline" id="line-1066"><code>			// at least 8 bits.</code></span>
+<span class="codeline" id="line-1067"><code></code></span>
+<span class="codeline" id="line-1068"><code>			// Accumulate ptrmask into b.</code></span>
+<span class="codeline" id="line-1069"><code>			// ptrmask is sized to describe only typ.ptrdata, but we record</code></span>
+<span class="codeline" id="line-1070"><code>			// it as describing typ.size bytes, since all the high bits are zero.</code></span>
+<span class="codeline" id="line-1071"><code>			nb = typ.ptrdata / sys.PtrSize</code></span>
+<span class="codeline" id="line-1072"><code>			for i := uintptr(0); i &lt; nb; i += 8 {</code></span>
+<span class="codeline" id="line-1073"><code>				b |= uintptr(*p) &lt;&lt; i</code></span>
+<span class="codeline" id="line-1074"><code>				p = add1(p)</code></span>
+<span class="codeline" id="line-1075"><code>			}</code></span>
+<span class="codeline" id="line-1076"><code>			nb = typ.size / sys.PtrSize</code></span>
+<span class="codeline" id="line-1077"><code></code></span>
+<span class="codeline" id="line-1078"><code>			// Replicate ptrmask to fill entire pbits uintptr.</code></span>
+<span class="codeline" id="line-1079"><code>			// Doubling and truncating is fewer steps than</code></span>
+<span class="codeline" id="line-1080"><code>			// iterating by nb each time. (nb could be 1.)</code></span>
+<span class="codeline" id="line-1081"><code>			// Since we loaded typ.ptrdata/sys.PtrSize bits</code></span>
+<span class="codeline" id="line-1082"><code>			// but are pretending to have typ.size/sys.PtrSize,</code></span>
+<span class="codeline" id="line-1083"><code>			// there might be no replication necessary/possible.</code></span>
+<span class="codeline" id="line-1084"><code>			pbits = b</code></span>
+<span class="codeline" id="line-1085"><code>			endnb = nb</code></span>
+<span class="codeline" id="line-1086"><code>			if nb+nb &lt;= maxBits {</code></span>
+<span class="codeline" id="line-1087"><code>				for endnb &lt;= sys.PtrSize*8 {</code></span>
+<span class="codeline" id="line-1088"><code>					pbits |= pbits &lt;&lt; endnb</code></span>
+<span class="codeline" id="line-1089"><code>					endnb += endnb</code></span>
+<span class="codeline" id="line-1090"><code>				}</code></span>
+<span class="codeline" id="line-1091"><code>				// Truncate to a multiple of original ptrmask.</code></span>
+<span class="codeline" id="line-1092"><code>				// Because nb+nb &lt;= maxBits, nb fits in a byte.</code></span>
+<span class="codeline" id="line-1093"><code>				// Byte division is cheaper than uintptr division.</code></span>
+<span class="codeline" id="line-1094"><code>				endnb = uintptr(maxBits/byte(nb)) * nb</code></span>
+<span class="codeline" id="line-1095"><code>				pbits &amp;= 1&lt;&lt;endnb - 1</code></span>
+<span class="codeline" id="line-1096"><code>				b = pbits</code></span>
+<span class="codeline" id="line-1097"><code>				nb = endnb</code></span>
+<span class="codeline" id="line-1098"><code>			}</code></span>
+<span class="codeline" id="line-1099"><code></code></span>
+<span class="codeline" id="line-1100"><code>			// Clear p and endp as sentinel for using pbits.</code></span>
+<span class="codeline" id="line-1101"><code>			// Checked during Phase 2 loop.</code></span>
+<span class="codeline" id="line-1102"><code>			p = nil</code></span>
+<span class="codeline" id="line-1103"><code>			endp = nil</code></span>
+<span class="codeline" id="line-1104"><code>		} else {</code></span>
+<span class="codeline" id="line-1105"><code>			// Ptrmask is larger. Read it multiple times.</code></span>
+<span class="codeline" id="line-1106"><code>			n := (typ.ptrdata/sys.PtrSize+7)/8 - 1</code></span>
+<span class="codeline" id="line-1107"><code>			endp = addb(ptrmask, n)</code></span>
+<span class="codeline" id="line-1108"><code>			endnb = typ.size/sys.PtrSize - n*8</code></span>
+<span class="codeline" id="line-1109"><code>		}</code></span>
+<span class="codeline" id="line-1110"><code>	}</code></span>
+<span class="codeline" id="line-1111"><code>	if p != nil {</code></span>
+<span class="codeline" id="line-1112"><code>		b = uintptr(*p)</code></span>
+<span class="codeline" id="line-1113"><code>		p = add1(p)</code></span>
+<span class="codeline" id="line-1114"><code>		nb = 8</code></span>
+<span class="codeline" id="line-1115"><code>	}</code></span>
+<span class="codeline" id="line-1116"><code></code></span>
+<span class="codeline" id="line-1117"><code>	if typ.size == dataSize {</code></span>
+<span class="codeline" id="line-1118"><code>		// Single entry: can stop once we reach the non-pointer data.</code></span>
+<span class="codeline" id="line-1119"><code>		nw = typ.ptrdata / sys.PtrSize</code></span>
+<span class="codeline" id="line-1120"><code>	} else {</code></span>
+<span class="codeline" id="line-1121"><code>		// Repeated instances of typ in an array.</code></span>
+<span class="codeline" id="line-1122"><code>		// Have to process first N-1 entries in full, but can stop</code></span>
+<span class="codeline" id="line-1123"><code>		// once we reach the non-pointer data in the final entry.</code></span>
+<span class="codeline" id="line-1124"><code>		nw = ((dataSize/typ.size-1)*typ.size + typ.ptrdata) / sys.PtrSize</code></span>
+<span class="codeline" id="line-1125"><code>	}</code></span>
+<span class="codeline" id="line-1126"><code>	if nw == 0 {</code></span>
+<span class="codeline" id="line-1127"><code>		// No pointers! Caller was supposed to check.</code></span>
+<span class="codeline" id="line-1128"><code>		println("runtime: invalid type ", typ.string())</code></span>
+<span class="codeline" id="line-1129"><code>		throw("heapBitsSetType: called with non-pointer type")</code></span>
+<span class="codeline" id="line-1130"><code>		return</code></span>
+<span class="codeline" id="line-1131"><code>	}</code></span>
+<span class="codeline" id="line-1132"><code></code></span>
+<span class="codeline" id="line-1133"><code>	// Phase 1: Special case for leading byte (shift==0) or half-byte (shift==2).</code></span>
+<span class="codeline" id="line-1134"><code>	// The leading byte is special because it contains the bits for word 1,</code></span>
+<span class="codeline" id="line-1135"><code>	// which does not have the scan bit set.</code></span>
+<span class="codeline" id="line-1136"><code>	// The leading half-byte is special because it's a half a byte,</code></span>
+<span class="codeline" id="line-1137"><code>	// so we have to be careful with the bits already there.</code></span>
+<span class="codeline" id="line-1138"><code>	switch {</code></span>
+<span class="codeline" id="line-1139"><code>	default:</code></span>
+<span class="codeline" id="line-1140"><code>		throw("heapBitsSetType: unexpected shift")</code></span>
+<span class="codeline" id="line-1141"><code></code></span>
+<span class="codeline" id="line-1142"><code>	case h.shift == 0:</code></span>
+<span class="codeline" id="line-1143"><code>		// Ptrmask and heap bitmap are aligned.</code></span>
+<span class="codeline" id="line-1144"><code>		//</code></span>
+<span class="codeline" id="line-1145"><code>		// This is a fast path for small objects.</code></span>
+<span class="codeline" id="line-1146"><code>		//</code></span>
+<span class="codeline" id="line-1147"><code>		// The first byte we write out covers the first four</code></span>
+<span class="codeline" id="line-1148"><code>		// words of the object. The scan/dead bit on the first</code></span>
+<span class="codeline" id="line-1149"><code>		// word must be set to scan since there are pointers</code></span>
+<span class="codeline" id="line-1150"><code>		// somewhere in the object.</code></span>
+<span class="codeline" id="line-1151"><code>		// In all following words, we set the scan/dead</code></span>
+<span class="codeline" id="line-1152"><code>		// appropriately to indicate that the object continues</code></span>
+<span class="codeline" id="line-1153"><code>		// to the next 2-bit entry in the bitmap.</code></span>
+<span class="codeline" id="line-1154"><code>		//</code></span>
+<span class="codeline" id="line-1155"><code>		// We set four bits at a time here, but if the object</code></span>
+<span class="codeline" id="line-1156"><code>		// is fewer than four words, phase 3 will clear</code></span>
+<span class="codeline" id="line-1157"><code>		// unnecessary bits.</code></span>
+<span class="codeline" id="line-1158"><code>		hb = b &amp; bitPointerAll</code></span>
+<span class="codeline" id="line-1159"><code>		hb |= bitScanAll</code></span>
+<span class="codeline" id="line-1160"><code>		if w += 4; w &gt;= nw {</code></span>
+<span class="codeline" id="line-1161"><code>			goto Phase3</code></span>
+<span class="codeline" id="line-1162"><code>		}</code></span>
+<span class="codeline" id="line-1163"><code>		*hbitp = uint8(hb)</code></span>
+<span class="codeline" id="line-1164"><code>		hbitp = add1(hbitp)</code></span>
+<span class="codeline" id="line-1165"><code>		b &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1166"><code>		nb -= 4</code></span>
+<span class="codeline" id="line-1167"><code></code></span>
+<span class="codeline" id="line-1168"><code>	case h.shift == 2:</code></span>
+<span class="codeline" id="line-1169"><code>		// Ptrmask and heap bitmap are misaligned.</code></span>
+<span class="codeline" id="line-1170"><code>		//</code></span>
+<span class="codeline" id="line-1171"><code>		// On 32 bit architectures only the 6-word object that corresponds</code></span>
+<span class="codeline" id="line-1172"><code>		// to a 24 bytes size class can start with h.shift of 2 here since</code></span>
+<span class="codeline" id="line-1173"><code>		// all other non 16 byte aligned size classes have been handled by</code></span>
+<span class="codeline" id="line-1174"><code>		// special code paths at the beginning of heapBitsSetType on 32 bit.</code></span>
+<span class="codeline" id="line-1175"><code>		//</code></span>
+<span class="codeline" id="line-1176"><code>		// Many size classes are only 16 byte aligned. On 64 bit architectures</code></span>
+<span class="codeline" id="line-1177"><code>		// this results in a heap bitmap position starting with a h.shift of 2.</code></span>
+<span class="codeline" id="line-1178"><code>		//</code></span>
+<span class="codeline" id="line-1179"><code>		// The bits for the first two words are in a byte shared</code></span>
+<span class="codeline" id="line-1180"><code>		// with another object, so we must be careful with the bits</code></span>
+<span class="codeline" id="line-1181"><code>		// already there.</code></span>
+<span class="codeline" id="line-1182"><code>		//</code></span>
+<span class="codeline" id="line-1183"><code>		// We took care of 1-word, 2-word, and 3-word objects above,</code></span>
+<span class="codeline" id="line-1184"><code>		// so this is at least a 6-word object.</code></span>
+<span class="codeline" id="line-1185"><code>		hb = (b &amp; (bitPointer | bitPointer&lt;&lt;heapBitsShift)) &lt;&lt; (2 * heapBitsShift)</code></span>
+<span class="codeline" id="line-1186"><code>		hb |= bitScan &lt;&lt; (2 * heapBitsShift)</code></span>
+<span class="codeline" id="line-1187"><code>		if nw &gt; 1 {</code></span>
+<span class="codeline" id="line-1188"><code>			hb |= bitScan &lt;&lt; (3 * heapBitsShift)</code></span>
+<span class="codeline" id="line-1189"><code>		}</code></span>
+<span class="codeline" id="line-1190"><code>		b &gt;&gt;= 2</code></span>
+<span class="codeline" id="line-1191"><code>		nb -= 2</code></span>
+<span class="codeline" id="line-1192"><code>		*hbitp &amp;^= uint8((bitPointer | bitScan | ((bitPointer | bitScan) &lt;&lt; heapBitsShift)) &lt;&lt; (2 * heapBitsShift))</code></span>
+<span class="codeline" id="line-1193"><code>		*hbitp |= uint8(hb)</code></span>
+<span class="codeline" id="line-1194"><code>		hbitp = add1(hbitp)</code></span>
+<span class="codeline" id="line-1195"><code>		if w += 2; w &gt;= nw {</code></span>
+<span class="codeline" id="line-1196"><code>			// We know that there is more data, because we handled 2-word and 3-word objects above.</code></span>
+<span class="codeline" id="line-1197"><code>			// This must be at least a 6-word object. If we're out of pointer words,</code></span>
+<span class="codeline" id="line-1198"><code>			// mark no scan in next bitmap byte and finish.</code></span>
+<span class="codeline" id="line-1199"><code>			hb = 0</code></span>
+<span class="codeline" id="line-1200"><code>			w += 4</code></span>
+<span class="codeline" id="line-1201"><code>			goto Phase3</code></span>
+<span class="codeline" id="line-1202"><code>		}</code></span>
+<span class="codeline" id="line-1203"><code>	}</code></span>
+<span class="codeline" id="line-1204"><code></code></span>
+<span class="codeline" id="line-1205"><code>	// Phase 2: Full bytes in bitmap, up to but not including write to last byte (full or partial) in bitmap.</code></span>
+<span class="codeline" id="line-1206"><code>	// The loop computes the bits for that last write but does not execute the write;</code></span>
+<span class="codeline" id="line-1207"><code>	// it leaves the bits in hb for processing by phase 3.</code></span>
+<span class="codeline" id="line-1208"><code>	// To avoid repeated adjustment of nb, we subtract out the 4 bits we're going to</code></span>
+<span class="codeline" id="line-1209"><code>	// use in the first half of the loop right now, and then we only adjust nb explicitly</code></span>
+<span class="codeline" id="line-1210"><code>	// if the 8 bits used by each iteration isn't balanced by 8 bits loaded mid-loop.</code></span>
+<span class="codeline" id="line-1211"><code>	nb -= 4</code></span>
+<span class="codeline" id="line-1212"><code>	for {</code></span>
+<span class="codeline" id="line-1213"><code>		// Emit bitmap byte.</code></span>
+<span class="codeline" id="line-1214"><code>		// b has at least nb+4 bits, with one exception:</code></span>
+<span class="codeline" id="line-1215"><code>		// if w+4 &gt;= nw, then b has only nw-w bits,</code></span>
+<span class="codeline" id="line-1216"><code>		// but we'll stop at the break and then truncate</code></span>
+<span class="codeline" id="line-1217"><code>		// appropriately in Phase 3.</code></span>
+<span class="codeline" id="line-1218"><code>		hb = b &amp; bitPointerAll</code></span>
+<span class="codeline" id="line-1219"><code>		hb |= bitScanAll</code></span>
+<span class="codeline" id="line-1220"><code>		if w += 4; w &gt;= nw {</code></span>
+<span class="codeline" id="line-1221"><code>			break</code></span>
+<span class="codeline" id="line-1222"><code>		}</code></span>
+<span class="codeline" id="line-1223"><code>		*hbitp = uint8(hb)</code></span>
+<span class="codeline" id="line-1224"><code>		hbitp = add1(hbitp)</code></span>
+<span class="codeline" id="line-1225"><code>		b &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1226"><code></code></span>
+<span class="codeline" id="line-1227"><code>		// Load more bits. b has nb right now.</code></span>
+<span class="codeline" id="line-1228"><code>		if p != endp {</code></span>
+<span class="codeline" id="line-1229"><code>			// Fast path: keep reading from ptrmask.</code></span>
+<span class="codeline" id="line-1230"><code>			// nb unmodified: we just loaded 8 bits,</code></span>
+<span class="codeline" id="line-1231"><code>			// and the next iteration will consume 8 bits,</code></span>
+<span class="codeline" id="line-1232"><code>			// leaving us with the same nb the next time we're here.</code></span>
+<span class="codeline" id="line-1233"><code>			if nb &lt; 8 {</code></span>
+<span class="codeline" id="line-1234"><code>				b |= uintptr(*p) &lt;&lt; nb</code></span>
+<span class="codeline" id="line-1235"><code>				p = add1(p)</code></span>
+<span class="codeline" id="line-1236"><code>			} else {</code></span>
+<span class="codeline" id="line-1237"><code>				// Reduce the number of bits in b.</code></span>
+<span class="codeline" id="line-1238"><code>				// This is important if we skipped</code></span>
+<span class="codeline" id="line-1239"><code>				// over a scalar tail, since nb could</code></span>
+<span class="codeline" id="line-1240"><code>				// be larger than the bit width of b.</code></span>
+<span class="codeline" id="line-1241"><code>				nb -= 8</code></span>
+<span class="codeline" id="line-1242"><code>			}</code></span>
+<span class="codeline" id="line-1243"><code>		} else if p == nil {</code></span>
+<span class="codeline" id="line-1244"><code>			// Almost as fast path: track bit count and refill from pbits.</code></span>
+<span class="codeline" id="line-1245"><code>			// For short repetitions.</code></span>
+<span class="codeline" id="line-1246"><code>			if nb &lt; 8 {</code></span>
+<span class="codeline" id="line-1247"><code>				b |= pbits &lt;&lt; nb</code></span>
+<span class="codeline" id="line-1248"><code>				nb += endnb</code></span>
+<span class="codeline" id="line-1249"><code>			}</code></span>
+<span class="codeline" id="line-1250"><code>			nb -= 8 // for next iteration</code></span>
+<span class="codeline" id="line-1251"><code>		} else {</code></span>
+<span class="codeline" id="line-1252"><code>			// Slow path: reached end of ptrmask.</code></span>
+<span class="codeline" id="line-1253"><code>			// Process final partial byte and rewind to start.</code></span>
+<span class="codeline" id="line-1254"><code>			b |= uintptr(*p) &lt;&lt; nb</code></span>
+<span class="codeline" id="line-1255"><code>			nb += endnb</code></span>
+<span class="codeline" id="line-1256"><code>			if nb &lt; 8 {</code></span>
+<span class="codeline" id="line-1257"><code>				b |= uintptr(*ptrmask) &lt;&lt; nb</code></span>
+<span class="codeline" id="line-1258"><code>				p = add1(ptrmask)</code></span>
+<span class="codeline" id="line-1259"><code>			} else {</code></span>
+<span class="codeline" id="line-1260"><code>				nb -= 8</code></span>
+<span class="codeline" id="line-1261"><code>				p = ptrmask</code></span>
+<span class="codeline" id="line-1262"><code>			}</code></span>
+<span class="codeline" id="line-1263"><code>		}</code></span>
+<span class="codeline" id="line-1264"><code></code></span>
+<span class="codeline" id="line-1265"><code>		// Emit bitmap byte.</code></span>
+<span class="codeline" id="line-1266"><code>		hb = b &amp; bitPointerAll</code></span>
+<span class="codeline" id="line-1267"><code>		hb |= bitScanAll</code></span>
+<span class="codeline" id="line-1268"><code>		if w += 4; w &gt;= nw {</code></span>
+<span class="codeline" id="line-1269"><code>			break</code></span>
+<span class="codeline" id="line-1270"><code>		}</code></span>
+<span class="codeline" id="line-1271"><code>		*hbitp = uint8(hb)</code></span>
+<span class="codeline" id="line-1272"><code>		hbitp = add1(hbitp)</code></span>
+<span class="codeline" id="line-1273"><code>		b &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1274"><code>	}</code></span>
+<span class="codeline" id="line-1275"><code></code></span>
+<span class="codeline" id="line-1276"><code>Phase3:</code></span>
+<span class="codeline" id="line-1277"><code>	// Phase 3: Write last byte or partial byte and zero the rest of the bitmap entries.</code></span>
+<span class="codeline" id="line-1278"><code>	if w &gt; nw {</code></span>
+<span class="codeline" id="line-1279"><code>		// Counting the 4 entries in hb not yet written to memory,</code></span>
+<span class="codeline" id="line-1280"><code>		// there are more entries than possible pointer slots.</code></span>
+<span class="codeline" id="line-1281"><code>		// Discard the excess entries (can't be more than 3).</code></span>
+<span class="codeline" id="line-1282"><code>		mask := uintptr(1)&lt;&lt;(4-(w-nw)) - 1</code></span>
+<span class="codeline" id="line-1283"><code>		hb &amp;= mask | mask&lt;&lt;4 // apply mask to both pointer bits and scan bits</code></span>
+<span class="codeline" id="line-1284"><code>	}</code></span>
+<span class="codeline" id="line-1285"><code></code></span>
+<span class="codeline" id="line-1286"><code>	// Change nw from counting possibly-pointer words to total words in allocation.</code></span>
+<span class="codeline" id="line-1287"><code>	nw = size / sys.PtrSize</code></span>
+<span class="codeline" id="line-1288"><code></code></span>
+<span class="codeline" id="line-1289"><code>	// Write whole bitmap bytes.</code></span>
+<span class="codeline" id="line-1290"><code>	// The first is hb, the rest are zero.</code></span>
+<span class="codeline" id="line-1291"><code>	if w &lt;= nw {</code></span>
+<span class="codeline" id="line-1292"><code>		*hbitp = uint8(hb)</code></span>
+<span class="codeline" id="line-1293"><code>		hbitp = add1(hbitp)</code></span>
+<span class="codeline" id="line-1294"><code>		hb = 0 // for possible final half-byte below</code></span>
+<span class="codeline" id="line-1295"><code>		for w += 4; w &lt;= nw; w += 4 {</code></span>
+<span class="codeline" id="line-1296"><code>			*hbitp = 0</code></span>
+<span class="codeline" id="line-1297"><code>			hbitp = add1(hbitp)</code></span>
+<span class="codeline" id="line-1298"><code>		}</code></span>
+<span class="codeline" id="line-1299"><code>	}</code></span>
+<span class="codeline" id="line-1300"><code></code></span>
+<span class="codeline" id="line-1301"><code>	// Write final partial bitmap byte if any.</code></span>
+<span class="codeline" id="line-1302"><code>	// We know w &gt; nw, or else we'd still be in the loop above.</code></span>
+<span class="codeline" id="line-1303"><code>	// It can be bigger only due to the 4 entries in hb that it counts.</code></span>
+<span class="codeline" id="line-1304"><code>	// If w == nw+4 then there's nothing left to do: we wrote all nw entries</code></span>
+<span class="codeline" id="line-1305"><code>	// and can discard the 4 sitting in hb.</code></span>
+<span class="codeline" id="line-1306"><code>	// But if w == nw+2, we need to write first two in hb.</code></span>
+<span class="codeline" id="line-1307"><code>	// The byte is shared with the next object, so be careful with</code></span>
+<span class="codeline" id="line-1308"><code>	// existing bits.</code></span>
+<span class="codeline" id="line-1309"><code>	if w == nw+2 {</code></span>
+<span class="codeline" id="line-1310"><code>		*hbitp = *hbitp&amp;^(bitPointer|bitScan|(bitPointer|bitScan)&lt;&lt;heapBitsShift) | uint8(hb)</code></span>
+<span class="codeline" id="line-1311"><code>	}</code></span>
+<span class="codeline" id="line-1312"><code></code></span>
+<span class="codeline" id="line-1313"><code>Phase4:</code></span>
+<span class="codeline" id="line-1314"><code>	// Phase 4: Copy unrolled bitmap to per-arena bitmaps, if necessary.</code></span>
+<span class="codeline" id="line-1315"><code>	if outOfPlace {</code></span>
+<span class="codeline" id="line-1316"><code>		// TODO: We could probably make this faster by</code></span>
+<span class="codeline" id="line-1317"><code>		// handling [x+dataSize, x+size) specially.</code></span>
+<span class="codeline" id="line-1318"><code>		h := heapBitsForAddr(x)</code></span>
+<span class="codeline" id="line-1319"><code>		// cnw is the number of heap words, or bit pairs</code></span>
+<span class="codeline" id="line-1320"><code>		// remaining (like nw above).</code></span>
+<span class="codeline" id="line-1321"><code>		cnw := size / sys.PtrSize</code></span>
+<span class="codeline" id="line-1322"><code>		src := (*uint8)(unsafe.Pointer(x))</code></span>
+<span class="codeline" id="line-1323"><code>		// We know the first and last byte of the bitmap are</code></span>
+<span class="codeline" id="line-1324"><code>		// not the same, but it's still possible for small</code></span>
+<span class="codeline" id="line-1325"><code>		// objects span arenas, so it may share bitmap bytes</code></span>
+<span class="codeline" id="line-1326"><code>		// with neighboring objects.</code></span>
+<span class="codeline" id="line-1327"><code>		//</code></span>
+<span class="codeline" id="line-1328"><code>		// Handle the first byte specially if it's shared. See</code></span>
+<span class="codeline" id="line-1329"><code>		// Phase 1 for why this is the only special case we need.</code></span>
+<span class="codeline" id="line-1330"><code>		if doubleCheck {</code></span>
+<span class="codeline" id="line-1331"><code>			if !(h.shift == 0 || h.shift == 2) {</code></span>
+<span class="codeline" id="line-1332"><code>				print("x=", x, " size=", size, " cnw=", h.shift, "\n")</code></span>
+<span class="codeline" id="line-1333"><code>				throw("bad start shift")</code></span>
+<span class="codeline" id="line-1334"><code>			}</code></span>
+<span class="codeline" id="line-1335"><code>		}</code></span>
+<span class="codeline" id="line-1336"><code>		if h.shift == 2 {</code></span>
+<span class="codeline" id="line-1337"><code>			*h.bitp = *h.bitp&amp;^((bitPointer|bitScan|(bitPointer|bitScan)&lt;&lt;heapBitsShift)&lt;&lt;(2*heapBitsShift)) | *src</code></span>
+<span class="codeline" id="line-1338"><code>			h = h.next().next()</code></span>
+<span class="codeline" id="line-1339"><code>			cnw -= 2</code></span>
+<span class="codeline" id="line-1340"><code>			src = addb(src, 1)</code></span>
+<span class="codeline" id="line-1341"><code>		}</code></span>
+<span class="codeline" id="line-1342"><code>		// We're now byte aligned. Copy out to per-arena</code></span>
+<span class="codeline" id="line-1343"><code>		// bitmaps until the last byte (which may again be</code></span>
+<span class="codeline" id="line-1344"><code>		// partial).</code></span>
+<span class="codeline" id="line-1345"><code>		for cnw &gt;= 4 {</code></span>
+<span class="codeline" id="line-1346"><code>			// This loop processes four words at a time,</code></span>
+<span class="codeline" id="line-1347"><code>			// so round cnw down accordingly.</code></span>
+<span class="codeline" id="line-1348"><code>			hNext, words := h.forwardOrBoundary(cnw / 4 * 4)</code></span>
+<span class="codeline" id="line-1349"><code></code></span>
+<span class="codeline" id="line-1350"><code>			// n is the number of bitmap bytes to copy.</code></span>
+<span class="codeline" id="line-1351"><code>			n := words / 4</code></span>
+<span class="codeline" id="line-1352"><code>			memmove(unsafe.Pointer(h.bitp), unsafe.Pointer(src), n)</code></span>
+<span class="codeline" id="line-1353"><code>			cnw -= words</code></span>
+<span class="codeline" id="line-1354"><code>			h = hNext</code></span>
+<span class="codeline" id="line-1355"><code>			src = addb(src, n)</code></span>
+<span class="codeline" id="line-1356"><code>		}</code></span>
+<span class="codeline" id="line-1357"><code>		if doubleCheck &amp;&amp; h.shift != 0 {</code></span>
+<span class="codeline" id="line-1358"><code>			print("cnw=", cnw, " h.shift=", h.shift, "\n")</code></span>
+<span class="codeline" id="line-1359"><code>			throw("bad shift after block copy")</code></span>
+<span class="codeline" id="line-1360"><code>		}</code></span>
+<span class="codeline" id="line-1361"><code>		// Handle the last byte if it's shared.</code></span>
+<span class="codeline" id="line-1362"><code>		if cnw == 2 {</code></span>
+<span class="codeline" id="line-1363"><code>			*h.bitp = *h.bitp&amp;^(bitPointer|bitScan|(bitPointer|bitScan)&lt;&lt;heapBitsShift) | *src</code></span>
+<span class="codeline" id="line-1364"><code>			src = addb(src, 1)</code></span>
+<span class="codeline" id="line-1365"><code>			h = h.next().next()</code></span>
+<span class="codeline" id="line-1366"><code>		}</code></span>
+<span class="codeline" id="line-1367"><code>		if doubleCheck {</code></span>
+<span class="codeline" id="line-1368"><code>			if uintptr(unsafe.Pointer(src)) &gt; x+size {</code></span>
+<span class="codeline" id="line-1369"><code>				throw("copy exceeded object size")</code></span>
+<span class="codeline" id="line-1370"><code>			}</code></span>
+<span class="codeline" id="line-1371"><code>			if !(cnw == 0 || cnw == 2) {</code></span>
+<span class="codeline" id="line-1372"><code>				print("x=", x, " size=", size, " cnw=", cnw, "\n")</code></span>
+<span class="codeline" id="line-1373"><code>				throw("bad number of remaining words")</code></span>
+<span class="codeline" id="line-1374"><code>			}</code></span>
+<span class="codeline" id="line-1375"><code>			// Set up hbitp so doubleCheck code below can check it.</code></span>
+<span class="codeline" id="line-1376"><code>			hbitp = h.bitp</code></span>
+<span class="codeline" id="line-1377"><code>		}</code></span>
+<span class="codeline" id="line-1378"><code>		// Zero the object where we wrote the bitmap.</code></span>
+<span class="codeline" id="line-1379"><code>		memclrNoHeapPointers(unsafe.Pointer(x), uintptr(unsafe.Pointer(src))-x)</code></span>
+<span class="codeline" id="line-1380"><code>	}</code></span>
+<span class="codeline" id="line-1381"><code></code></span>
+<span class="codeline" id="line-1382"><code>	// Double check the whole bitmap.</code></span>
+<span class="codeline" id="line-1383"><code>	if doubleCheck {</code></span>
+<span class="codeline" id="line-1384"><code>		// x+size may not point to the heap, so back up one</code></span>
+<span class="codeline" id="line-1385"><code>		// word and then advance it the way we do above.</code></span>
+<span class="codeline" id="line-1386"><code>		end := heapBitsForAddr(x + size - sys.PtrSize)</code></span>
+<span class="codeline" id="line-1387"><code>		if outOfPlace {</code></span>
+<span class="codeline" id="line-1388"><code>			// In out-of-place copying, we just advance</code></span>
+<span class="codeline" id="line-1389"><code>			// using next.</code></span>
+<span class="codeline" id="line-1390"><code>			end = end.next()</code></span>
+<span class="codeline" id="line-1391"><code>		} else {</code></span>
+<span class="codeline" id="line-1392"><code>			// Don't use next because that may advance to</code></span>
+<span class="codeline" id="line-1393"><code>			// the next arena and the in-place logic</code></span>
+<span class="codeline" id="line-1394"><code>			// doesn't do that.</code></span>
+<span class="codeline" id="line-1395"><code>			end.shift += heapBitsShift</code></span>
+<span class="codeline" id="line-1396"><code>			if end.shift == 4*heapBitsShift {</code></span>
+<span class="codeline" id="line-1397"><code>				end.bitp, end.shift = add1(end.bitp), 0</code></span>
+<span class="codeline" id="line-1398"><code>			}</code></span>
+<span class="codeline" id="line-1399"><code>		}</code></span>
+<span class="codeline" id="line-1400"><code>		if typ.kind&amp;kindGCProg == 0 &amp;&amp; (hbitp != end.bitp || (w == nw+2) != (end.shift == 2)) {</code></span>
+<span class="codeline" id="line-1401"><code>			println("ended at wrong bitmap byte for", typ.string(), "x", dataSize/typ.size)</code></span>
+<span class="codeline" id="line-1402"><code>			print("typ.size=", typ.size, " typ.ptrdata=", typ.ptrdata, " dataSize=", dataSize, " size=", size, "\n")</code></span>
+<span class="codeline" id="line-1403"><code>			print("w=", w, " nw=", nw, " b=", hex(b), " nb=", nb, " hb=", hex(hb), "\n")</code></span>
+<span class="codeline" id="line-1404"><code>			h0 := heapBitsForAddr(x)</code></span>
+<span class="codeline" id="line-1405"><code>			print("initial bits h0.bitp=", h0.bitp, " h0.shift=", h0.shift, "\n")</code></span>
+<span class="codeline" id="line-1406"><code>			print("ended at hbitp=", hbitp, " but next starts at bitp=", end.bitp, " shift=", end.shift, "\n")</code></span>
+<span class="codeline" id="line-1407"><code>			throw("bad heapBitsSetType")</code></span>
+<span class="codeline" id="line-1408"><code>		}</code></span>
+<span class="codeline" id="line-1409"><code></code></span>
+<span class="codeline" id="line-1410"><code>		// Double-check that bits to be written were written correctly.</code></span>
+<span class="codeline" id="line-1411"><code>		// Does not check that other bits were not written, unfortunately.</code></span>
+<span class="codeline" id="line-1412"><code>		h := heapBitsForAddr(x)</code></span>
+<span class="codeline" id="line-1413"><code>		nptr := typ.ptrdata / sys.PtrSize</code></span>
+<span class="codeline" id="line-1414"><code>		ndata := typ.size / sys.PtrSize</code></span>
+<span class="codeline" id="line-1415"><code>		count := dataSize / typ.size</code></span>
+<span class="codeline" id="line-1416"><code>		totalptr := ((count-1)*typ.size + typ.ptrdata) / sys.PtrSize</code></span>
+<span class="codeline" id="line-1417"><code>		for i := uintptr(0); i &lt; size/sys.PtrSize; i++ {</code></span>
+<span class="codeline" id="line-1418"><code>			j := i % ndata</code></span>
+<span class="codeline" id="line-1419"><code>			var have, want uint8</code></span>
+<span class="codeline" id="line-1420"><code>			have = (*h.bitp &gt;&gt; h.shift) &amp; (bitPointer | bitScan)</code></span>
+<span class="codeline" id="line-1421"><code>			if i &gt;= totalptr {</code></span>
+<span class="codeline" id="line-1422"><code>				if typ.kind&amp;kindGCProg != 0 &amp;&amp; i &lt; (totalptr+3)/4*4 {</code></span>
+<span class="codeline" id="line-1423"><code>					// heapBitsSetTypeGCProg always fills</code></span>
+<span class="codeline" id="line-1424"><code>					// in full nibbles of bitScan.</code></span>
+<span class="codeline" id="line-1425"><code>					want = bitScan</code></span>
+<span class="codeline" id="line-1426"><code>				}</code></span>
+<span class="codeline" id="line-1427"><code>			} else {</code></span>
+<span class="codeline" id="line-1428"><code>				if j &lt; nptr &amp;&amp; (*addb(ptrmask, j/8)&gt;&gt;(j%8))&amp;1 != 0 {</code></span>
+<span class="codeline" id="line-1429"><code>					want |= bitPointer</code></span>
+<span class="codeline" id="line-1430"><code>				}</code></span>
+<span class="codeline" id="line-1431"><code>				want |= bitScan</code></span>
+<span class="codeline" id="line-1432"><code>			}</code></span>
+<span class="codeline" id="line-1433"><code>			if have != want {</code></span>
+<span class="codeline" id="line-1434"><code>				println("mismatch writing bits for", typ.string(), "x", dataSize/typ.size)</code></span>
+<span class="codeline" id="line-1435"><code>				print("typ.size=", typ.size, " typ.ptrdata=", typ.ptrdata, " dataSize=", dataSize, " size=", size, "\n")</code></span>
+<span class="codeline" id="line-1436"><code>				print("kindGCProg=", typ.kind&amp;kindGCProg != 0, " outOfPlace=", outOfPlace, "\n")</code></span>
+<span class="codeline" id="line-1437"><code>				print("w=", w, " nw=", nw, " b=", hex(b), " nb=", nb, " hb=", hex(hb), "\n")</code></span>
+<span class="codeline" id="line-1438"><code>				h0 := heapBitsForAddr(x)</code></span>
+<span class="codeline" id="line-1439"><code>				print("initial bits h0.bitp=", h0.bitp, " h0.shift=", h0.shift, "\n")</code></span>
+<span class="codeline" id="line-1440"><code>				print("current bits h.bitp=", h.bitp, " h.shift=", h.shift, " *h.bitp=", hex(*h.bitp), "\n")</code></span>
+<span class="codeline" id="line-1441"><code>				print("ptrmask=", ptrmask, " p=", p, " endp=", endp, " endnb=", endnb, " pbits=", hex(pbits), " b=", hex(b), " nb=", nb, "\n")</code></span>
+<span class="codeline" id="line-1442"><code>				println("at word", i, "offset", i*sys.PtrSize, "have", hex(have), "want", hex(want))</code></span>
+<span class="codeline" id="line-1443"><code>				if typ.kind&amp;kindGCProg != 0 {</code></span>
+<span class="codeline" id="line-1444"><code>					println("GC program:")</code></span>
+<span class="codeline" id="line-1445"><code>					dumpGCProg(addb(typ.gcdata, 4))</code></span>
+<span class="codeline" id="line-1446"><code>				}</code></span>
+<span class="codeline" id="line-1447"><code>				throw("bad heapBitsSetType")</code></span>
+<span class="codeline" id="line-1448"><code>			}</code></span>
+<span class="codeline" id="line-1449"><code>			h = h.next()</code></span>
+<span class="codeline" id="line-1450"><code>		}</code></span>
+<span class="codeline" id="line-1451"><code>		if ptrmask == debugPtrmask.data {</code></span>
+<span class="codeline" id="line-1452"><code>			unlock(&amp;debugPtrmask.lock)</code></span>
+<span class="codeline" id="line-1453"><code>		}</code></span>
+<span class="codeline" id="line-1454"><code>	}</code></span>
+<span class="codeline" id="line-1455"><code>}</code></span>
+<span class="codeline" id="line-1456"><code></code></span>
+<span class="codeline" id="line-1457"><code>var debugPtrmask struct {</code></span>
+<span class="codeline" id="line-1458"><code>	lock mutex</code></span>
+<span class="codeline" id="line-1459"><code>	data *byte</code></span>
+<span class="codeline" id="line-1460"><code>}</code></span>
+<span class="codeline" id="line-1461"><code></code></span>
+<span class="codeline" id="line-1462"><code>// heapBitsSetTypeGCProg implements heapBitsSetType using a GC program.</code></span>
+<span class="codeline" id="line-1463"><code>// progSize is the size of the memory described by the program.</code></span>
+<span class="codeline" id="line-1464"><code>// elemSize is the size of the element that the GC program describes (a prefix of).</code></span>
+<span class="codeline" id="line-1465"><code>// dataSize is the total size of the intended data, a multiple of elemSize.</code></span>
+<span class="codeline" id="line-1466"><code>// allocSize is the total size of the allocated memory.</code></span>
+<span class="codeline" id="line-1467"><code>//</code></span>
+<span class="codeline" id="line-1468"><code>// GC programs are only used for large allocations.</code></span>
+<span class="codeline" id="line-1469"><code>// heapBitsSetType requires that allocSize is a multiple of 4 words,</code></span>
+<span class="codeline" id="line-1470"><code>// so that the relevant bitmap bytes are not shared with surrounding</code></span>
+<span class="codeline" id="line-1471"><code>// objects.</code></span>
+<span class="codeline" id="line-1472"><code>func heapBitsSetTypeGCProg(h heapBits, progSize, elemSize, dataSize, allocSize uintptr, prog *byte) {</code></span>
+<span class="codeline" id="line-1473"><code>	if sys.PtrSize == 8 &amp;&amp; allocSize%(4*sys.PtrSize) != 0 {</code></span>
+<span class="codeline" id="line-1474"><code>		// Alignment will be wrong.</code></span>
+<span class="codeline" id="line-1475"><code>		throw("heapBitsSetTypeGCProg: small allocation")</code></span>
+<span class="codeline" id="line-1476"><code>	}</code></span>
+<span class="codeline" id="line-1477"><code>	var totalBits uintptr</code></span>
+<span class="codeline" id="line-1478"><code>	if elemSize == dataSize {</code></span>
+<span class="codeline" id="line-1479"><code>		totalBits = runGCProg(prog, nil, h.bitp, 2)</code></span>
+<span class="codeline" id="line-1480"><code>		if totalBits*sys.PtrSize != progSize {</code></span>
+<span class="codeline" id="line-1481"><code>			println("runtime: heapBitsSetTypeGCProg: total bits", totalBits, "but progSize", progSize)</code></span>
+<span class="codeline" id="line-1482"><code>			throw("heapBitsSetTypeGCProg: unexpected bit count")</code></span>
+<span class="codeline" id="line-1483"><code>		}</code></span>
+<span class="codeline" id="line-1484"><code>	} else {</code></span>
+<span class="codeline" id="line-1485"><code>		count := dataSize / elemSize</code></span>
+<span class="codeline" id="line-1486"><code></code></span>
+<span class="codeline" id="line-1487"><code>		// Piece together program trailer to run after prog that does:</code></span>
+<span class="codeline" id="line-1488"><code>		//	literal(0)</code></span>
+<span class="codeline" id="line-1489"><code>		//	repeat(1, elemSize-progSize-1) // zeros to fill element size</code></span>
+<span class="codeline" id="line-1490"><code>		//	repeat(elemSize, count-1) // repeat that element for count</code></span>
+<span class="codeline" id="line-1491"><code>		// This zero-pads the data remaining in the first element and then</code></span>
+<span class="codeline" id="line-1492"><code>		// repeats that first element to fill the array.</code></span>
+<span class="codeline" id="line-1493"><code>		var trailer [40]byte // 3 varints (max 10 each) + some bytes</code></span>
+<span class="codeline" id="line-1494"><code>		i := 0</code></span>
+<span class="codeline" id="line-1495"><code>		if n := elemSize/sys.PtrSize - progSize/sys.PtrSize; n &gt; 0 {</code></span>
+<span class="codeline" id="line-1496"><code>			// literal(0)</code></span>
+<span class="codeline" id="line-1497"><code>			trailer[i] = 0x01</code></span>
+<span class="codeline" id="line-1498"><code>			i++</code></span>
+<span class="codeline" id="line-1499"><code>			trailer[i] = 0</code></span>
+<span class="codeline" id="line-1500"><code>			i++</code></span>
+<span class="codeline" id="line-1501"><code>			if n &gt; 1 {</code></span>
+<span class="codeline" id="line-1502"><code>				// repeat(1, n-1)</code></span>
+<span class="codeline" id="line-1503"><code>				trailer[i] = 0x81</code></span>
+<span class="codeline" id="line-1504"><code>				i++</code></span>
+<span class="codeline" id="line-1505"><code>				n--</code></span>
+<span class="codeline" id="line-1506"><code>				for ; n &gt;= 0x80; n &gt;&gt;= 7 {</code></span>
+<span class="codeline" id="line-1507"><code>					trailer[i] = byte(n | 0x80)</code></span>
+<span class="codeline" id="line-1508"><code>					i++</code></span>
+<span class="codeline" id="line-1509"><code>				}</code></span>
+<span class="codeline" id="line-1510"><code>				trailer[i] = byte(n)</code></span>
+<span class="codeline" id="line-1511"><code>				i++</code></span>
+<span class="codeline" id="line-1512"><code>			}</code></span>
+<span class="codeline" id="line-1513"><code>		}</code></span>
+<span class="codeline" id="line-1514"><code>		// repeat(elemSize/ptrSize, count-1)</code></span>
+<span class="codeline" id="line-1515"><code>		trailer[i] = 0x80</code></span>
+<span class="codeline" id="line-1516"><code>		i++</code></span>
+<span class="codeline" id="line-1517"><code>		n := elemSize / sys.PtrSize</code></span>
+<span class="codeline" id="line-1518"><code>		for ; n &gt;= 0x80; n &gt;&gt;= 7 {</code></span>
+<span class="codeline" id="line-1519"><code>			trailer[i] = byte(n | 0x80)</code></span>
+<span class="codeline" id="line-1520"><code>			i++</code></span>
+<span class="codeline" id="line-1521"><code>		}</code></span>
+<span class="codeline" id="line-1522"><code>		trailer[i] = byte(n)</code></span>
+<span class="codeline" id="line-1523"><code>		i++</code></span>
+<span class="codeline" id="line-1524"><code>		n = count - 1</code></span>
+<span class="codeline" id="line-1525"><code>		for ; n &gt;= 0x80; n &gt;&gt;= 7 {</code></span>
+<span class="codeline" id="line-1526"><code>			trailer[i] = byte(n | 0x80)</code></span>
+<span class="codeline" id="line-1527"><code>			i++</code></span>
+<span class="codeline" id="line-1528"><code>		}</code></span>
+<span class="codeline" id="line-1529"><code>		trailer[i] = byte(n)</code></span>
+<span class="codeline" id="line-1530"><code>		i++</code></span>
+<span class="codeline" id="line-1531"><code>		trailer[i] = 0</code></span>
+<span class="codeline" id="line-1532"><code>		i++</code></span>
+<span class="codeline" id="line-1533"><code></code></span>
+<span class="codeline" id="line-1534"><code>		runGCProg(prog, &amp;trailer[0], h.bitp, 2)</code></span>
+<span class="codeline" id="line-1535"><code></code></span>
+<span class="codeline" id="line-1536"><code>		// Even though we filled in the full array just now,</code></span>
+<span class="codeline" id="line-1537"><code>		// record that we only filled in up to the ptrdata of the</code></span>
+<span class="codeline" id="line-1538"><code>		// last element. This will cause the code below to</code></span>
+<span class="codeline" id="line-1539"><code>		// memclr the dead section of the final array element,</code></span>
+<span class="codeline" id="line-1540"><code>		// so that scanobject can stop early in the final element.</code></span>
+<span class="codeline" id="line-1541"><code>		totalBits = (elemSize*(count-1) + progSize) / sys.PtrSize</code></span>
+<span class="codeline" id="line-1542"><code>	}</code></span>
+<span class="codeline" id="line-1543"><code>	endProg := unsafe.Pointer(addb(h.bitp, (totalBits+3)/4))</code></span>
+<span class="codeline" id="line-1544"><code>	endAlloc := unsafe.Pointer(addb(h.bitp, allocSize/sys.PtrSize/wordsPerBitmapByte))</code></span>
+<span class="codeline" id="line-1545"><code>	memclrNoHeapPointers(endProg, uintptr(endAlloc)-uintptr(endProg))</code></span>
+<span class="codeline" id="line-1546"><code>}</code></span>
+<span class="codeline" id="line-1547"><code></code></span>
+<span class="codeline" id="line-1548"><code>// progToPointerMask returns the 1-bit pointer mask output by the GC program prog.</code></span>
+<span class="codeline" id="line-1549"><code>// size the size of the region described by prog, in bytes.</code></span>
+<span class="codeline" id="line-1550"><code>// The resulting bitvector will have no more than size/sys.PtrSize bits.</code></span>
+<span class="codeline" id="line-1551"><code>func progToPointerMask(prog *byte, size uintptr) bitvector {</code></span>
+<span class="codeline" id="line-1552"><code>	n := (size/sys.PtrSize + 7) / 8</code></span>
+<span class="codeline" id="line-1553"><code>	x := (*[1 &lt;&lt; 30]byte)(persistentalloc(n+1, 1, &amp;memstats.buckhash_sys))[:n+1]</code></span>
+<span class="codeline" id="line-1554"><code>	x[len(x)-1] = 0xa1 // overflow check sentinel</code></span>
+<span class="codeline" id="line-1555"><code>	n = runGCProg(prog, nil, &amp;x[0], 1)</code></span>
+<span class="codeline" id="line-1556"><code>	if x[len(x)-1] != 0xa1 {</code></span>
+<span class="codeline" id="line-1557"><code>		throw("progToPointerMask: overflow")</code></span>
+<span class="codeline" id="line-1558"><code>	}</code></span>
+<span class="codeline" id="line-1559"><code>	return bitvector{int32(n), &amp;x[0]}</code></span>
+<span class="codeline" id="line-1560"><code>}</code></span>
+<span class="codeline" id="line-1561"><code></code></span>
+<span class="codeline" id="line-1562"><code>// Packed GC pointer bitmaps, aka GC programs.</code></span>
+<span class="codeline" id="line-1563"><code>//</code></span>
+<span class="codeline" id="line-1564"><code>// For large types containing arrays, the type information has a</code></span>
+<span class="codeline" id="line-1565"><code>// natural repetition that can be encoded to save space in the</code></span>
+<span class="codeline" id="line-1566"><code>// binary and in the memory representation of the type information.</code></span>
+<span class="codeline" id="line-1567"><code>//</code></span>
+<span class="codeline" id="line-1568"><code>// The encoding is a simple Lempel-Ziv style bytecode machine</code></span>
+<span class="codeline" id="line-1569"><code>// with the following instructions:</code></span>
+<span class="codeline" id="line-1570"><code>//</code></span>
+<span class="codeline" id="line-1571"><code>//	00000000: stop</code></span>
+<span class="codeline" id="line-1572"><code>//	0nnnnnnn: emit n bits copied from the next (n+7)/8 bytes</code></span>
+<span class="codeline" id="line-1573"><code>//	10000000 n c: repeat the previous n bits c times; n, c are varints</code></span>
+<span class="codeline" id="line-1574"><code>//	1nnnnnnn c: repeat the previous n bits c times; c is a varint</code></span>
+<span class="codeline" id="line-1575"><code></code></span>
+<span class="codeline" id="line-1576"><code>// runGCProg executes the GC program prog, and then trailer if non-nil,</code></span>
+<span class="codeline" id="line-1577"><code>// writing to dst with entries of the given size.</code></span>
+<span class="codeline" id="line-1578"><code>// If size == 1, dst is a 1-bit pointer mask laid out moving forward from dst.</code></span>
+<span class="codeline" id="line-1579"><code>// If size == 2, dst is the 2-bit heap bitmap, and writes move backward</code></span>
+<span class="codeline" id="line-1580"><code>// starting at dst (because the heap bitmap does). In this case, the caller guarantees</code></span>
+<span class="codeline" id="line-1581"><code>// that only whole bytes in dst need to be written.</code></span>
+<span class="codeline" id="line-1582"><code>//</code></span>
+<span class="codeline" id="line-1583"><code>// runGCProg returns the number of 1- or 2-bit entries written to memory.</code></span>
+<span class="codeline" id="line-1584"><code>func runGCProg(prog, trailer, dst *byte, size int) uintptr {</code></span>
+<span class="codeline" id="line-1585"><code>	dstStart := dst</code></span>
+<span class="codeline" id="line-1586"><code></code></span>
+<span class="codeline" id="line-1587"><code>	// Bits waiting to be written to memory.</code></span>
+<span class="codeline" id="line-1588"><code>	var bits uintptr</code></span>
+<span class="codeline" id="line-1589"><code>	var nbits uintptr</code></span>
+<span class="codeline" id="line-1590"><code></code></span>
+<span class="codeline" id="line-1591"><code>	p := prog</code></span>
+<span class="codeline" id="line-1592"><code>Run:</code></span>
+<span class="codeline" id="line-1593"><code>	for {</code></span>
+<span class="codeline" id="line-1594"><code>		// Flush accumulated full bytes.</code></span>
+<span class="codeline" id="line-1595"><code>		// The rest of the loop assumes that nbits &lt;= 7.</code></span>
+<span class="codeline" id="line-1596"><code>		for ; nbits &gt;= 8; nbits -= 8 {</code></span>
+<span class="codeline" id="line-1597"><code>			if size == 1 {</code></span>
+<span class="codeline" id="line-1598"><code>				*dst = uint8(bits)</code></span>
+<span class="codeline" id="line-1599"><code>				dst = add1(dst)</code></span>
+<span class="codeline" id="line-1600"><code>				bits &gt;&gt;= 8</code></span>
+<span class="codeline" id="line-1601"><code>			} else {</code></span>
+<span class="codeline" id="line-1602"><code>				v := bits&amp;bitPointerAll | bitScanAll</code></span>
+<span class="codeline" id="line-1603"><code>				*dst = uint8(v)</code></span>
+<span class="codeline" id="line-1604"><code>				dst = add1(dst)</code></span>
+<span class="codeline" id="line-1605"><code>				bits &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1606"><code>				v = bits&amp;bitPointerAll | bitScanAll</code></span>
+<span class="codeline" id="line-1607"><code>				*dst = uint8(v)</code></span>
+<span class="codeline" id="line-1608"><code>				dst = add1(dst)</code></span>
+<span class="codeline" id="line-1609"><code>				bits &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1610"><code>			}</code></span>
+<span class="codeline" id="line-1611"><code>		}</code></span>
+<span class="codeline" id="line-1612"><code></code></span>
+<span class="codeline" id="line-1613"><code>		// Process one instruction.</code></span>
+<span class="codeline" id="line-1614"><code>		inst := uintptr(*p)</code></span>
+<span class="codeline" id="line-1615"><code>		p = add1(p)</code></span>
+<span class="codeline" id="line-1616"><code>		n := inst &amp; 0x7F</code></span>
+<span class="codeline" id="line-1617"><code>		if inst&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-1618"><code>			// Literal bits; n == 0 means end of program.</code></span>
+<span class="codeline" id="line-1619"><code>			if n == 0 {</code></span>
+<span class="codeline" id="line-1620"><code>				// Program is over; continue in trailer if present.</code></span>
+<span class="codeline" id="line-1621"><code>				if trailer != nil {</code></span>
+<span class="codeline" id="line-1622"><code>					p = trailer</code></span>
+<span class="codeline" id="line-1623"><code>					trailer = nil</code></span>
+<span class="codeline" id="line-1624"><code>					continue</code></span>
+<span class="codeline" id="line-1625"><code>				}</code></span>
+<span class="codeline" id="line-1626"><code>				break Run</code></span>
+<span class="codeline" id="line-1627"><code>			}</code></span>
+<span class="codeline" id="line-1628"><code>			nbyte := n / 8</code></span>
+<span class="codeline" id="line-1629"><code>			for i := uintptr(0); i &lt; nbyte; i++ {</code></span>
+<span class="codeline" id="line-1630"><code>				bits |= uintptr(*p) &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1631"><code>				p = add1(p)</code></span>
+<span class="codeline" id="line-1632"><code>				if size == 1 {</code></span>
+<span class="codeline" id="line-1633"><code>					*dst = uint8(bits)</code></span>
+<span class="codeline" id="line-1634"><code>					dst = add1(dst)</code></span>
+<span class="codeline" id="line-1635"><code>					bits &gt;&gt;= 8</code></span>
+<span class="codeline" id="line-1636"><code>				} else {</code></span>
+<span class="codeline" id="line-1637"><code>					v := bits&amp;0xf | bitScanAll</code></span>
+<span class="codeline" id="line-1638"><code>					*dst = uint8(v)</code></span>
+<span class="codeline" id="line-1639"><code>					dst = add1(dst)</code></span>
+<span class="codeline" id="line-1640"><code>					bits &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1641"><code>					v = bits&amp;0xf | bitScanAll</code></span>
+<span class="codeline" id="line-1642"><code>					*dst = uint8(v)</code></span>
+<span class="codeline" id="line-1643"><code>					dst = add1(dst)</code></span>
+<span class="codeline" id="line-1644"><code>					bits &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1645"><code>				}</code></span>
+<span class="codeline" id="line-1646"><code>			}</code></span>
+<span class="codeline" id="line-1647"><code>			if n %= 8; n &gt; 0 {</code></span>
+<span class="codeline" id="line-1648"><code>				bits |= uintptr(*p) &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1649"><code>				p = add1(p)</code></span>
+<span class="codeline" id="line-1650"><code>				nbits += n</code></span>
+<span class="codeline" id="line-1651"><code>			}</code></span>
+<span class="codeline" id="line-1652"><code>			continue Run</code></span>
+<span class="codeline" id="line-1653"><code>		}</code></span>
+<span class="codeline" id="line-1654"><code></code></span>
+<span class="codeline" id="line-1655"><code>		// Repeat. If n == 0, it is encoded in a varint in the next bytes.</code></span>
+<span class="codeline" id="line-1656"><code>		if n == 0 {</code></span>
+<span class="codeline" id="line-1657"><code>			for off := uint(0); ; off += 7 {</code></span>
+<span class="codeline" id="line-1658"><code>				x := uintptr(*p)</code></span>
+<span class="codeline" id="line-1659"><code>				p = add1(p)</code></span>
+<span class="codeline" id="line-1660"><code>				n |= (x &amp; 0x7F) &lt;&lt; off</code></span>
+<span class="codeline" id="line-1661"><code>				if x&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-1662"><code>					break</code></span>
+<span class="codeline" id="line-1663"><code>				}</code></span>
+<span class="codeline" id="line-1664"><code>			}</code></span>
+<span class="codeline" id="line-1665"><code>		}</code></span>
+<span class="codeline" id="line-1666"><code></code></span>
+<span class="codeline" id="line-1667"><code>		// Count is encoded in a varint in the next bytes.</code></span>
+<span class="codeline" id="line-1668"><code>		c := uintptr(0)</code></span>
+<span class="codeline" id="line-1669"><code>		for off := uint(0); ; off += 7 {</code></span>
+<span class="codeline" id="line-1670"><code>			x := uintptr(*p)</code></span>
+<span class="codeline" id="line-1671"><code>			p = add1(p)</code></span>
+<span class="codeline" id="line-1672"><code>			c |= (x &amp; 0x7F) &lt;&lt; off</code></span>
+<span class="codeline" id="line-1673"><code>			if x&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-1674"><code>				break</code></span>
+<span class="codeline" id="line-1675"><code>			}</code></span>
+<span class="codeline" id="line-1676"><code>		}</code></span>
+<span class="codeline" id="line-1677"><code>		c *= n // now total number of bits to copy</code></span>
+<span class="codeline" id="line-1678"><code></code></span>
+<span class="codeline" id="line-1679"><code>		// If the number of bits being repeated is small, load them</code></span>
+<span class="codeline" id="line-1680"><code>		// into a register and use that register for the entire loop</code></span>
+<span class="codeline" id="line-1681"><code>		// instead of repeatedly reading from memory.</code></span>
+<span class="codeline" id="line-1682"><code>		// Handling fewer than 8 bits here makes the general loop simpler.</code></span>
+<span class="codeline" id="line-1683"><code>		// The cutoff is sys.PtrSize*8 - 7 to guarantee that when we add</code></span>
+<span class="codeline" id="line-1684"><code>		// the pattern to a bit buffer holding at most 7 bits (a partial byte)</code></span>
+<span class="codeline" id="line-1685"><code>		// it will not overflow.</code></span>
+<span class="codeline" id="line-1686"><code>		src := dst</code></span>
+<span class="codeline" id="line-1687"><code>		const maxBits = sys.PtrSize*8 - 7</code></span>
+<span class="codeline" id="line-1688"><code>		if n &lt;= maxBits {</code></span>
+<span class="codeline" id="line-1689"><code>			// Start with bits in output buffer.</code></span>
+<span class="codeline" id="line-1690"><code>			pattern := bits</code></span>
+<span class="codeline" id="line-1691"><code>			npattern := nbits</code></span>
+<span class="codeline" id="line-1692"><code></code></span>
+<span class="codeline" id="line-1693"><code>			// If we need more bits, fetch them from memory.</code></span>
+<span class="codeline" id="line-1694"><code>			if size == 1 {</code></span>
+<span class="codeline" id="line-1695"><code>				src = subtract1(src)</code></span>
+<span class="codeline" id="line-1696"><code>				for npattern &lt; n {</code></span>
+<span class="codeline" id="line-1697"><code>					pattern &lt;&lt;= 8</code></span>
+<span class="codeline" id="line-1698"><code>					pattern |= uintptr(*src)</code></span>
+<span class="codeline" id="line-1699"><code>					src = subtract1(src)</code></span>
+<span class="codeline" id="line-1700"><code>					npattern += 8</code></span>
+<span class="codeline" id="line-1701"><code>				}</code></span>
+<span class="codeline" id="line-1702"><code>			} else {</code></span>
+<span class="codeline" id="line-1703"><code>				src = subtract1(src)</code></span>
+<span class="codeline" id="line-1704"><code>				for npattern &lt; n {</code></span>
+<span class="codeline" id="line-1705"><code>					pattern &lt;&lt;= 4</code></span>
+<span class="codeline" id="line-1706"><code>					pattern |= uintptr(*src) &amp; 0xf</code></span>
+<span class="codeline" id="line-1707"><code>					src = subtract1(src)</code></span>
+<span class="codeline" id="line-1708"><code>					npattern += 4</code></span>
+<span class="codeline" id="line-1709"><code>				}</code></span>
+<span class="codeline" id="line-1710"><code>			}</code></span>
+<span class="codeline" id="line-1711"><code></code></span>
+<span class="codeline" id="line-1712"><code>			// We started with the whole bit output buffer,</code></span>
+<span class="codeline" id="line-1713"><code>			// and then we loaded bits from whole bytes.</code></span>
+<span class="codeline" id="line-1714"><code>			// Either way, we might now have too many instead of too few.</code></span>
+<span class="codeline" id="line-1715"><code>			// Discard the extra.</code></span>
+<span class="codeline" id="line-1716"><code>			if npattern &gt; n {</code></span>
+<span class="codeline" id="line-1717"><code>				pattern &gt;&gt;= npattern - n</code></span>
+<span class="codeline" id="line-1718"><code>				npattern = n</code></span>
+<span class="codeline" id="line-1719"><code>			}</code></span>
+<span class="codeline" id="line-1720"><code></code></span>
+<span class="codeline" id="line-1721"><code>			// Replicate pattern to at most maxBits.</code></span>
+<span class="codeline" id="line-1722"><code>			if npattern == 1 {</code></span>
+<span class="codeline" id="line-1723"><code>				// One bit being repeated.</code></span>
+<span class="codeline" id="line-1724"><code>				// If the bit is 1, make the pattern all 1s.</code></span>
+<span class="codeline" id="line-1725"><code>				// If the bit is 0, the pattern is already all 0s,</code></span>
+<span class="codeline" id="line-1726"><code>				// but we can claim that the number of bits</code></span>
+<span class="codeline" id="line-1727"><code>				// in the word is equal to the number we need (c),</code></span>
+<span class="codeline" id="line-1728"><code>				// because right shift of bits will zero fill.</code></span>
+<span class="codeline" id="line-1729"><code>				if pattern == 1 {</code></span>
+<span class="codeline" id="line-1730"><code>					pattern = 1&lt;&lt;maxBits - 1</code></span>
+<span class="codeline" id="line-1731"><code>					npattern = maxBits</code></span>
+<span class="codeline" id="line-1732"><code>				} else {</code></span>
+<span class="codeline" id="line-1733"><code>					npattern = c</code></span>
+<span class="codeline" id="line-1734"><code>				}</code></span>
+<span class="codeline" id="line-1735"><code>			} else {</code></span>
+<span class="codeline" id="line-1736"><code>				b := pattern</code></span>
+<span class="codeline" id="line-1737"><code>				nb := npattern</code></span>
+<span class="codeline" id="line-1738"><code>				if nb+nb &lt;= maxBits {</code></span>
+<span class="codeline" id="line-1739"><code>					// Double pattern until the whole uintptr is filled.</code></span>
+<span class="codeline" id="line-1740"><code>					for nb &lt;= sys.PtrSize*8 {</code></span>
+<span class="codeline" id="line-1741"><code>						b |= b &lt;&lt; nb</code></span>
+<span class="codeline" id="line-1742"><code>						nb += nb</code></span>
+<span class="codeline" id="line-1743"><code>					}</code></span>
+<span class="codeline" id="line-1744"><code>					// Trim away incomplete copy of original pattern in high bits.</code></span>
+<span class="codeline" id="line-1745"><code>					// TODO(rsc): Replace with table lookup or loop on systems without divide?</code></span>
+<span class="codeline" id="line-1746"><code>					nb = maxBits / npattern * npattern</code></span>
+<span class="codeline" id="line-1747"><code>					b &amp;= 1&lt;&lt;nb - 1</code></span>
+<span class="codeline" id="line-1748"><code>					pattern = b</code></span>
+<span class="codeline" id="line-1749"><code>					npattern = nb</code></span>
+<span class="codeline" id="line-1750"><code>				}</code></span>
+<span class="codeline" id="line-1751"><code>			}</code></span>
+<span class="codeline" id="line-1752"><code></code></span>
+<span class="codeline" id="line-1753"><code>			// Add pattern to bit buffer and flush bit buffer, c/npattern times.</code></span>
+<span class="codeline" id="line-1754"><code>			// Since pattern contains &gt;8 bits, there will be full bytes to flush</code></span>
+<span class="codeline" id="line-1755"><code>			// on each iteration.</code></span>
+<span class="codeline" id="line-1756"><code>			for ; c &gt;= npattern; c -= npattern {</code></span>
+<span class="codeline" id="line-1757"><code>				bits |= pattern &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1758"><code>				nbits += npattern</code></span>
+<span class="codeline" id="line-1759"><code>				if size == 1 {</code></span>
+<span class="codeline" id="line-1760"><code>					for nbits &gt;= 8 {</code></span>
+<span class="codeline" id="line-1761"><code>						*dst = uint8(bits)</code></span>
+<span class="codeline" id="line-1762"><code>						dst = add1(dst)</code></span>
+<span class="codeline" id="line-1763"><code>						bits &gt;&gt;= 8</code></span>
+<span class="codeline" id="line-1764"><code>						nbits -= 8</code></span>
+<span class="codeline" id="line-1765"><code>					}</code></span>
+<span class="codeline" id="line-1766"><code>				} else {</code></span>
+<span class="codeline" id="line-1767"><code>					for nbits &gt;= 4 {</code></span>
+<span class="codeline" id="line-1768"><code>						*dst = uint8(bits&amp;0xf | bitScanAll)</code></span>
+<span class="codeline" id="line-1769"><code>						dst = add1(dst)</code></span>
+<span class="codeline" id="line-1770"><code>						bits &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1771"><code>						nbits -= 4</code></span>
+<span class="codeline" id="line-1772"><code>					}</code></span>
+<span class="codeline" id="line-1773"><code>				}</code></span>
+<span class="codeline" id="line-1774"><code>			}</code></span>
+<span class="codeline" id="line-1775"><code></code></span>
+<span class="codeline" id="line-1776"><code>			// Add final fragment to bit buffer.</code></span>
+<span class="codeline" id="line-1777"><code>			if c &gt; 0 {</code></span>
+<span class="codeline" id="line-1778"><code>				pattern &amp;= 1&lt;&lt;c - 1</code></span>
+<span class="codeline" id="line-1779"><code>				bits |= pattern &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1780"><code>				nbits += c</code></span>
+<span class="codeline" id="line-1781"><code>			}</code></span>
+<span class="codeline" id="line-1782"><code>			continue Run</code></span>
+<span class="codeline" id="line-1783"><code>		}</code></span>
+<span class="codeline" id="line-1784"><code></code></span>
+<span class="codeline" id="line-1785"><code>		// Repeat; n too large to fit in a register.</code></span>
+<span class="codeline" id="line-1786"><code>		// Since nbits &lt;= 7, we know the first few bytes of repeated data</code></span>
+<span class="codeline" id="line-1787"><code>		// are already written to memory.</code></span>
+<span class="codeline" id="line-1788"><code>		off := n - nbits // n &gt; nbits because n &gt; maxBits and nbits &lt;= 7</code></span>
+<span class="codeline" id="line-1789"><code>		if size == 1 {</code></span>
+<span class="codeline" id="line-1790"><code>			// Leading src fragment.</code></span>
+<span class="codeline" id="line-1791"><code>			src = subtractb(src, (off+7)/8)</code></span>
+<span class="codeline" id="line-1792"><code>			if frag := off &amp; 7; frag != 0 {</code></span>
+<span class="codeline" id="line-1793"><code>				bits |= uintptr(*src) &gt;&gt; (8 - frag) &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1794"><code>				src = add1(src)</code></span>
+<span class="codeline" id="line-1795"><code>				nbits += frag</code></span>
+<span class="codeline" id="line-1796"><code>				c -= frag</code></span>
+<span class="codeline" id="line-1797"><code>			}</code></span>
+<span class="codeline" id="line-1798"><code>			// Main loop: load one byte, write another.</code></span>
+<span class="codeline" id="line-1799"><code>			// The bits are rotating through the bit buffer.</code></span>
+<span class="codeline" id="line-1800"><code>			for i := c / 8; i &gt; 0; i-- {</code></span>
+<span class="codeline" id="line-1801"><code>				bits |= uintptr(*src) &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1802"><code>				src = add1(src)</code></span>
+<span class="codeline" id="line-1803"><code>				*dst = uint8(bits)</code></span>
+<span class="codeline" id="line-1804"><code>				dst = add1(dst)</code></span>
+<span class="codeline" id="line-1805"><code>				bits &gt;&gt;= 8</code></span>
+<span class="codeline" id="line-1806"><code>			}</code></span>
+<span class="codeline" id="line-1807"><code>			// Final src fragment.</code></span>
+<span class="codeline" id="line-1808"><code>			if c %= 8; c &gt; 0 {</code></span>
+<span class="codeline" id="line-1809"><code>				bits |= (uintptr(*src) &amp; (1&lt;&lt;c - 1)) &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1810"><code>				nbits += c</code></span>
+<span class="codeline" id="line-1811"><code>			}</code></span>
+<span class="codeline" id="line-1812"><code>		} else {</code></span>
+<span class="codeline" id="line-1813"><code>			// Leading src fragment.</code></span>
+<span class="codeline" id="line-1814"><code>			src = subtractb(src, (off+3)/4)</code></span>
+<span class="codeline" id="line-1815"><code>			if frag := off &amp; 3; frag != 0 {</code></span>
+<span class="codeline" id="line-1816"><code>				bits |= (uintptr(*src) &amp; 0xf) &gt;&gt; (4 - frag) &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1817"><code>				src = add1(src)</code></span>
+<span class="codeline" id="line-1818"><code>				nbits += frag</code></span>
+<span class="codeline" id="line-1819"><code>				c -= frag</code></span>
+<span class="codeline" id="line-1820"><code>			}</code></span>
+<span class="codeline" id="line-1821"><code>			// Main loop: load one byte, write another.</code></span>
+<span class="codeline" id="line-1822"><code>			// The bits are rotating through the bit buffer.</code></span>
+<span class="codeline" id="line-1823"><code>			for i := c / 4; i &gt; 0; i-- {</code></span>
+<span class="codeline" id="line-1824"><code>				bits |= (uintptr(*src) &amp; 0xf) &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1825"><code>				src = add1(src)</code></span>
+<span class="codeline" id="line-1826"><code>				*dst = uint8(bits&amp;0xf | bitScanAll)</code></span>
+<span class="codeline" id="line-1827"><code>				dst = add1(dst)</code></span>
+<span class="codeline" id="line-1828"><code>				bits &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1829"><code>			}</code></span>
+<span class="codeline" id="line-1830"><code>			// Final src fragment.</code></span>
+<span class="codeline" id="line-1831"><code>			if c %= 4; c &gt; 0 {</code></span>
+<span class="codeline" id="line-1832"><code>				bits |= (uintptr(*src) &amp; (1&lt;&lt;c - 1)) &lt;&lt; nbits</code></span>
+<span class="codeline" id="line-1833"><code>				nbits += c</code></span>
+<span class="codeline" id="line-1834"><code>			}</code></span>
+<span class="codeline" id="line-1835"><code>		}</code></span>
+<span class="codeline" id="line-1836"><code>	}</code></span>
+<span class="codeline" id="line-1837"><code></code></span>
+<span class="codeline" id="line-1838"><code>	// Write any final bits out, using full-byte writes, even for the final byte.</code></span>
+<span class="codeline" id="line-1839"><code>	var totalBits uintptr</code></span>
+<span class="codeline" id="line-1840"><code>	if size == 1 {</code></span>
+<span class="codeline" id="line-1841"><code>		totalBits = (uintptr(unsafe.Pointer(dst))-uintptr(unsafe.Pointer(dstStart)))*8 + nbits</code></span>
+<span class="codeline" id="line-1842"><code>		nbits += -nbits &amp; 7</code></span>
+<span class="codeline" id="line-1843"><code>		for ; nbits &gt; 0; nbits -= 8 {</code></span>
+<span class="codeline" id="line-1844"><code>			*dst = uint8(bits)</code></span>
+<span class="codeline" id="line-1845"><code>			dst = add1(dst)</code></span>
+<span class="codeline" id="line-1846"><code>			bits &gt;&gt;= 8</code></span>
+<span class="codeline" id="line-1847"><code>		}</code></span>
+<span class="codeline" id="line-1848"><code>	} else {</code></span>
+<span class="codeline" id="line-1849"><code>		totalBits = (uintptr(unsafe.Pointer(dst))-uintptr(unsafe.Pointer(dstStart)))*4 + nbits</code></span>
+<span class="codeline" id="line-1850"><code>		nbits += -nbits &amp; 3</code></span>
+<span class="codeline" id="line-1851"><code>		for ; nbits &gt; 0; nbits -= 4 {</code></span>
+<span class="codeline" id="line-1852"><code>			v := bits&amp;0xf | bitScanAll</code></span>
+<span class="codeline" id="line-1853"><code>			*dst = uint8(v)</code></span>
+<span class="codeline" id="line-1854"><code>			dst = add1(dst)</code></span>
+<span class="codeline" id="line-1855"><code>			bits &gt;&gt;= 4</code></span>
+<span class="codeline" id="line-1856"><code>		}</code></span>
+<span class="codeline" id="line-1857"><code>	}</code></span>
+<span class="codeline" id="line-1858"><code>	return totalBits</code></span>
+<span class="codeline" id="line-1859"><code>}</code></span>
+<span class="codeline" id="line-1860"><code></code></span>
+<span class="codeline" id="line-1861"><code>// materializeGCProg allocates space for the (1-bit) pointer bitmask</code></span>
+<span class="codeline" id="line-1862"><code>// for an object of size ptrdata.  Then it fills that space with the</code></span>
+<span class="codeline" id="line-1863"><code>// pointer bitmask specified by the program prog.</code></span>
+<span class="codeline" id="line-1864"><code>// The bitmask starts at s.startAddr.</code></span>
+<span class="codeline" id="line-1865"><code>// The result must be deallocated with dematerializeGCProg.</code></span>
+<span class="codeline" id="line-1866"><code>func materializeGCProg(ptrdata uintptr, prog *byte) *mspan {</code></span>
+<span class="codeline" id="line-1867"><code>	// Each word of ptrdata needs one bit in the bitmap.</code></span>
+<span class="codeline" id="line-1868"><code>	bitmapBytes := divRoundUp(ptrdata, 8*sys.PtrSize)</code></span>
+<span class="codeline" id="line-1869"><code>	// Compute the number of pages needed for bitmapBytes.</code></span>
+<span class="codeline" id="line-1870"><code>	pages := divRoundUp(bitmapBytes, pageSize)</code></span>
+<span class="codeline" id="line-1871"><code>	s := mheap_.allocManual(pages, spanAllocPtrScalarBits)</code></span>
+<span class="codeline" id="line-1872"><code>	runGCProg(addb(prog, 4), nil, (*byte)(unsafe.Pointer(s.startAddr)), 1)</code></span>
+<span class="codeline" id="line-1873"><code>	return s</code></span>
+<span class="codeline" id="line-1874"><code>}</code></span>
+<span class="codeline" id="line-1875"><code>func dematerializeGCProg(s *mspan) {</code></span>
+<span class="codeline" id="line-1876"><code>	mheap_.freeManual(s, spanAllocPtrScalarBits)</code></span>
+<span class="codeline" id="line-1877"><code>}</code></span>
+<span class="codeline" id="line-1878"><code></code></span>
+<span class="codeline" id="line-1879"><code>func dumpGCProg(p *byte) {</code></span>
+<span class="codeline" id="line-1880"><code>	nptr := 0</code></span>
+<span class="codeline" id="line-1881"><code>	for {</code></span>
+<span class="codeline" id="line-1882"><code>		x := *p</code></span>
+<span class="codeline" id="line-1883"><code>		p = add1(p)</code></span>
+<span class="codeline" id="line-1884"><code>		if x == 0 {</code></span>
+<span class="codeline" id="line-1885"><code>			print("\t", nptr, " end\n")</code></span>
+<span class="codeline" id="line-1886"><code>			break</code></span>
+<span class="codeline" id="line-1887"><code>		}</code></span>
+<span class="codeline" id="line-1888"><code>		if x&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-1889"><code>			print("\t", nptr, " lit ", x, ":")</code></span>
+<span class="codeline" id="line-1890"><code>			n := int(x+7) / 8</code></span>
+<span class="codeline" id="line-1891"><code>			for i := 0; i &lt; n; i++ {</code></span>
+<span class="codeline" id="line-1892"><code>				print(" ", hex(*p))</code></span>
+<span class="codeline" id="line-1893"><code>				p = add1(p)</code></span>
+<span class="codeline" id="line-1894"><code>			}</code></span>
+<span class="codeline" id="line-1895"><code>			print("\n")</code></span>
+<span class="codeline" id="line-1896"><code>			nptr += int(x)</code></span>
+<span class="codeline" id="line-1897"><code>		} else {</code></span>
+<span class="codeline" id="line-1898"><code>			nbit := int(x &amp;^ 0x80)</code></span>
+<span class="codeline" id="line-1899"><code>			if nbit == 0 {</code></span>
+<span class="codeline" id="line-1900"><code>				for nb := uint(0); ; nb += 7 {</code></span>
+<span class="codeline" id="line-1901"><code>					x := *p</code></span>
+<span class="codeline" id="line-1902"><code>					p = add1(p)</code></span>
+<span class="codeline" id="line-1903"><code>					nbit |= int(x&amp;0x7f) &lt;&lt; nb</code></span>
+<span class="codeline" id="line-1904"><code>					if x&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-1905"><code>						break</code></span>
+<span class="codeline" id="line-1906"><code>					}</code></span>
+<span class="codeline" id="line-1907"><code>				}</code></span>
+<span class="codeline" id="line-1908"><code>			}</code></span>
+<span class="codeline" id="line-1909"><code>			count := 0</code></span>
+<span class="codeline" id="line-1910"><code>			for nb := uint(0); ; nb += 7 {</code></span>
+<span class="codeline" id="line-1911"><code>				x := *p</code></span>
+<span class="codeline" id="line-1912"><code>				p = add1(p)</code></span>
+<span class="codeline" id="line-1913"><code>				count |= int(x&amp;0x7f) &lt;&lt; nb</code></span>
+<span class="codeline" id="line-1914"><code>				if x&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-1915"><code>					break</code></span>
+<span class="codeline" id="line-1916"><code>				}</code></span>
+<span class="codeline" id="line-1917"><code>			}</code></span>
+<span class="codeline" id="line-1918"><code>			print("\t", nptr, " repeat ", nbit, " × ", count, "\n")</code></span>
+<span class="codeline" id="line-1919"><code>			nptr += nbit * count</code></span>
+<span class="codeline" id="line-1920"><code>		}</code></span>
+<span class="codeline" id="line-1921"><code>	}</code></span>
+<span class="codeline" id="line-1922"><code>}</code></span>
+<span class="codeline" id="line-1923"><code></code></span>
+<span class="codeline" id="line-1924"><code>// Testing.</code></span>
+<span class="codeline" id="line-1925"><code></code></span>
+<span class="codeline" id="line-1926"><code>func getgcmaskcb(frame *stkframe, ctxt unsafe.Pointer) bool {</code></span>
+<span class="codeline" id="line-1927"><code>	target := (*stkframe)(ctxt)</code></span>
+<span class="codeline" id="line-1928"><code>	if frame.sp &lt;= target.sp &amp;&amp; target.sp &lt; frame.varp {</code></span>
+<span class="codeline" id="line-1929"><code>		*target = *frame</code></span>
+<span class="codeline" id="line-1930"><code>		return false</code></span>
+<span class="codeline" id="line-1931"><code>	}</code></span>
+<span class="codeline" id="line-1932"><code>	return true</code></span>
+<span class="codeline" id="line-1933"><code>}</code></span>
+<span class="codeline" id="line-1934"><code></code></span>
+<span class="codeline" id="line-1935"><code>// gcbits returns the GC type info for x, for testing.</code></span>
+<span class="codeline" id="line-1936"><code>// The result is the bitmap entries (0 or 1), one entry per byte.</code></span>
+<span class="codeline" id="line-1937"><code>//go:linkname reflect_gcbits reflect.gcbits</code></span>
+<span class="codeline" id="line-1938"><code>func reflect_gcbits(x interface{}) []byte {</code></span>
+<span class="codeline" id="line-1939"><code>	ret := getgcmask(x)</code></span>
+<span class="codeline" id="line-1940"><code>	typ := (*ptrtype)(unsafe.Pointer(efaceOf(&amp;x)._type)).elem</code></span>
+<span class="codeline" id="line-1941"><code>	nptr := typ.ptrdata / sys.PtrSize</code></span>
+<span class="codeline" id="line-1942"><code>	for uintptr(len(ret)) &gt; nptr &amp;&amp; ret[len(ret)-1] == 0 {</code></span>
+<span class="codeline" id="line-1943"><code>		ret = ret[:len(ret)-1]</code></span>
+<span class="codeline" id="line-1944"><code>	}</code></span>
+<span class="codeline" id="line-1945"><code>	return ret</code></span>
+<span class="codeline" id="line-1946"><code>}</code></span>
+<span class="codeline" id="line-1947"><code></code></span>
+<span class="codeline" id="line-1948"><code>// Returns GC type info for the pointer stored in ep for testing.</code></span>
+<span class="codeline" id="line-1949"><code>// If ep points to the stack, only static live information will be returned</code></span>
+<span class="codeline" id="line-1950"><code>// (i.e. not for objects which are only dynamically live stack objects).</code></span>
+<span class="codeline" id="line-1951"><code>func getgcmask(ep interface{}) (mask []byte) {</code></span>
+<span class="codeline" id="line-1952"><code>	e := *efaceOf(&amp;ep)</code></span>
+<span class="codeline" id="line-1953"><code>	p := e.data</code></span>
+<span class="codeline" id="line-1954"><code>	t := e._type</code></span>
+<span class="codeline" id="line-1955"><code>	// data or bss</code></span>
+<span class="codeline" id="line-1956"><code>	for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-1957"><code>		// data</code></span>
+<span class="codeline" id="line-1958"><code>		if datap.data &lt;= uintptr(p) &amp;&amp; uintptr(p) &lt; datap.edata {</code></span>
+<span class="codeline" id="line-1959"><code>			bitmap := datap.gcdatamask.bytedata</code></span>
+<span class="codeline" id="line-1960"><code>			n := (*ptrtype)(unsafe.Pointer(t)).elem.size</code></span>
+<span class="codeline" id="line-1961"><code>			mask = make([]byte, n/sys.PtrSize)</code></span>
+<span class="codeline" id="line-1962"><code>			for i := uintptr(0); i &lt; n; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-1963"><code>				off := (uintptr(p) + i - datap.data) / sys.PtrSize</code></span>
+<span class="codeline" id="line-1964"><code>				mask[i/sys.PtrSize] = (*addb(bitmap, off/8) &gt;&gt; (off % 8)) &amp; 1</code></span>
+<span class="codeline" id="line-1965"><code>			}</code></span>
+<span class="codeline" id="line-1966"><code>			return</code></span>
+<span class="codeline" id="line-1967"><code>		}</code></span>
+<span class="codeline" id="line-1968"><code></code></span>
+<span class="codeline" id="line-1969"><code>		// bss</code></span>
+<span class="codeline" id="line-1970"><code>		if datap.bss &lt;= uintptr(p) &amp;&amp; uintptr(p) &lt; datap.ebss {</code></span>
+<span class="codeline" id="line-1971"><code>			bitmap := datap.gcbssmask.bytedata</code></span>
+<span class="codeline" id="line-1972"><code>			n := (*ptrtype)(unsafe.Pointer(t)).elem.size</code></span>
+<span class="codeline" id="line-1973"><code>			mask = make([]byte, n/sys.PtrSize)</code></span>
+<span class="codeline" id="line-1974"><code>			for i := uintptr(0); i &lt; n; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-1975"><code>				off := (uintptr(p) + i - datap.bss) / sys.PtrSize</code></span>
+<span class="codeline" id="line-1976"><code>				mask[i/sys.PtrSize] = (*addb(bitmap, off/8) &gt;&gt; (off % 8)) &amp; 1</code></span>
+<span class="codeline" id="line-1977"><code>			}</code></span>
+<span class="codeline" id="line-1978"><code>			return</code></span>
+<span class="codeline" id="line-1979"><code>		}</code></span>
+<span class="codeline" id="line-1980"><code>	}</code></span>
+<span class="codeline" id="line-1981"><code></code></span>
+<span class="codeline" id="line-1982"><code>	// heap</code></span>
+<span class="codeline" id="line-1983"><code>	if base, s, _ := findObject(uintptr(p), 0, 0); base != 0 {</code></span>
+<span class="codeline" id="line-1984"><code>		hbits := heapBitsForAddr(base)</code></span>
+<span class="codeline" id="line-1985"><code>		n := s.elemsize</code></span>
+<span class="codeline" id="line-1986"><code>		mask = make([]byte, n/sys.PtrSize)</code></span>
+<span class="codeline" id="line-1987"><code>		for i := uintptr(0); i &lt; n; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-1988"><code>			if hbits.isPointer() {</code></span>
+<span class="codeline" id="line-1989"><code>				mask[i/sys.PtrSize] = 1</code></span>
+<span class="codeline" id="line-1990"><code>			}</code></span>
+<span class="codeline" id="line-1991"><code>			if !hbits.morePointers() {</code></span>
+<span class="codeline" id="line-1992"><code>				mask = mask[:i/sys.PtrSize]</code></span>
+<span class="codeline" id="line-1993"><code>				break</code></span>
+<span class="codeline" id="line-1994"><code>			}</code></span>
+<span class="codeline" id="line-1995"><code>			hbits = hbits.next()</code></span>
+<span class="codeline" id="line-1996"><code>		}</code></span>
+<span class="codeline" id="line-1997"><code>		return</code></span>
+<span class="codeline" id="line-1998"><code>	}</code></span>
+<span class="codeline" id="line-1999"><code></code></span>
+<span class="codeline" id="line-2000"><code>	// stack</code></span>
+<span class="codeline" id="line-2001"><code>	if _g_ := getg(); _g_.m.curg.stack.lo &lt;= uintptr(p) &amp;&amp; uintptr(p) &lt; _g_.m.curg.stack.hi {</code></span>
+<span class="codeline" id="line-2002"><code>		var frame stkframe</code></span>
+<span class="codeline" id="line-2003"><code>		frame.sp = uintptr(p)</code></span>
+<span class="codeline" id="line-2004"><code>		_g_ := getg()</code></span>
+<span class="codeline" id="line-2005"><code>		gentraceback(_g_.m.curg.sched.pc, _g_.m.curg.sched.sp, 0, _g_.m.curg, 0, nil, 1000, getgcmaskcb, noescape(unsafe.Pointer(&amp;frame)), 0)</code></span>
+<span class="codeline" id="line-2006"><code>		if frame.fn.valid() {</code></span>
+<span class="codeline" id="line-2007"><code>			locals, _, _ := getStackMap(&amp;frame, nil, false)</code></span>
+<span class="codeline" id="line-2008"><code>			if locals.n == 0 {</code></span>
+<span class="codeline" id="line-2009"><code>				return</code></span>
+<span class="codeline" id="line-2010"><code>			}</code></span>
+<span class="codeline" id="line-2011"><code>			size := uintptr(locals.n) * sys.PtrSize</code></span>
+<span class="codeline" id="line-2012"><code>			n := (*ptrtype)(unsafe.Pointer(t)).elem.size</code></span>
+<span class="codeline" id="line-2013"><code>			mask = make([]byte, n/sys.PtrSize)</code></span>
+<span class="codeline" id="line-2014"><code>			for i := uintptr(0); i &lt; n; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-2015"><code>				off := (uintptr(p) + i - frame.varp + size) / sys.PtrSize</code></span>
+<span class="codeline" id="line-2016"><code>				mask[i/sys.PtrSize] = locals.ptrbit(off)</code></span>
+<span class="codeline" id="line-2017"><code>			}</code></span>
+<span class="codeline" id="line-2018"><code>		}</code></span>
+<span class="codeline" id="line-2019"><code>		return</code></span>
+<span class="codeline" id="line-2020"><code>	}</code></span>
+<span class="codeline" id="line-2021"><code></code></span>
+<span class="codeline" id="line-2022"><code>	// otherwise, not something the GC knows about.</code></span>
+<span class="codeline" id="line-2023"><code>	// possibly read-only data, like malloc(0).</code></span>
+<span class="codeline" id="line-2024"><code>	// must not have pointers</code></span>
+<span class="codeline" id="line-2025"><code>	return</code></span>
+<span class="codeline" id="line-2026"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

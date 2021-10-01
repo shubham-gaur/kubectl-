@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: match.go in package path</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	match.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/path.html">path</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package path</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"errors"</code></span>
+<span class="codeline" id="line-9"><code>	"internal/bytealg"</code></span>
+<span class="codeline" id="line-10"><code>	"unicode/utf8"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// ErrBadPattern indicates a pattern was malformed.</code></span>
+<span class="codeline" id="line-14"><code>var ErrBadPattern = errors.New("syntax error in pattern")</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>// Match reports whether name matches the shell pattern.</code></span>
+<span class="codeline" id="line-17"><code>// The pattern syntax is:</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>//	pattern:</code></span>
+<span class="codeline" id="line-20"><code>//		{ term }</code></span>
+<span class="codeline" id="line-21"><code>//	term:</code></span>
+<span class="codeline" id="line-22"><code>//		'*'         matches any sequence of non-/ characters</code></span>
+<span class="codeline" id="line-23"><code>//		'?'         matches any single non-/ character</code></span>
+<span class="codeline" id="line-24"><code>//		'[' [ '^' ] { character-range } ']'</code></span>
+<span class="codeline" id="line-25"><code>//		            character class (must be non-empty)</code></span>
+<span class="codeline" id="line-26"><code>//		c           matches character c (c != '*', '?', '\\', '[')</code></span>
+<span class="codeline" id="line-27"><code>//		'\\' c      matches character c</code></span>
+<span class="codeline" id="line-28"><code>//</code></span>
+<span class="codeline" id="line-29"><code>//	character-range:</code></span>
+<span class="codeline" id="line-30"><code>//		c           matches character c (c != '\\', '-', ']')</code></span>
+<span class="codeline" id="line-31"><code>//		'\\' c      matches character c</code></span>
+<span class="codeline" id="line-32"><code>//		lo '-' hi   matches character c for lo &lt;= c &lt;= hi</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>// Match requires pattern to match all of name, not just a substring.</code></span>
+<span class="codeline" id="line-35"><code>// The only possible returned error is ErrBadPattern, when pattern</code></span>
+<span class="codeline" id="line-36"><code>// is malformed.</code></span>
+<span class="codeline" id="line-37"><code>//</code></span>
+<span class="codeline" id="line-38"><code>func Match(pattern, name string) (matched bool, err error) {</code></span>
+<span class="codeline" id="line-39"><code>Pattern:</code></span>
+<span class="codeline" id="line-40"><code>	for len(pattern) &gt; 0 {</code></span>
+<span class="codeline" id="line-41"><code>		var star bool</code></span>
+<span class="codeline" id="line-42"><code>		var chunk string</code></span>
+<span class="codeline" id="line-43"><code>		star, chunk, pattern = scanChunk(pattern)</code></span>
+<span class="codeline" id="line-44"><code>		if star &amp;&amp; chunk == "" {</code></span>
+<span class="codeline" id="line-45"><code>			// Trailing * matches rest of string unless it has a /.</code></span>
+<span class="codeline" id="line-46"><code>			return bytealg.IndexByteString(name, '/') &lt; 0, nil</code></span>
+<span class="codeline" id="line-47"><code>		}</code></span>
+<span class="codeline" id="line-48"><code>		// Look for match at current position.</code></span>
+<span class="codeline" id="line-49"><code>		t, ok, err := matchChunk(chunk, name)</code></span>
+<span class="codeline" id="line-50"><code>		// if we're the last chunk, make sure we've exhausted the name</code></span>
+<span class="codeline" id="line-51"><code>		// otherwise we'll give a false result even if we could still match</code></span>
+<span class="codeline" id="line-52"><code>		// using the star</code></span>
+<span class="codeline" id="line-53"><code>		if ok &amp;&amp; (len(t) == 0 || len(pattern) &gt; 0) {</code></span>
+<span class="codeline" id="line-54"><code>			name = t</code></span>
+<span class="codeline" id="line-55"><code>			continue</code></span>
+<span class="codeline" id="line-56"><code>		}</code></span>
+<span class="codeline" id="line-57"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-58"><code>			return false, err</code></span>
+<span class="codeline" id="line-59"><code>		}</code></span>
+<span class="codeline" id="line-60"><code>		if star {</code></span>
+<span class="codeline" id="line-61"><code>			// Look for match skipping i+1 bytes.</code></span>
+<span class="codeline" id="line-62"><code>			// Cannot skip /.</code></span>
+<span class="codeline" id="line-63"><code>			for i := 0; i &lt; len(name) &amp;&amp; name[i] != '/'; i++ {</code></span>
+<span class="codeline" id="line-64"><code>				t, ok, err := matchChunk(chunk, name[i+1:])</code></span>
+<span class="codeline" id="line-65"><code>				if ok {</code></span>
+<span class="codeline" id="line-66"><code>					// if we're the last chunk, make sure we exhausted the name</code></span>
+<span class="codeline" id="line-67"><code>					if len(pattern) == 0 &amp;&amp; len(t) &gt; 0 {</code></span>
+<span class="codeline" id="line-68"><code>						continue</code></span>
+<span class="codeline" id="line-69"><code>					}</code></span>
+<span class="codeline" id="line-70"><code>					name = t</code></span>
+<span class="codeline" id="line-71"><code>					continue Pattern</code></span>
+<span class="codeline" id="line-72"><code>				}</code></span>
+<span class="codeline" id="line-73"><code>				if err != nil {</code></span>
+<span class="codeline" id="line-74"><code>					return false, err</code></span>
+<span class="codeline" id="line-75"><code>				}</code></span>
+<span class="codeline" id="line-76"><code>			}</code></span>
+<span class="codeline" id="line-77"><code>		}</code></span>
+<span class="codeline" id="line-78"><code>		// Before returning false with no error,</code></span>
+<span class="codeline" id="line-79"><code>		// check that the remainder of the pattern is syntactically valid.</code></span>
+<span class="codeline" id="line-80"><code>		for len(pattern) &gt; 0 {</code></span>
+<span class="codeline" id="line-81"><code>			_, chunk, pattern = scanChunk(pattern)</code></span>
+<span class="codeline" id="line-82"><code>			if _, _, err := matchChunk(chunk, ""); err != nil {</code></span>
+<span class="codeline" id="line-83"><code>				return false, err</code></span>
+<span class="codeline" id="line-84"><code>			}</code></span>
+<span class="codeline" id="line-85"><code>		}</code></span>
+<span class="codeline" id="line-86"><code>		return false, nil</code></span>
+<span class="codeline" id="line-87"><code>	}</code></span>
+<span class="codeline" id="line-88"><code>	return len(name) == 0, nil</code></span>
+<span class="codeline" id="line-89"><code>}</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>// scanChunk gets the next segment of pattern, which is a non-star string</code></span>
+<span class="codeline" id="line-92"><code>// possibly preceded by a star.</code></span>
+<span class="codeline" id="line-93"><code>func scanChunk(pattern string) (star bool, chunk, rest string) {</code></span>
+<span class="codeline" id="line-94"><code>	for len(pattern) &gt; 0 &amp;&amp; pattern[0] == '*' {</code></span>
+<span class="codeline" id="line-95"><code>		pattern = pattern[1:]</code></span>
+<span class="codeline" id="line-96"><code>		star = true</code></span>
+<span class="codeline" id="line-97"><code>	}</code></span>
+<span class="codeline" id="line-98"><code>	inrange := false</code></span>
+<span class="codeline" id="line-99"><code>	var i int</code></span>
+<span class="codeline" id="line-100"><code>Scan:</code></span>
+<span class="codeline" id="line-101"><code>	for i = 0; i &lt; len(pattern); i++ {</code></span>
+<span class="codeline" id="line-102"><code>		switch pattern[i] {</code></span>
+<span class="codeline" id="line-103"><code>		case '\\':</code></span>
+<span class="codeline" id="line-104"><code>			// error check handled in matchChunk: bad pattern.</code></span>
+<span class="codeline" id="line-105"><code>			if i+1 &lt; len(pattern) {</code></span>
+<span class="codeline" id="line-106"><code>				i++</code></span>
+<span class="codeline" id="line-107"><code>			}</code></span>
+<span class="codeline" id="line-108"><code>		case '[':</code></span>
+<span class="codeline" id="line-109"><code>			inrange = true</code></span>
+<span class="codeline" id="line-110"><code>		case ']':</code></span>
+<span class="codeline" id="line-111"><code>			inrange = false</code></span>
+<span class="codeline" id="line-112"><code>		case '*':</code></span>
+<span class="codeline" id="line-113"><code>			if !inrange {</code></span>
+<span class="codeline" id="line-114"><code>				break Scan</code></span>
+<span class="codeline" id="line-115"><code>			}</code></span>
+<span class="codeline" id="line-116"><code>		}</code></span>
+<span class="codeline" id="line-117"><code>	}</code></span>
+<span class="codeline" id="line-118"><code>	return star, pattern[0:i], pattern[i:]</code></span>
+<span class="codeline" id="line-119"><code>}</code></span>
+<span class="codeline" id="line-120"><code></code></span>
+<span class="codeline" id="line-121"><code>// matchChunk checks whether chunk matches the beginning of s.</code></span>
+<span class="codeline" id="line-122"><code>// If so, it returns the remainder of s (after the match).</code></span>
+<span class="codeline" id="line-123"><code>// Chunk is all single-character operators: literals, char classes, and ?.</code></span>
+<span class="codeline" id="line-124"><code>func matchChunk(chunk, s string) (rest string, ok bool, err error) {</code></span>
+<span class="codeline" id="line-125"><code>	// failed records whether the match has failed.</code></span>
+<span class="codeline" id="line-126"><code>	// After the match fails, the loop continues on processing chunk,</code></span>
+<span class="codeline" id="line-127"><code>	// checking that the pattern is well-formed but no longer reading s.</code></span>
+<span class="codeline" id="line-128"><code>	failed := false</code></span>
+<span class="codeline" id="line-129"><code>	for len(chunk) &gt; 0 {</code></span>
+<span class="codeline" id="line-130"><code>		if !failed &amp;&amp; len(s) == 0 {</code></span>
+<span class="codeline" id="line-131"><code>			failed = true</code></span>
+<span class="codeline" id="line-132"><code>		}</code></span>
+<span class="codeline" id="line-133"><code>		switch chunk[0] {</code></span>
+<span class="codeline" id="line-134"><code>		case '[':</code></span>
+<span class="codeline" id="line-135"><code>			// character class</code></span>
+<span class="codeline" id="line-136"><code>			var r rune</code></span>
+<span class="codeline" id="line-137"><code>			if !failed {</code></span>
+<span class="codeline" id="line-138"><code>				var n int</code></span>
+<span class="codeline" id="line-139"><code>				r, n = utf8.DecodeRuneInString(s)</code></span>
+<span class="codeline" id="line-140"><code>				s = s[n:]</code></span>
+<span class="codeline" id="line-141"><code>			}</code></span>
+<span class="codeline" id="line-142"><code>			chunk = chunk[1:]</code></span>
+<span class="codeline" id="line-143"><code>			// possibly negated</code></span>
+<span class="codeline" id="line-144"><code>			negated := false</code></span>
+<span class="codeline" id="line-145"><code>			if len(chunk) &gt; 0 &amp;&amp; chunk[0] == '^' {</code></span>
+<span class="codeline" id="line-146"><code>				negated = true</code></span>
+<span class="codeline" id="line-147"><code>				chunk = chunk[1:]</code></span>
+<span class="codeline" id="line-148"><code>			}</code></span>
+<span class="codeline" id="line-149"><code>			// parse all ranges</code></span>
+<span class="codeline" id="line-150"><code>			match := false</code></span>
+<span class="codeline" id="line-151"><code>			nrange := 0</code></span>
+<span class="codeline" id="line-152"><code>			for {</code></span>
+<span class="codeline" id="line-153"><code>				if len(chunk) &gt; 0 &amp;&amp; chunk[0] == ']' &amp;&amp; nrange &gt; 0 {</code></span>
+<span class="codeline" id="line-154"><code>					chunk = chunk[1:]</code></span>
+<span class="codeline" id="line-155"><code>					break</code></span>
+<span class="codeline" id="line-156"><code>				}</code></span>
+<span class="codeline" id="line-157"><code>				var lo, hi rune</code></span>
+<span class="codeline" id="line-158"><code>				if lo, chunk, err = getEsc(chunk); err != nil {</code></span>
+<span class="codeline" id="line-159"><code>					return "", false, err</code></span>
+<span class="codeline" id="line-160"><code>				}</code></span>
+<span class="codeline" id="line-161"><code>				hi = lo</code></span>
+<span class="codeline" id="line-162"><code>				if chunk[0] == '-' {</code></span>
+<span class="codeline" id="line-163"><code>					if hi, chunk, err = getEsc(chunk[1:]); err != nil {</code></span>
+<span class="codeline" id="line-164"><code>						return "", false, err</code></span>
+<span class="codeline" id="line-165"><code>					}</code></span>
+<span class="codeline" id="line-166"><code>				}</code></span>
+<span class="codeline" id="line-167"><code>				if lo &lt;= r &amp;&amp; r &lt;= hi {</code></span>
+<span class="codeline" id="line-168"><code>					match = true</code></span>
+<span class="codeline" id="line-169"><code>				}</code></span>
+<span class="codeline" id="line-170"><code>				nrange++</code></span>
+<span class="codeline" id="line-171"><code>			}</code></span>
+<span class="codeline" id="line-172"><code>			if match == negated {</code></span>
+<span class="codeline" id="line-173"><code>				failed = true</code></span>
+<span class="codeline" id="line-174"><code>			}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>		case '?':</code></span>
+<span class="codeline" id="line-177"><code>			if !failed {</code></span>
+<span class="codeline" id="line-178"><code>				if s[0] == '/' {</code></span>
+<span class="codeline" id="line-179"><code>					failed = true</code></span>
+<span class="codeline" id="line-180"><code>				}</code></span>
+<span class="codeline" id="line-181"><code>				_, n := utf8.DecodeRuneInString(s)</code></span>
+<span class="codeline" id="line-182"><code>				s = s[n:]</code></span>
+<span class="codeline" id="line-183"><code>			}</code></span>
+<span class="codeline" id="line-184"><code>			chunk = chunk[1:]</code></span>
+<span class="codeline" id="line-185"><code></code></span>
+<span class="codeline" id="line-186"><code>		case '\\':</code></span>
+<span class="codeline" id="line-187"><code>			chunk = chunk[1:]</code></span>
+<span class="codeline" id="line-188"><code>			if len(chunk) == 0 {</code></span>
+<span class="codeline" id="line-189"><code>				return "", false, ErrBadPattern</code></span>
+<span class="codeline" id="line-190"><code>			}</code></span>
+<span class="codeline" id="line-191"><code>			fallthrough</code></span>
+<span class="codeline" id="line-192"><code></code></span>
+<span class="codeline" id="line-193"><code>		default:</code></span>
+<span class="codeline" id="line-194"><code>			if !failed {</code></span>
+<span class="codeline" id="line-195"><code>				if chunk[0] != s[0] {</code></span>
+<span class="codeline" id="line-196"><code>					failed = true</code></span>
+<span class="codeline" id="line-197"><code>				}</code></span>
+<span class="codeline" id="line-198"><code>				s = s[1:]</code></span>
+<span class="codeline" id="line-199"><code>			}</code></span>
+<span class="codeline" id="line-200"><code>			chunk = chunk[1:]</code></span>
+<span class="codeline" id="line-201"><code>		}</code></span>
+<span class="codeline" id="line-202"><code>	}</code></span>
+<span class="codeline" id="line-203"><code>	if failed {</code></span>
+<span class="codeline" id="line-204"><code>		return "", false, nil</code></span>
+<span class="codeline" id="line-205"><code>	}</code></span>
+<span class="codeline" id="line-206"><code>	return s, true, nil</code></span>
+<span class="codeline" id="line-207"><code>}</code></span>
+<span class="codeline" id="line-208"><code></code></span>
+<span class="codeline" id="line-209"><code>// getEsc gets a possibly-escaped character from chunk, for a character class.</code></span>
+<span class="codeline" id="line-210"><code>func getEsc(chunk string) (r rune, nchunk string, err error) {</code></span>
+<span class="codeline" id="line-211"><code>	if len(chunk) == 0 || chunk[0] == '-' || chunk[0] == ']' {</code></span>
+<span class="codeline" id="line-212"><code>		err = ErrBadPattern</code></span>
+<span class="codeline" id="line-213"><code>		return</code></span>
+<span class="codeline" id="line-214"><code>	}</code></span>
+<span class="codeline" id="line-215"><code>	if chunk[0] == '\\' {</code></span>
+<span class="codeline" id="line-216"><code>		chunk = chunk[1:]</code></span>
+<span class="codeline" id="line-217"><code>		if len(chunk) == 0 {</code></span>
+<span class="codeline" id="line-218"><code>			err = ErrBadPattern</code></span>
+<span class="codeline" id="line-219"><code>			return</code></span>
+<span class="codeline" id="line-220"><code>		}</code></span>
+<span class="codeline" id="line-221"><code>	}</code></span>
+<span class="codeline" id="line-222"><code>	r, n := utf8.DecodeRuneInString(chunk)</code></span>
+<span class="codeline" id="line-223"><code>	if r == utf8.RuneError &amp;&amp; n == 1 {</code></span>
+<span class="codeline" id="line-224"><code>		err = ErrBadPattern</code></span>
+<span class="codeline" id="line-225"><code>	}</code></span>
+<span class="codeline" id="line-226"><code>	nchunk = chunk[n:]</code></span>
+<span class="codeline" id="line-227"><code>	if len(nchunk) == 0 {</code></span>
+<span class="codeline" id="line-228"><code>		err = ErrBadPattern</code></span>
+<span class="codeline" id="line-229"><code>	}</code></span>
+<span class="codeline" id="line-230"><code>	return</code></span>
+<span class="codeline" id="line-231"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

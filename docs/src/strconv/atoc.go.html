@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: atoc.go in package strconv</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	atoc.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/strconv.html">strconv</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2020 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package strconv</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>const fnParseComplex = "ParseComplex"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// convErr splits an error returned by parseFloatPrefix</code></span>
+<span class="codeline" id="line-10"><code>// into a syntax or range error for ParseComplex.</code></span>
+<span class="codeline" id="line-11"><code>func convErr(err error, s string) (syntax, range_ error) {</code></span>
+<span class="codeline" id="line-12"><code>	if x, ok := err.(*NumError); ok {</code></span>
+<span class="codeline" id="line-13"><code>		x.Func = fnParseComplex</code></span>
+<span class="codeline" id="line-14"><code>		x.Num = s</code></span>
+<span class="codeline" id="line-15"><code>		if x.Err == ErrRange {</code></span>
+<span class="codeline" id="line-16"><code>			return nil, x</code></span>
+<span class="codeline" id="line-17"><code>		}</code></span>
+<span class="codeline" id="line-18"><code>	}</code></span>
+<span class="codeline" id="line-19"><code>	return err, nil</code></span>
+<span class="codeline" id="line-20"><code>}</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>// ParseComplex converts the string s to a complex number</code></span>
+<span class="codeline" id="line-23"><code>// with the precision specified by bitSize: 64 for complex64, or 128 for complex128.</code></span>
+<span class="codeline" id="line-24"><code>// When bitSize=64, the result still has type complex128, but it will be</code></span>
+<span class="codeline" id="line-25"><code>// convertible to complex64 without changing its value.</code></span>
+<span class="codeline" id="line-26"><code>//</code></span>
+<span class="codeline" id="line-27"><code>// The number represented by s must be of the form N, Ni, or N±Ni, where N stands</code></span>
+<span class="codeline" id="line-28"><code>// for a floating-point number as recognized by ParseFloat, and i is the imaginary</code></span>
+<span class="codeline" id="line-29"><code>// component. If the second N is unsigned, a + sign is required between the two components</code></span>
+<span class="codeline" id="line-30"><code>// as indicated by the ±. If the second N is NaN, only a + sign is accepted.</code></span>
+<span class="codeline" id="line-31"><code>// The form may be parenthesized and cannot contain any spaces.</code></span>
+<span class="codeline" id="line-32"><code>// The resulting complex number consists of the two components converted by ParseFloat.</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>// The errors that ParseComplex returns have concrete type *NumError</code></span>
+<span class="codeline" id="line-35"><code>// and include err.Num = s.</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// If s is not syntactically well-formed, ParseComplex returns err.Err = ErrSyntax.</code></span>
+<span class="codeline" id="line-38"><code>//</code></span>
+<span class="codeline" id="line-39"><code>// If s is syntactically well-formed but either component is more than 1/2 ULP</code></span>
+<span class="codeline" id="line-40"><code>// away from the largest floating point number of the given component's size,</code></span>
+<span class="codeline" id="line-41"><code>// ParseComplex returns err.Err = ErrRange and c = ±Inf for the respective component.</code></span>
+<span class="codeline" id="line-42"><code>func ParseComplex(s string, bitSize int) (complex128, error) {</code></span>
+<span class="codeline" id="line-43"><code>	size := 64</code></span>
+<span class="codeline" id="line-44"><code>	if bitSize == 64 {</code></span>
+<span class="codeline" id="line-45"><code>		size = 32 // complex64 uses float32 parts</code></span>
+<span class="codeline" id="line-46"><code>	}</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>	orig := s</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>	// Remove parentheses, if any.</code></span>
+<span class="codeline" id="line-51"><code>	if len(s) &gt;= 2 &amp;&amp; s[0] == '(' &amp;&amp; s[len(s)-1] == ')' {</code></span>
+<span class="codeline" id="line-52"><code>		s = s[1 : len(s)-1]</code></span>
+<span class="codeline" id="line-53"><code>	}</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>	var pending error // pending range error, or nil</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>	// Read real part (possibly imaginary part if followed by 'i').</code></span>
+<span class="codeline" id="line-58"><code>	re, n, err := parseFloatPrefix(s, size)</code></span>
+<span class="codeline" id="line-59"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-60"><code>		err, pending = convErr(err, orig)</code></span>
+<span class="codeline" id="line-61"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-62"><code>			return 0, err</code></span>
+<span class="codeline" id="line-63"><code>		}</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code>	s = s[n:]</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>	// If we have nothing left, we're done.</code></span>
+<span class="codeline" id="line-68"><code>	if len(s) == 0 {</code></span>
+<span class="codeline" id="line-69"><code>		return complex(re, 0), pending</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code></code></span>
+<span class="codeline" id="line-72"><code>	// Otherwise, look at the next character.</code></span>
+<span class="codeline" id="line-73"><code>	switch s[0] {</code></span>
+<span class="codeline" id="line-74"><code>	case '+':</code></span>
+<span class="codeline" id="line-75"><code>		// Consume the '+' to avoid an error if we have "+NaNi", but</code></span>
+<span class="codeline" id="line-76"><code>		// do this only if we don't have a "++" (don't hide that error).</code></span>
+<span class="codeline" id="line-77"><code>		if len(s) &gt; 1 &amp;&amp; s[1] != '+' {</code></span>
+<span class="codeline" id="line-78"><code>			s = s[1:]</code></span>
+<span class="codeline" id="line-79"><code>		}</code></span>
+<span class="codeline" id="line-80"><code>	case '-':</code></span>
+<span class="codeline" id="line-81"><code>		// ok</code></span>
+<span class="codeline" id="line-82"><code>	case 'i':</code></span>
+<span class="codeline" id="line-83"><code>		// If 'i' is the last character, we only have an imaginary part.</code></span>
+<span class="codeline" id="line-84"><code>		if len(s) == 1 {</code></span>
+<span class="codeline" id="line-85"><code>			return complex(0, re), pending</code></span>
+<span class="codeline" id="line-86"><code>		}</code></span>
+<span class="codeline" id="line-87"><code>		fallthrough</code></span>
+<span class="codeline" id="line-88"><code>	default:</code></span>
+<span class="codeline" id="line-89"><code>		return 0, syntaxError(fnParseComplex, orig)</code></span>
+<span class="codeline" id="line-90"><code>	}</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>	// Read imaginary part.</code></span>
+<span class="codeline" id="line-93"><code>	im, n, err := parseFloatPrefix(s, size)</code></span>
+<span class="codeline" id="line-94"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-95"><code>		err, pending = convErr(err, orig)</code></span>
+<span class="codeline" id="line-96"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-97"><code>			return 0, err</code></span>
+<span class="codeline" id="line-98"><code>		}</code></span>
+<span class="codeline" id="line-99"><code>	}</code></span>
+<span class="codeline" id="line-100"><code>	s = s[n:]</code></span>
+<span class="codeline" id="line-101"><code>	if s != "i" {</code></span>
+<span class="codeline" id="line-102"><code>		return 0, syntaxError(fnParseComplex, orig)</code></span>
+<span class="codeline" id="line-103"><code>	}</code></span>
+<span class="codeline" id="line-104"><code>	return complex(re, im), pending</code></span>
+<span class="codeline" id="line-105"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

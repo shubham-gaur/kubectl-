@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: atan2.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	atan2.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Atan2 returns the arc tangent of y/x, using</code></span>
+<span class="codeline" id="line-8"><code>// the signs of the two to determine the quadrant</code></span>
+<span class="codeline" id="line-9"><code>// of the return value.</code></span>
+<span class="codeline" id="line-10"><code>//</code></span>
+<span class="codeline" id="line-11"><code>// Special cases are (in order):</code></span>
+<span class="codeline" id="line-12"><code>//	Atan2(y, NaN) = NaN</code></span>
+<span class="codeline" id="line-13"><code>//	Atan2(NaN, x) = NaN</code></span>
+<span class="codeline" id="line-14"><code>//	Atan2(+0, x&gt;=0) = +0</code></span>
+<span class="codeline" id="line-15"><code>//	Atan2(-0, x&gt;=0) = -0</code></span>
+<span class="codeline" id="line-16"><code>//	Atan2(+0, x&lt;=-0) = +Pi</code></span>
+<span class="codeline" id="line-17"><code>//	Atan2(-0, x&lt;=-0) = -Pi</code></span>
+<span class="codeline" id="line-18"><code>//	Atan2(y&gt;0, 0) = +Pi/2</code></span>
+<span class="codeline" id="line-19"><code>//	Atan2(y&lt;0, 0) = -Pi/2</code></span>
+<span class="codeline" id="line-20"><code>//	Atan2(+Inf, +Inf) = +Pi/4</code></span>
+<span class="codeline" id="line-21"><code>//	Atan2(-Inf, +Inf) = -Pi/4</code></span>
+<span class="codeline" id="line-22"><code>//	Atan2(+Inf, -Inf) = 3Pi/4</code></span>
+<span class="codeline" id="line-23"><code>//	Atan2(-Inf, -Inf) = -3Pi/4</code></span>
+<span class="codeline" id="line-24"><code>//	Atan2(y, +Inf) = 0</code></span>
+<span class="codeline" id="line-25"><code>//	Atan2(y&gt;0, -Inf) = +Pi</code></span>
+<span class="codeline" id="line-26"><code>//	Atan2(y&lt;0, -Inf) = -Pi</code></span>
+<span class="codeline" id="line-27"><code>//	Atan2(+Inf, x) = +Pi/2</code></span>
+<span class="codeline" id="line-28"><code>//	Atan2(-Inf, x) = -Pi/2</code></span>
+<span class="codeline" id="line-29"><code>func Atan2(y, x float64) float64</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>func atan2(y, x float64) float64 {</code></span>
+<span class="codeline" id="line-32"><code>	// special cases</code></span>
+<span class="codeline" id="line-33"><code>	switch {</code></span>
+<span class="codeline" id="line-34"><code>	case IsNaN(y) || IsNaN(x):</code></span>
+<span class="codeline" id="line-35"><code>		return NaN()</code></span>
+<span class="codeline" id="line-36"><code>	case y == 0:</code></span>
+<span class="codeline" id="line-37"><code>		if x &gt;= 0 &amp;&amp; !Signbit(x) {</code></span>
+<span class="codeline" id="line-38"><code>			return Copysign(0, y)</code></span>
+<span class="codeline" id="line-39"><code>		}</code></span>
+<span class="codeline" id="line-40"><code>		return Copysign(Pi, y)</code></span>
+<span class="codeline" id="line-41"><code>	case x == 0:</code></span>
+<span class="codeline" id="line-42"><code>		return Copysign(Pi/2, y)</code></span>
+<span class="codeline" id="line-43"><code>	case IsInf(x, 0):</code></span>
+<span class="codeline" id="line-44"><code>		if IsInf(x, 1) {</code></span>
+<span class="codeline" id="line-45"><code>			switch {</code></span>
+<span class="codeline" id="line-46"><code>			case IsInf(y, 0):</code></span>
+<span class="codeline" id="line-47"><code>				return Copysign(Pi/4, y)</code></span>
+<span class="codeline" id="line-48"><code>			default:</code></span>
+<span class="codeline" id="line-49"><code>				return Copysign(0, y)</code></span>
+<span class="codeline" id="line-50"><code>			}</code></span>
+<span class="codeline" id="line-51"><code>		}</code></span>
+<span class="codeline" id="line-52"><code>		switch {</code></span>
+<span class="codeline" id="line-53"><code>		case IsInf(y, 0):</code></span>
+<span class="codeline" id="line-54"><code>			return Copysign(3*Pi/4, y)</code></span>
+<span class="codeline" id="line-55"><code>		default:</code></span>
+<span class="codeline" id="line-56"><code>			return Copysign(Pi, y)</code></span>
+<span class="codeline" id="line-57"><code>		}</code></span>
+<span class="codeline" id="line-58"><code>	case IsInf(y, 0):</code></span>
+<span class="codeline" id="line-59"><code>		return Copysign(Pi/2, y)</code></span>
+<span class="codeline" id="line-60"><code>	}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>	// Call atan and determine the quadrant.</code></span>
+<span class="codeline" id="line-63"><code>	q := Atan(y / x)</code></span>
+<span class="codeline" id="line-64"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-65"><code>		if q &lt;= 0 {</code></span>
+<span class="codeline" id="line-66"><code>			return q + Pi</code></span>
+<span class="codeline" id="line-67"><code>		}</code></span>
+<span class="codeline" id="line-68"><code>		return q - Pi</code></span>
+<span class="codeline" id="line-69"><code>	}</code></span>
+<span class="codeline" id="line-70"><code>	return q</code></span>
+<span class="codeline" id="line-71"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

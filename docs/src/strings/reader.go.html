@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: reader.go in package strings</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	reader.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/strings.html">strings</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package strings</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"errors"</code></span>
+<span class="codeline" id="line-9"><code>	"io"</code></span>
+<span class="codeline" id="line-10"><code>	"unicode/utf8"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// A Reader implements the io.Reader, io.ReaderAt, io.ByteReader, io.ByteScanner,</code></span>
+<span class="codeline" id="line-14"><code>// io.RuneReader, io.RuneScanner, io.Seeker, and io.WriterTo interfaces by reading</code></span>
+<span class="codeline" id="line-15"><code>// from a string.</code></span>
+<span class="codeline" id="line-16"><code>// The zero value for Reader operates like a Reader of an empty string.</code></span>
+<span class="codeline" id="line-17"><code>type Reader struct {</code></span>
+<span class="codeline" id="line-18"><code>	s        string</code></span>
+<span class="codeline" id="line-19"><code>	i        int64 // current reading index</code></span>
+<span class="codeline" id="line-20"><code>	prevRune int   // index of previous rune; or &lt; 0</code></span>
+<span class="codeline" id="line-21"><code>}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>// Len returns the number of bytes of the unread portion of the</code></span>
+<span class="codeline" id="line-24"><code>// string.</code></span>
+<span class="codeline" id="line-25"><code>func (r *Reader) Len() int {</code></span>
+<span class="codeline" id="line-26"><code>	if r.i &gt;= int64(len(r.s)) {</code></span>
+<span class="codeline" id="line-27"><code>		return 0</code></span>
+<span class="codeline" id="line-28"><code>	}</code></span>
+<span class="codeline" id="line-29"><code>	return int(int64(len(r.s)) - r.i)</code></span>
+<span class="codeline" id="line-30"><code>}</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>// Size returns the original length of the underlying string.</code></span>
+<span class="codeline" id="line-33"><code>// Size is the number of bytes available for reading via ReadAt.</code></span>
+<span class="codeline" id="line-34"><code>// The returned value is always the same and is not affected by calls</code></span>
+<span class="codeline" id="line-35"><code>// to any other method.</code></span>
+<span class="codeline" id="line-36"><code>func (r *Reader) Size() int64 { return int64(len(r.s)) }</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>// Read implements the io.Reader interface.</code></span>
+<span class="codeline" id="line-39"><code>func (r *Reader) Read(b []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-40"><code>	if r.i &gt;= int64(len(r.s)) {</code></span>
+<span class="codeline" id="line-41"><code>		return 0, io.EOF</code></span>
+<span class="codeline" id="line-42"><code>	}</code></span>
+<span class="codeline" id="line-43"><code>	r.prevRune = -1</code></span>
+<span class="codeline" id="line-44"><code>	n = copy(b, r.s[r.i:])</code></span>
+<span class="codeline" id="line-45"><code>	r.i += int64(n)</code></span>
+<span class="codeline" id="line-46"><code>	return</code></span>
+<span class="codeline" id="line-47"><code>}</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>// ReadAt implements the io.ReaderAt interface.</code></span>
+<span class="codeline" id="line-50"><code>func (r *Reader) ReadAt(b []byte, off int64) (n int, err error) {</code></span>
+<span class="codeline" id="line-51"><code>	// cannot modify state - see io.ReaderAt</code></span>
+<span class="codeline" id="line-52"><code>	if off &lt; 0 {</code></span>
+<span class="codeline" id="line-53"><code>		return 0, errors.New("strings.Reader.ReadAt: negative offset")</code></span>
+<span class="codeline" id="line-54"><code>	}</code></span>
+<span class="codeline" id="line-55"><code>	if off &gt;= int64(len(r.s)) {</code></span>
+<span class="codeline" id="line-56"><code>		return 0, io.EOF</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code>	n = copy(b, r.s[off:])</code></span>
+<span class="codeline" id="line-59"><code>	if n &lt; len(b) {</code></span>
+<span class="codeline" id="line-60"><code>		err = io.EOF</code></span>
+<span class="codeline" id="line-61"><code>	}</code></span>
+<span class="codeline" id="line-62"><code>	return</code></span>
+<span class="codeline" id="line-63"><code>}</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>// ReadByte implements the io.ByteReader interface.</code></span>
+<span class="codeline" id="line-66"><code>func (r *Reader) ReadByte() (byte, error) {</code></span>
+<span class="codeline" id="line-67"><code>	r.prevRune = -1</code></span>
+<span class="codeline" id="line-68"><code>	if r.i &gt;= int64(len(r.s)) {</code></span>
+<span class="codeline" id="line-69"><code>		return 0, io.EOF</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code>	b := r.s[r.i]</code></span>
+<span class="codeline" id="line-72"><code>	r.i++</code></span>
+<span class="codeline" id="line-73"><code>	return b, nil</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>// UnreadByte implements the io.ByteScanner interface.</code></span>
+<span class="codeline" id="line-77"><code>func (r *Reader) UnreadByte() error {</code></span>
+<span class="codeline" id="line-78"><code>	if r.i &lt;= 0 {</code></span>
+<span class="codeline" id="line-79"><code>		return errors.New("strings.Reader.UnreadByte: at beginning of string")</code></span>
+<span class="codeline" id="line-80"><code>	}</code></span>
+<span class="codeline" id="line-81"><code>	r.prevRune = -1</code></span>
+<span class="codeline" id="line-82"><code>	r.i--</code></span>
+<span class="codeline" id="line-83"><code>	return nil</code></span>
+<span class="codeline" id="line-84"><code>}</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>// ReadRune implements the io.RuneReader interface.</code></span>
+<span class="codeline" id="line-87"><code>func (r *Reader) ReadRune() (ch rune, size int, err error) {</code></span>
+<span class="codeline" id="line-88"><code>	if r.i &gt;= int64(len(r.s)) {</code></span>
+<span class="codeline" id="line-89"><code>		r.prevRune = -1</code></span>
+<span class="codeline" id="line-90"><code>		return 0, 0, io.EOF</code></span>
+<span class="codeline" id="line-91"><code>	}</code></span>
+<span class="codeline" id="line-92"><code>	r.prevRune = int(r.i)</code></span>
+<span class="codeline" id="line-93"><code>	if c := r.s[r.i]; c &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-94"><code>		r.i++</code></span>
+<span class="codeline" id="line-95"><code>		return rune(c), 1, nil</code></span>
+<span class="codeline" id="line-96"><code>	}</code></span>
+<span class="codeline" id="line-97"><code>	ch, size = utf8.DecodeRuneInString(r.s[r.i:])</code></span>
+<span class="codeline" id="line-98"><code>	r.i += int64(size)</code></span>
+<span class="codeline" id="line-99"><code>	return</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>// UnreadRune implements the io.RuneScanner interface.</code></span>
+<span class="codeline" id="line-103"><code>func (r *Reader) UnreadRune() error {</code></span>
+<span class="codeline" id="line-104"><code>	if r.i &lt;= 0 {</code></span>
+<span class="codeline" id="line-105"><code>		return errors.New("strings.Reader.UnreadRune: at beginning of string")</code></span>
+<span class="codeline" id="line-106"><code>	}</code></span>
+<span class="codeline" id="line-107"><code>	if r.prevRune &lt; 0 {</code></span>
+<span class="codeline" id="line-108"><code>		return errors.New("strings.Reader.UnreadRune: previous operation was not ReadRune")</code></span>
+<span class="codeline" id="line-109"><code>	}</code></span>
+<span class="codeline" id="line-110"><code>	r.i = int64(r.prevRune)</code></span>
+<span class="codeline" id="line-111"><code>	r.prevRune = -1</code></span>
+<span class="codeline" id="line-112"><code>	return nil</code></span>
+<span class="codeline" id="line-113"><code>}</code></span>
+<span class="codeline" id="line-114"><code></code></span>
+<span class="codeline" id="line-115"><code>// Seek implements the io.Seeker interface.</code></span>
+<span class="codeline" id="line-116"><code>func (r *Reader) Seek(offset int64, whence int) (int64, error) {</code></span>
+<span class="codeline" id="line-117"><code>	r.prevRune = -1</code></span>
+<span class="codeline" id="line-118"><code>	var abs int64</code></span>
+<span class="codeline" id="line-119"><code>	switch whence {</code></span>
+<span class="codeline" id="line-120"><code>	case io.SeekStart:</code></span>
+<span class="codeline" id="line-121"><code>		abs = offset</code></span>
+<span class="codeline" id="line-122"><code>	case io.SeekCurrent:</code></span>
+<span class="codeline" id="line-123"><code>		abs = r.i + offset</code></span>
+<span class="codeline" id="line-124"><code>	case io.SeekEnd:</code></span>
+<span class="codeline" id="line-125"><code>		abs = int64(len(r.s)) + offset</code></span>
+<span class="codeline" id="line-126"><code>	default:</code></span>
+<span class="codeline" id="line-127"><code>		return 0, errors.New("strings.Reader.Seek: invalid whence")</code></span>
+<span class="codeline" id="line-128"><code>	}</code></span>
+<span class="codeline" id="line-129"><code>	if abs &lt; 0 {</code></span>
+<span class="codeline" id="line-130"><code>		return 0, errors.New("strings.Reader.Seek: negative position")</code></span>
+<span class="codeline" id="line-131"><code>	}</code></span>
+<span class="codeline" id="line-132"><code>	r.i = abs</code></span>
+<span class="codeline" id="line-133"><code>	return abs, nil</code></span>
+<span class="codeline" id="line-134"><code>}</code></span>
+<span class="codeline" id="line-135"><code></code></span>
+<span class="codeline" id="line-136"><code>// WriteTo implements the io.WriterTo interface.</code></span>
+<span class="codeline" id="line-137"><code>func (r *Reader) WriteTo(w io.Writer) (n int64, err error) {</code></span>
+<span class="codeline" id="line-138"><code>	r.prevRune = -1</code></span>
+<span class="codeline" id="line-139"><code>	if r.i &gt;= int64(len(r.s)) {</code></span>
+<span class="codeline" id="line-140"><code>		return 0, nil</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>	s := r.s[r.i:]</code></span>
+<span class="codeline" id="line-143"><code>	m, err := io.WriteString(w, s)</code></span>
+<span class="codeline" id="line-144"><code>	if m &gt; len(s) {</code></span>
+<span class="codeline" id="line-145"><code>		panic("strings.Reader.WriteTo: invalid WriteString count")</code></span>
+<span class="codeline" id="line-146"><code>	}</code></span>
+<span class="codeline" id="line-147"><code>	r.i += int64(m)</code></span>
+<span class="codeline" id="line-148"><code>	n = int64(m)</code></span>
+<span class="codeline" id="line-149"><code>	if m != len(s) &amp;&amp; err == nil {</code></span>
+<span class="codeline" id="line-150"><code>		err = io.ErrShortWrite</code></span>
+<span class="codeline" id="line-151"><code>	}</code></span>
+<span class="codeline" id="line-152"><code>	return</code></span>
+<span class="codeline" id="line-153"><code>}</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>// Reset resets the Reader to be reading from s.</code></span>
+<span class="codeline" id="line-156"><code>func (r *Reader) Reset(s string) { *r = Reader{s, 0, -1} }</code></span>
+<span class="codeline" id="line-157"><code></code></span>
+<span class="codeline" id="line-158"><code>// NewReader returns a new Reader reading from s.</code></span>
+<span class="codeline" id="line-159"><code>// It is similar to bytes.NewBufferString but more efficient and read-only.</code></span>
+<span class="codeline" id="line-160"><code>func NewReader(s string) *Reader { return &amp;Reader{s, 0, -1} }</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

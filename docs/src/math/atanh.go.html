@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: atanh.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	atanh.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// The original C code, the long comment, and the constants</code></span>
+<span class="codeline" id="line-8"><code>// below are from FreeBSD's /usr/src/lib/msun/src/e_atanh.c</code></span>
+<span class="codeline" id="line-9"><code>// and came with this notice. The go code is a simplified</code></span>
+<span class="codeline" id="line-10"><code>// version of the original C.</code></span>
+<span class="codeline" id="line-11"><code>//</code></span>
+<span class="codeline" id="line-12"><code>// ====================================================</code></span>
+<span class="codeline" id="line-13"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-16"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-17"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-18"><code>// is preserved.</code></span>
+<span class="codeline" id="line-19"><code>// ====================================================</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>//</code></span>
+<span class="codeline" id="line-22"><code>// __ieee754_atanh(x)</code></span>
+<span class="codeline" id="line-23"><code>// Method :</code></span>
+<span class="codeline" id="line-24"><code>//	1. Reduce x to positive by atanh(-x) = -atanh(x)</code></span>
+<span class="codeline" id="line-25"><code>//	2. For x&gt;=0.5</code></span>
+<span class="codeline" id="line-26"><code>//	            1              2x                          x</code></span>
+<span class="codeline" id="line-27"><code>//	atanh(x) = --- * log(1 + -------) = 0.5 * log1p(2 * --------)</code></span>
+<span class="codeline" id="line-28"><code>//	            2             1 - x                      1 - x</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>//	For x&lt;0.5</code></span>
+<span class="codeline" id="line-31"><code>//	atanh(x) = 0.5*log1p(2x+2x*x/(1-x))</code></span>
+<span class="codeline" id="line-32"><code>//</code></span>
+<span class="codeline" id="line-33"><code>// Special cases:</code></span>
+<span class="codeline" id="line-34"><code>//	atanh(x) is NaN if |x| &gt; 1 with signal;</code></span>
+<span class="codeline" id="line-35"><code>//	atanh(NaN) is that NaN with no signal;</code></span>
+<span class="codeline" id="line-36"><code>//	atanh(+-1) is +-INF with signal.</code></span>
+<span class="codeline" id="line-37"><code>//</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>// Atanh returns the inverse hyperbolic tangent of x.</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-42"><code>//	Atanh(1) = +Inf</code></span>
+<span class="codeline" id="line-43"><code>//	Atanh(±0) = ±0</code></span>
+<span class="codeline" id="line-44"><code>//	Atanh(-1) = -Inf</code></span>
+<span class="codeline" id="line-45"><code>//	Atanh(x) = NaN if x &lt; -1 or x &gt; 1</code></span>
+<span class="codeline" id="line-46"><code>//	Atanh(NaN) = NaN</code></span>
+<span class="codeline" id="line-47"><code>func Atanh(x float64) float64</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>func atanh(x float64) float64 {</code></span>
+<span class="codeline" id="line-50"><code>	const NearZero = 1.0 / (1 &lt;&lt; 28) // 2**-28</code></span>
+<span class="codeline" id="line-51"><code>	// special cases</code></span>
+<span class="codeline" id="line-52"><code>	switch {</code></span>
+<span class="codeline" id="line-53"><code>	case x &lt; -1 || x &gt; 1 || IsNaN(x):</code></span>
+<span class="codeline" id="line-54"><code>		return NaN()</code></span>
+<span class="codeline" id="line-55"><code>	case x == 1:</code></span>
+<span class="codeline" id="line-56"><code>		return Inf(1)</code></span>
+<span class="codeline" id="line-57"><code>	case x == -1:</code></span>
+<span class="codeline" id="line-58"><code>		return Inf(-1)</code></span>
+<span class="codeline" id="line-59"><code>	}</code></span>
+<span class="codeline" id="line-60"><code>	sign := false</code></span>
+<span class="codeline" id="line-61"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-62"><code>		x = -x</code></span>
+<span class="codeline" id="line-63"><code>		sign = true</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code>	var temp float64</code></span>
+<span class="codeline" id="line-66"><code>	switch {</code></span>
+<span class="codeline" id="line-67"><code>	case x &lt; NearZero:</code></span>
+<span class="codeline" id="line-68"><code>		temp = x</code></span>
+<span class="codeline" id="line-69"><code>	case x &lt; 0.5:</code></span>
+<span class="codeline" id="line-70"><code>		temp = x + x</code></span>
+<span class="codeline" id="line-71"><code>		temp = 0.5 * Log1p(temp+temp*x/(1-x))</code></span>
+<span class="codeline" id="line-72"><code>	default:</code></span>
+<span class="codeline" id="line-73"><code>		temp = 0.5 * Log1p((x+x)/(1-x))</code></span>
+<span class="codeline" id="line-74"><code>	}</code></span>
+<span class="codeline" id="line-75"><code>	if sign {</code></span>
+<span class="codeline" id="line-76"><code>		temp = -temp</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>	return temp</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

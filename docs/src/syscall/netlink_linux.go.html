@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: netlink_linux.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	netlink_linux.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Netlink sockets and messages</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package syscall</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// Round the length of a netlink message up to align it properly.</code></span>
+<span class="codeline" id="line-12"><code>func nlmAlignOf(msglen int) int {</code></span>
+<span class="codeline" id="line-13"><code>	return (msglen + NLMSG_ALIGNTO - 1) &amp; ^(NLMSG_ALIGNTO - 1)</code></span>
+<span class="codeline" id="line-14"><code>}</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>// Round the length of a netlink route attribute up to align it</code></span>
+<span class="codeline" id="line-17"><code>// properly.</code></span>
+<span class="codeline" id="line-18"><code>func rtaAlignOf(attrlen int) int {</code></span>
+<span class="codeline" id="line-19"><code>	return (attrlen + RTA_ALIGNTO - 1) &amp; ^(RTA_ALIGNTO - 1)</code></span>
+<span class="codeline" id="line-20"><code>}</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>// NetlinkRouteRequest represents a request message to receive routing</code></span>
+<span class="codeline" id="line-23"><code>// and link states from the kernel.</code></span>
+<span class="codeline" id="line-24"><code>type NetlinkRouteRequest struct {</code></span>
+<span class="codeline" id="line-25"><code>	Header NlMsghdr</code></span>
+<span class="codeline" id="line-26"><code>	Data   RtGenmsg</code></span>
+<span class="codeline" id="line-27"><code>}</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>func (rr *NetlinkRouteRequest) toWireFormat() []byte {</code></span>
+<span class="codeline" id="line-30"><code>	b := make([]byte, rr.Header.Len)</code></span>
+<span class="codeline" id="line-31"><code>	*(*uint32)(unsafe.Pointer(&amp;b[0:4][0])) = rr.Header.Len</code></span>
+<span class="codeline" id="line-32"><code>	*(*uint16)(unsafe.Pointer(&amp;b[4:6][0])) = rr.Header.Type</code></span>
+<span class="codeline" id="line-33"><code>	*(*uint16)(unsafe.Pointer(&amp;b[6:8][0])) = rr.Header.Flags</code></span>
+<span class="codeline" id="line-34"><code>	*(*uint32)(unsafe.Pointer(&amp;b[8:12][0])) = rr.Header.Seq</code></span>
+<span class="codeline" id="line-35"><code>	*(*uint32)(unsafe.Pointer(&amp;b[12:16][0])) = rr.Header.Pid</code></span>
+<span class="codeline" id="line-36"><code>	b[16] = byte(rr.Data.Family)</code></span>
+<span class="codeline" id="line-37"><code>	return b</code></span>
+<span class="codeline" id="line-38"><code>}</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>func newNetlinkRouteRequest(proto, seq, family int) []byte {</code></span>
+<span class="codeline" id="line-41"><code>	rr := &amp;NetlinkRouteRequest{}</code></span>
+<span class="codeline" id="line-42"><code>	rr.Header.Len = uint32(NLMSG_HDRLEN + SizeofRtGenmsg)</code></span>
+<span class="codeline" id="line-43"><code>	rr.Header.Type = uint16(proto)</code></span>
+<span class="codeline" id="line-44"><code>	rr.Header.Flags = NLM_F_DUMP | NLM_F_REQUEST</code></span>
+<span class="codeline" id="line-45"><code>	rr.Header.Seq = uint32(seq)</code></span>
+<span class="codeline" id="line-46"><code>	rr.Data.Family = uint8(family)</code></span>
+<span class="codeline" id="line-47"><code>	return rr.toWireFormat()</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>// NetlinkRIB returns routing information base, as known as RIB, which</code></span>
+<span class="codeline" id="line-51"><code>// consists of network facility information, states and parameters.</code></span>
+<span class="codeline" id="line-52"><code>func NetlinkRIB(proto, family int) ([]byte, error) {</code></span>
+<span class="codeline" id="line-53"><code>	s, err := cloexecSocket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)</code></span>
+<span class="codeline" id="line-54"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-55"><code>		return nil, err</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code>	defer Close(s)</code></span>
+<span class="codeline" id="line-58"><code>	lsa := &amp;SockaddrNetlink{Family: AF_NETLINK}</code></span>
+<span class="codeline" id="line-59"><code>	if err := Bind(s, lsa); err != nil {</code></span>
+<span class="codeline" id="line-60"><code>		return nil, err</code></span>
+<span class="codeline" id="line-61"><code>	}</code></span>
+<span class="codeline" id="line-62"><code>	wb := newNetlinkRouteRequest(proto, 1, family)</code></span>
+<span class="codeline" id="line-63"><code>	if err := Sendto(s, wb, 0, lsa); err != nil {</code></span>
+<span class="codeline" id="line-64"><code>		return nil, err</code></span>
+<span class="codeline" id="line-65"><code>	}</code></span>
+<span class="codeline" id="line-66"><code>	var tab []byte</code></span>
+<span class="codeline" id="line-67"><code>	rbNew := make([]byte, Getpagesize())</code></span>
+<span class="codeline" id="line-68"><code>done:</code></span>
+<span class="codeline" id="line-69"><code>	for {</code></span>
+<span class="codeline" id="line-70"><code>		rb := rbNew</code></span>
+<span class="codeline" id="line-71"><code>		nr, _, err := Recvfrom(s, rb, 0)</code></span>
+<span class="codeline" id="line-72"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-73"><code>			return nil, err</code></span>
+<span class="codeline" id="line-74"><code>		}</code></span>
+<span class="codeline" id="line-75"><code>		if nr &lt; NLMSG_HDRLEN {</code></span>
+<span class="codeline" id="line-76"><code>			return nil, EINVAL</code></span>
+<span class="codeline" id="line-77"><code>		}</code></span>
+<span class="codeline" id="line-78"><code>		rb = rb[:nr]</code></span>
+<span class="codeline" id="line-79"><code>		tab = append(tab, rb...)</code></span>
+<span class="codeline" id="line-80"><code>		msgs, err := ParseNetlinkMessage(rb)</code></span>
+<span class="codeline" id="line-81"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-82"><code>			return nil, err</code></span>
+<span class="codeline" id="line-83"><code>		}</code></span>
+<span class="codeline" id="line-84"><code>		for _, m := range msgs {</code></span>
+<span class="codeline" id="line-85"><code>			lsa, err := Getsockname(s)</code></span>
+<span class="codeline" id="line-86"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-87"><code>				return nil, err</code></span>
+<span class="codeline" id="line-88"><code>			}</code></span>
+<span class="codeline" id="line-89"><code>			switch v := lsa.(type) {</code></span>
+<span class="codeline" id="line-90"><code>			case *SockaddrNetlink:</code></span>
+<span class="codeline" id="line-91"><code>				if m.Header.Seq != 1 || m.Header.Pid != v.Pid {</code></span>
+<span class="codeline" id="line-92"><code>					return nil, EINVAL</code></span>
+<span class="codeline" id="line-93"><code>				}</code></span>
+<span class="codeline" id="line-94"><code>			default:</code></span>
+<span class="codeline" id="line-95"><code>				return nil, EINVAL</code></span>
+<span class="codeline" id="line-96"><code>			}</code></span>
+<span class="codeline" id="line-97"><code>			if m.Header.Type == NLMSG_DONE {</code></span>
+<span class="codeline" id="line-98"><code>				break done</code></span>
+<span class="codeline" id="line-99"><code>			}</code></span>
+<span class="codeline" id="line-100"><code>			if m.Header.Type == NLMSG_ERROR {</code></span>
+<span class="codeline" id="line-101"><code>				return nil, EINVAL</code></span>
+<span class="codeline" id="line-102"><code>			}</code></span>
+<span class="codeline" id="line-103"><code>		}</code></span>
+<span class="codeline" id="line-104"><code>	}</code></span>
+<span class="codeline" id="line-105"><code>	return tab, nil</code></span>
+<span class="codeline" id="line-106"><code>}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>// NetlinkMessage represents a netlink message.</code></span>
+<span class="codeline" id="line-109"><code>type NetlinkMessage struct {</code></span>
+<span class="codeline" id="line-110"><code>	Header NlMsghdr</code></span>
+<span class="codeline" id="line-111"><code>	Data   []byte</code></span>
+<span class="codeline" id="line-112"><code>}</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>// ParseNetlinkMessage parses b as an array of netlink messages and</code></span>
+<span class="codeline" id="line-115"><code>// returns the slice containing the NetlinkMessage structures.</code></span>
+<span class="codeline" id="line-116"><code>func ParseNetlinkMessage(b []byte) ([]NetlinkMessage, error) {</code></span>
+<span class="codeline" id="line-117"><code>	var msgs []NetlinkMessage</code></span>
+<span class="codeline" id="line-118"><code>	for len(b) &gt;= NLMSG_HDRLEN {</code></span>
+<span class="codeline" id="line-119"><code>		h, dbuf, dlen, err := netlinkMessageHeaderAndData(b)</code></span>
+<span class="codeline" id="line-120"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-121"><code>			return nil, err</code></span>
+<span class="codeline" id="line-122"><code>		}</code></span>
+<span class="codeline" id="line-123"><code>		m := NetlinkMessage{Header: *h, Data: dbuf[:int(h.Len)-NLMSG_HDRLEN]}</code></span>
+<span class="codeline" id="line-124"><code>		msgs = append(msgs, m)</code></span>
+<span class="codeline" id="line-125"><code>		b = b[dlen:]</code></span>
+<span class="codeline" id="line-126"><code>	}</code></span>
+<span class="codeline" id="line-127"><code>	return msgs, nil</code></span>
+<span class="codeline" id="line-128"><code>}</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>func netlinkMessageHeaderAndData(b []byte) (*NlMsghdr, []byte, int, error) {</code></span>
+<span class="codeline" id="line-131"><code>	h := (*NlMsghdr)(unsafe.Pointer(&amp;b[0]))</code></span>
+<span class="codeline" id="line-132"><code>	l := nlmAlignOf(int(h.Len))</code></span>
+<span class="codeline" id="line-133"><code>	if int(h.Len) &lt; NLMSG_HDRLEN || l &gt; len(b) {</code></span>
+<span class="codeline" id="line-134"><code>		return nil, nil, 0, EINVAL</code></span>
+<span class="codeline" id="line-135"><code>	}</code></span>
+<span class="codeline" id="line-136"><code>	return h, b[NLMSG_HDRLEN:], l, nil</code></span>
+<span class="codeline" id="line-137"><code>}</code></span>
+<span class="codeline" id="line-138"><code></code></span>
+<span class="codeline" id="line-139"><code>// NetlinkRouteAttr represents a netlink route attribute.</code></span>
+<span class="codeline" id="line-140"><code>type NetlinkRouteAttr struct {</code></span>
+<span class="codeline" id="line-141"><code>	Attr  RtAttr</code></span>
+<span class="codeline" id="line-142"><code>	Value []byte</code></span>
+<span class="codeline" id="line-143"><code>}</code></span>
+<span class="codeline" id="line-144"><code></code></span>
+<span class="codeline" id="line-145"><code>// ParseNetlinkRouteAttr parses m's payload as an array of netlink</code></span>
+<span class="codeline" id="line-146"><code>// route attributes and returns the slice containing the</code></span>
+<span class="codeline" id="line-147"><code>// NetlinkRouteAttr structures.</code></span>
+<span class="codeline" id="line-148"><code>func ParseNetlinkRouteAttr(m *NetlinkMessage) ([]NetlinkRouteAttr, error) {</code></span>
+<span class="codeline" id="line-149"><code>	var b []byte</code></span>
+<span class="codeline" id="line-150"><code>	switch m.Header.Type {</code></span>
+<span class="codeline" id="line-151"><code>	case RTM_NEWLINK, RTM_DELLINK:</code></span>
+<span class="codeline" id="line-152"><code>		b = m.Data[SizeofIfInfomsg:]</code></span>
+<span class="codeline" id="line-153"><code>	case RTM_NEWADDR, RTM_DELADDR:</code></span>
+<span class="codeline" id="line-154"><code>		b = m.Data[SizeofIfAddrmsg:]</code></span>
+<span class="codeline" id="line-155"><code>	case RTM_NEWROUTE, RTM_DELROUTE:</code></span>
+<span class="codeline" id="line-156"><code>		b = m.Data[SizeofRtMsg:]</code></span>
+<span class="codeline" id="line-157"><code>	default:</code></span>
+<span class="codeline" id="line-158"><code>		return nil, EINVAL</code></span>
+<span class="codeline" id="line-159"><code>	}</code></span>
+<span class="codeline" id="line-160"><code>	var attrs []NetlinkRouteAttr</code></span>
+<span class="codeline" id="line-161"><code>	for len(b) &gt;= SizeofRtAttr {</code></span>
+<span class="codeline" id="line-162"><code>		a, vbuf, alen, err := netlinkRouteAttrAndValue(b)</code></span>
+<span class="codeline" id="line-163"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-164"><code>			return nil, err</code></span>
+<span class="codeline" id="line-165"><code>		}</code></span>
+<span class="codeline" id="line-166"><code>		ra := NetlinkRouteAttr{Attr: *a, Value: vbuf[:int(a.Len)-SizeofRtAttr]}</code></span>
+<span class="codeline" id="line-167"><code>		attrs = append(attrs, ra)</code></span>
+<span class="codeline" id="line-168"><code>		b = b[alen:]</code></span>
+<span class="codeline" id="line-169"><code>	}</code></span>
+<span class="codeline" id="line-170"><code>	return attrs, nil</code></span>
+<span class="codeline" id="line-171"><code>}</code></span>
+<span class="codeline" id="line-172"><code></code></span>
+<span class="codeline" id="line-173"><code>func netlinkRouteAttrAndValue(b []byte) (*RtAttr, []byte, int, error) {</code></span>
+<span class="codeline" id="line-174"><code>	a := (*RtAttr)(unsafe.Pointer(&amp;b[0]))</code></span>
+<span class="codeline" id="line-175"><code>	if int(a.Len) &lt; SizeofRtAttr || int(a.Len) &gt; len(b) {</code></span>
+<span class="codeline" id="line-176"><code>		return nil, nil, 0, EINVAL</code></span>
+<span class="codeline" id="line-177"><code>	}</code></span>
+<span class="codeline" id="line-178"><code>	return a, b[SizeofRtAttr:], rtaAlignOf(int(a.Len)), nil</code></span>
+<span class="codeline" id="line-179"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: tanh.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	tanh.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// The original C code, the long comment, and the constants</code></span>
+<span class="codeline" id="line-8"><code>// below were from http://netlib.sandia.gov/cephes/cmath/sin.c,</code></span>
+<span class="codeline" id="line-9"><code>// available from http://www.netlib.org/cephes/cmath.tgz.</code></span>
+<span class="codeline" id="line-10"><code>// The go code is a simplified version of the original C.</code></span>
+<span class="codeline" id="line-11"><code>//      tanh.c</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>//      Hyperbolic tangent</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// SYNOPSIS:</code></span>
+<span class="codeline" id="line-16"><code>//</code></span>
+<span class="codeline" id="line-17"><code>// double x, y, tanh();</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// y = tanh( x );</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// DESCRIPTION:</code></span>
+<span class="codeline" id="line-22"><code>//</code></span>
+<span class="codeline" id="line-23"><code>// Returns hyperbolic tangent of argument in the range MINLOG to MAXLOG.</code></span>
+<span class="codeline" id="line-24"><code>//      MAXLOG = 8.8029691931113054295988e+01 = log(2**127)</code></span>
+<span class="codeline" id="line-25"><code>//      MINLOG = -8.872283911167299960540e+01 = log(2**-128)</code></span>
+<span class="codeline" id="line-26"><code>//</code></span>
+<span class="codeline" id="line-27"><code>// A rational function is used for |x| &lt; 0.625.  The form</code></span>
+<span class="codeline" id="line-28"><code>// x + x**3 P(x)/Q(x) of Cody &amp; Waite is employed.</code></span>
+<span class="codeline" id="line-29"><code>// Otherwise,</code></span>
+<span class="codeline" id="line-30"><code>//      tanh(x) = sinh(x)/cosh(x) = 1  -  2/(exp(2x) + 1).</code></span>
+<span class="codeline" id="line-31"><code>//</code></span>
+<span class="codeline" id="line-32"><code>// ACCURACY:</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>//                      Relative error:</code></span>
+<span class="codeline" id="line-35"><code>// arithmetic   domain     # trials      peak         rms</code></span>
+<span class="codeline" id="line-36"><code>//    IEEE      -2,2        30000       2.5e-16     5.8e-17</code></span>
+<span class="codeline" id="line-37"><code>//</code></span>
+<span class="codeline" id="line-38"><code>// Cephes Math Library Release 2.8:  June, 2000</code></span>
+<span class="codeline" id="line-39"><code>// Copyright 1984, 1987, 1989, 1992, 2000 by Stephen L. Moshier</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>// The readme file at http://netlib.sandia.gov/cephes/ says:</code></span>
+<span class="codeline" id="line-42"><code>//    Some software in this archive may be from the book _Methods and</code></span>
+<span class="codeline" id="line-43"><code>// Programs for Mathematical Functions_ (Prentice-Hall or Simon &amp; Schuster</code></span>
+<span class="codeline" id="line-44"><code>// International, 1989) or from the Cephes Mathematical Library, a</code></span>
+<span class="codeline" id="line-45"><code>// commercial product. In either event, it is copyrighted by the author.</code></span>
+<span class="codeline" id="line-46"><code>// What you see here may be used freely but it comes with no support or</code></span>
+<span class="codeline" id="line-47"><code>// guarantee.</code></span>
+<span class="codeline" id="line-48"><code>//</code></span>
+<span class="codeline" id="line-49"><code>//   The two known misprints in the book are repaired here in the</code></span>
+<span class="codeline" id="line-50"><code>// source listings for the gamma function and the incomplete beta</code></span>
+<span class="codeline" id="line-51"><code>// integral.</code></span>
+<span class="codeline" id="line-52"><code>//</code></span>
+<span class="codeline" id="line-53"><code>//   Stephen L. Moshier</code></span>
+<span class="codeline" id="line-54"><code>//   moshier@na-net.ornl.gov</code></span>
+<span class="codeline" id="line-55"><code>//</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>var tanhP = [...]float64{</code></span>
+<span class="codeline" id="line-58"><code>	-9.64399179425052238628e-1,</code></span>
+<span class="codeline" id="line-59"><code>	-9.92877231001918586564e1,</code></span>
+<span class="codeline" id="line-60"><code>	-1.61468768441708447952e3,</code></span>
+<span class="codeline" id="line-61"><code>}</code></span>
+<span class="codeline" id="line-62"><code>var tanhQ = [...]float64{</code></span>
+<span class="codeline" id="line-63"><code>	1.12811678491632931402e2,</code></span>
+<span class="codeline" id="line-64"><code>	2.23548839060100448583e3,</code></span>
+<span class="codeline" id="line-65"><code>	4.84406305325125486048e3,</code></span>
+<span class="codeline" id="line-66"><code>}</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>// Tanh returns the hyperbolic tangent of x.</code></span>
+<span class="codeline" id="line-69"><code>//</code></span>
+<span class="codeline" id="line-70"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-71"><code>//	Tanh(±0) = ±0</code></span>
+<span class="codeline" id="line-72"><code>//	Tanh(±Inf) = ±1</code></span>
+<span class="codeline" id="line-73"><code>//	Tanh(NaN) = NaN</code></span>
+<span class="codeline" id="line-74"><code>func Tanh(x float64) float64</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>func tanh(x float64) float64 {</code></span>
+<span class="codeline" id="line-77"><code>	const MAXLOG = 8.8029691931113054295988e+01 // log(2**127)</code></span>
+<span class="codeline" id="line-78"><code>	z := Abs(x)</code></span>
+<span class="codeline" id="line-79"><code>	switch {</code></span>
+<span class="codeline" id="line-80"><code>	case z &gt; 0.5*MAXLOG:</code></span>
+<span class="codeline" id="line-81"><code>		if x &lt; 0 {</code></span>
+<span class="codeline" id="line-82"><code>			return -1</code></span>
+<span class="codeline" id="line-83"><code>		}</code></span>
+<span class="codeline" id="line-84"><code>		return 1</code></span>
+<span class="codeline" id="line-85"><code>	case z &gt;= 0.625:</code></span>
+<span class="codeline" id="line-86"><code>		s := Exp(2 * z)</code></span>
+<span class="codeline" id="line-87"><code>		z = 1 - 2/(s+1)</code></span>
+<span class="codeline" id="line-88"><code>		if x &lt; 0 {</code></span>
+<span class="codeline" id="line-89"><code>			z = -z</code></span>
+<span class="codeline" id="line-90"><code>		}</code></span>
+<span class="codeline" id="line-91"><code>	default:</code></span>
+<span class="codeline" id="line-92"><code>		if x == 0 {</code></span>
+<span class="codeline" id="line-93"><code>			return x</code></span>
+<span class="codeline" id="line-94"><code>		}</code></span>
+<span class="codeline" id="line-95"><code>		s := x * x</code></span>
+<span class="codeline" id="line-96"><code>		z = x + x*s*((tanhP[0]*s+tanhP[1])*s+tanhP[2])/(((s+tanhQ[0])*s+tanhQ[1])*s+tanhQ[2])</code></span>
+<span class="codeline" id="line-97"><code>	}</code></span>
+<span class="codeline" id="line-98"><code>	return z</code></span>
+<span class="codeline" id="line-99"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

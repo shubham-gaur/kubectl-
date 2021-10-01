@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: net.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	net.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package syscall</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// A RawConn is a raw network connection.</code></span>
+<span class="codeline" id="line-8"><code>type RawConn interface {</code></span>
+<span class="codeline" id="line-9"><code>	// Control invokes f on the underlying connection's file</code></span>
+<span class="codeline" id="line-10"><code>	// descriptor or handle.</code></span>
+<span class="codeline" id="line-11"><code>	// The file descriptor fd is guaranteed to remain valid while</code></span>
+<span class="codeline" id="line-12"><code>	// f executes but not after f returns.</code></span>
+<span class="codeline" id="line-13"><code>	Control(f func(fd uintptr)) error</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>	// Read invokes f on the underlying connection's file</code></span>
+<span class="codeline" id="line-16"><code>	// descriptor or handle; f is expected to try to read from the</code></span>
+<span class="codeline" id="line-17"><code>	// file descriptor.</code></span>
+<span class="codeline" id="line-18"><code>	// If f returns true, Read returns. Otherwise Read blocks</code></span>
+<span class="codeline" id="line-19"><code>	// waiting for the connection to be ready for reading and</code></span>
+<span class="codeline" id="line-20"><code>	// tries again repeatedly.</code></span>
+<span class="codeline" id="line-21"><code>	// The file descriptor is guaranteed to remain valid while f</code></span>
+<span class="codeline" id="line-22"><code>	// executes but not after f returns.</code></span>
+<span class="codeline" id="line-23"><code>	Read(f func(fd uintptr) (done bool)) error</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>	// Write is like Read but for writing.</code></span>
+<span class="codeline" id="line-26"><code>	Write(f func(fd uintptr) (done bool)) error</code></span>
+<span class="codeline" id="line-27"><code>}</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>// Conn is implemented by some types in the net and os packages to provide</code></span>
+<span class="codeline" id="line-30"><code>// access to the underlying file descriptor or handle.</code></span>
+<span class="codeline" id="line-31"><code>type Conn interface {</code></span>
+<span class="codeline" id="line-32"><code>	// SyscallConn returns a raw network connection.</code></span>
+<span class="codeline" id="line-33"><code>	SyscallConn() (RawConn, error)</code></span>
+<span class="codeline" id="line-34"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

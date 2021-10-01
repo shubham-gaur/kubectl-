@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: atob.go in package strconv</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	atob.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/strconv.html">strconv</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package strconv</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// ParseBool returns the boolean value represented by the string.</code></span>
+<span class="codeline" id="line-8"><code>// It accepts 1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False.</code></span>
+<span class="codeline" id="line-9"><code>// Any other value returns an error.</code></span>
+<span class="codeline" id="line-10"><code>func ParseBool(str string) (bool, error) {</code></span>
+<span class="codeline" id="line-11"><code>	switch str {</code></span>
+<span class="codeline" id="line-12"><code>	case "1", "t", "T", "true", "TRUE", "True":</code></span>
+<span class="codeline" id="line-13"><code>		return true, nil</code></span>
+<span class="codeline" id="line-14"><code>	case "0", "f", "F", "false", "FALSE", "False":</code></span>
+<span class="codeline" id="line-15"><code>		return false, nil</code></span>
+<span class="codeline" id="line-16"><code>	}</code></span>
+<span class="codeline" id="line-17"><code>	return false, syntaxError("ParseBool", str)</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// FormatBool returns "true" or "false" according to the value of b.</code></span>
+<span class="codeline" id="line-21"><code>func FormatBool(b bool) string {</code></span>
+<span class="codeline" id="line-22"><code>	if b {</code></span>
+<span class="codeline" id="line-23"><code>		return "true"</code></span>
+<span class="codeline" id="line-24"><code>	}</code></span>
+<span class="codeline" id="line-25"><code>	return "false"</code></span>
+<span class="codeline" id="line-26"><code>}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>// AppendBool appends "true" or "false", according to the value of b,</code></span>
+<span class="codeline" id="line-29"><code>// to dst and returns the extended buffer.</code></span>
+<span class="codeline" id="line-30"><code>func AppendBool(dst []byte, b bool) []byte {</code></span>
+<span class="codeline" id="line-31"><code>	if b {</code></span>
+<span class="codeline" id="line-32"><code>		return append(dst, "true"...)</code></span>
+<span class="codeline" id="line-33"><code>	}</code></span>
+<span class="codeline" id="line-34"><code>	return append(dst, "false"...)</code></span>
+<span class="codeline" id="line-35"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

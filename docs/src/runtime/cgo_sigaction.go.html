@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: cgo_sigaction.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	cgo_sigaction.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2016 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Support for memory sanitizer. See runtime/cgo/sigaction.go.</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// +build linux,amd64 freebsd,amd64 linux,arm64</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>package runtime</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// _cgo_sigaction is filled in by runtime/cgo when it is linked into the</code></span>
+<span class="codeline" id="line-14"><code>// program, so it is only non-nil when using cgo.</code></span>
+<span class="codeline" id="line-15"><code>//go:linkname _cgo_sigaction _cgo_sigaction</code></span>
+<span class="codeline" id="line-16"><code>var _cgo_sigaction unsafe.Pointer</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-19"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-20"><code>func sigaction(sig uint32, new, old *sigactiont) {</code></span>
+<span class="codeline" id="line-21"><code>	// racewalk.go avoids adding sanitizing instrumentation to package runtime,</code></span>
+<span class="codeline" id="line-22"><code>	// but we might be calling into instrumented C functions here,</code></span>
+<span class="codeline" id="line-23"><code>	// so we need the pointer parameters to be properly marked.</code></span>
+<span class="codeline" id="line-24"><code>	//</code></span>
+<span class="codeline" id="line-25"><code>	// Mark the input as having been written before the call</code></span>
+<span class="codeline" id="line-26"><code>	// and the output as read after.</code></span>
+<span class="codeline" id="line-27"><code>	if msanenabled &amp;&amp; new != nil {</code></span>
+<span class="codeline" id="line-28"><code>		msanwrite(unsafe.Pointer(new), unsafe.Sizeof(*new))</code></span>
+<span class="codeline" id="line-29"><code>	}</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>	if _cgo_sigaction == nil || inForkedChild {</code></span>
+<span class="codeline" id="line-32"><code>		sysSigaction(sig, new, old)</code></span>
+<span class="codeline" id="line-33"><code>	} else {</code></span>
+<span class="codeline" id="line-34"><code>		// We need to call _cgo_sigaction, which means we need a big enough stack</code></span>
+<span class="codeline" id="line-35"><code>		// for C.  To complicate matters, we may be in libpreinit (before the</code></span>
+<span class="codeline" id="line-36"><code>		// runtime has been initialized) or in an asynchronous signal handler (with</code></span>
+<span class="codeline" id="line-37"><code>		// the current thread in transition between goroutines, or with the g0</code></span>
+<span class="codeline" id="line-38"><code>		// system stack already in use).</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>		var ret int32</code></span>
+<span class="codeline" id="line-41"><code></code></span>
+<span class="codeline" id="line-42"><code>		var g *g</code></span>
+<span class="codeline" id="line-43"><code>		if mainStarted {</code></span>
+<span class="codeline" id="line-44"><code>			g = getg()</code></span>
+<span class="codeline" id="line-45"><code>		}</code></span>
+<span class="codeline" id="line-46"><code>		sp := uintptr(unsafe.Pointer(&amp;sig))</code></span>
+<span class="codeline" id="line-47"><code>		switch {</code></span>
+<span class="codeline" id="line-48"><code>		case g == nil:</code></span>
+<span class="codeline" id="line-49"><code>			// No g: we're on a C stack or a signal stack.</code></span>
+<span class="codeline" id="line-50"><code>			ret = callCgoSigaction(uintptr(sig), new, old)</code></span>
+<span class="codeline" id="line-51"><code>		case sp &lt; g.stack.lo || sp &gt;= g.stack.hi:</code></span>
+<span class="codeline" id="line-52"><code>			// We're no longer on g's stack, so we must be handling a signal.  It's</code></span>
+<span class="codeline" id="line-53"><code>			// possible that we interrupted the thread during a transition between g</code></span>
+<span class="codeline" id="line-54"><code>			// and g0, so we should stay on the current stack to avoid corrupting g0.</code></span>
+<span class="codeline" id="line-55"><code>			ret = callCgoSigaction(uintptr(sig), new, old)</code></span>
+<span class="codeline" id="line-56"><code>		default:</code></span>
+<span class="codeline" id="line-57"><code>			// We're running on g's stack, so either we're not in a signal handler or</code></span>
+<span class="codeline" id="line-58"><code>			// the signal handler has set the correct g.  If we're on gsignal or g0,</code></span>
+<span class="codeline" id="line-59"><code>			// systemstack will make the call directly; otherwise, it will switch to</code></span>
+<span class="codeline" id="line-60"><code>			// g0 to ensure we have enough room to call a libc function.</code></span>
+<span class="codeline" id="line-61"><code>			//</code></span>
+<span class="codeline" id="line-62"><code>			// The function literal that we pass to systemstack is not nosplit, but</code></span>
+<span class="codeline" id="line-63"><code>			// that's ok: we'll be running on a fresh, clean system stack so the stack</code></span>
+<span class="codeline" id="line-64"><code>			// check will always succeed anyway.</code></span>
+<span class="codeline" id="line-65"><code>			systemstack(func() {</code></span>
+<span class="codeline" id="line-66"><code>				ret = callCgoSigaction(uintptr(sig), new, old)</code></span>
+<span class="codeline" id="line-67"><code>			})</code></span>
+<span class="codeline" id="line-68"><code>		}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>		const EINVAL = 22</code></span>
+<span class="codeline" id="line-71"><code>		if ret == EINVAL {</code></span>
+<span class="codeline" id="line-72"><code>			// libc reserves certain signals — normally 32-33 — for pthreads, and</code></span>
+<span class="codeline" id="line-73"><code>			// returns EINVAL for sigaction calls on those signals.  If we get EINVAL,</code></span>
+<span class="codeline" id="line-74"><code>			// fall back to making the syscall directly.</code></span>
+<span class="codeline" id="line-75"><code>			sysSigaction(sig, new, old)</code></span>
+<span class="codeline" id="line-76"><code>		}</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>	if msanenabled &amp;&amp; old != nil {</code></span>
+<span class="codeline" id="line-80"><code>		msanread(unsafe.Pointer(old), unsafe.Sizeof(*old))</code></span>
+<span class="codeline" id="line-81"><code>	}</code></span>
+<span class="codeline" id="line-82"><code>}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>// callCgoSigaction calls the sigaction function in the runtime/cgo package</code></span>
+<span class="codeline" id="line-85"><code>// using the GCC calling convention. It is implemented in assembly.</code></span>
+<span class="codeline" id="line-86"><code>//go:noescape</code></span>
+<span class="codeline" id="line-87"><code>func callCgoSigaction(sig uintptr, new, old *sigactiont) int32</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

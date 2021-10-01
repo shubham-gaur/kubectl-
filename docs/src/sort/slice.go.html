@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: slice.go in package sort</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	slice.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/sort.html">sort</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package sort</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Slice sorts the slice x given the provided less function.</code></span>
+<span class="codeline" id="line-8"><code>// It panics if x is not a slice.</code></span>
+<span class="codeline" id="line-9"><code>//</code></span>
+<span class="codeline" id="line-10"><code>// The sort is not guaranteed to be stable: equal elements</code></span>
+<span class="codeline" id="line-11"><code>// may be reversed from their original order.</code></span>
+<span class="codeline" id="line-12"><code>// For a stable sort, use SliceStable.</code></span>
+<span class="codeline" id="line-13"><code>//</code></span>
+<span class="codeline" id="line-14"><code>// The less function must satisfy the same requirements as</code></span>
+<span class="codeline" id="line-15"><code>// the Interface type's Less method.</code></span>
+<span class="codeline" id="line-16"><code>func Slice(x interface{}, less func(i, j int) bool) {</code></span>
+<span class="codeline" id="line-17"><code>	rv := reflectValueOf(x)</code></span>
+<span class="codeline" id="line-18"><code>	swap := reflectSwapper(x)</code></span>
+<span class="codeline" id="line-19"><code>	length := rv.Len()</code></span>
+<span class="codeline" id="line-20"><code>	quickSort_func(lessSwap{less, swap}, 0, length, maxDepth(length))</code></span>
+<span class="codeline" id="line-21"><code>}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>// SliceStable sorts the slice x using the provided less</code></span>
+<span class="codeline" id="line-24"><code>// function, keeping equal elements in their original order.</code></span>
+<span class="codeline" id="line-25"><code>// It panics if x is not a slice.</code></span>
+<span class="codeline" id="line-26"><code>//</code></span>
+<span class="codeline" id="line-27"><code>// The less function must satisfy the same requirements as</code></span>
+<span class="codeline" id="line-28"><code>// the Interface type's Less method.</code></span>
+<span class="codeline" id="line-29"><code>func SliceStable(x interface{}, less func(i, j int) bool) {</code></span>
+<span class="codeline" id="line-30"><code>	rv := reflectValueOf(x)</code></span>
+<span class="codeline" id="line-31"><code>	swap := reflectSwapper(x)</code></span>
+<span class="codeline" id="line-32"><code>	stable_func(lessSwap{less, swap}, rv.Len())</code></span>
+<span class="codeline" id="line-33"><code>}</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>// SliceIsSorted reports whether the slice x is sorted according to the provided less function.</code></span>
+<span class="codeline" id="line-36"><code>// It panics if x is not a slice.</code></span>
+<span class="codeline" id="line-37"><code>func SliceIsSorted(x interface{}, less func(i, j int) bool) bool {</code></span>
+<span class="codeline" id="line-38"><code>	rv := reflectValueOf(x)</code></span>
+<span class="codeline" id="line-39"><code>	n := rv.Len()</code></span>
+<span class="codeline" id="line-40"><code>	for i := n - 1; i &gt; 0; i-- {</code></span>
+<span class="codeline" id="line-41"><code>		if less(i, i-1) {</code></span>
+<span class="codeline" id="line-42"><code>			return false</code></span>
+<span class="codeline" id="line-43"><code>		}</code></span>
+<span class="codeline" id="line-44"><code>	}</code></span>
+<span class="codeline" id="line-45"><code>	return true</code></span>
+<span class="codeline" id="line-46"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

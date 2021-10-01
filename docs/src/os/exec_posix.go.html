@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: exec_posix.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	exec_posix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd js,wasm linux netbsd openbsd solaris windows</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package os</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"internal/syscall/execenv"</code></span>
+<span class="codeline" id="line-11"><code>	"runtime"</code></span>
+<span class="codeline" id="line-12"><code>	"syscall"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// The only signal values guaranteed to be present in the os package on all</code></span>
+<span class="codeline" id="line-16"><code>// systems are os.Interrupt (send the process an interrupt) and os.Kill (force</code></span>
+<span class="codeline" id="line-17"><code>// the process to exit). On Windows, sending os.Interrupt to a process with</code></span>
+<span class="codeline" id="line-18"><code>// os.Process.Signal is not implemented; it will return an error instead of</code></span>
+<span class="codeline" id="line-19"><code>// sending a signal.</code></span>
+<span class="codeline" id="line-20"><code>var (</code></span>
+<span class="codeline" id="line-21"><code>	Interrupt Signal = syscall.SIGINT</code></span>
+<span class="codeline" id="line-22"><code>	Kill      Signal = syscall.SIGKILL</code></span>
+<span class="codeline" id="line-23"><code>)</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>func startProcess(name string, argv []string, attr *ProcAttr) (p *Process, err error) {</code></span>
+<span class="codeline" id="line-26"><code>	// If there is no SysProcAttr (ie. no Chroot or changed</code></span>
+<span class="codeline" id="line-27"><code>	// UID/GID), double-check existence of the directory we want</code></span>
+<span class="codeline" id="line-28"><code>	// to chdir into. We can make the error clearer this way.</code></span>
+<span class="codeline" id="line-29"><code>	if attr != nil &amp;&amp; attr.Sys == nil &amp;&amp; attr.Dir != "" {</code></span>
+<span class="codeline" id="line-30"><code>		if _, err := Stat(attr.Dir); err != nil {</code></span>
+<span class="codeline" id="line-31"><code>			pe := err.(*PathError)</code></span>
+<span class="codeline" id="line-32"><code>			pe.Op = "chdir"</code></span>
+<span class="codeline" id="line-33"><code>			return nil, pe</code></span>
+<span class="codeline" id="line-34"><code>		}</code></span>
+<span class="codeline" id="line-35"><code>	}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>	sysattr := &amp;syscall.ProcAttr{</code></span>
+<span class="codeline" id="line-38"><code>		Dir: attr.Dir,</code></span>
+<span class="codeline" id="line-39"><code>		Env: attr.Env,</code></span>
+<span class="codeline" id="line-40"><code>		Sys: attr.Sys,</code></span>
+<span class="codeline" id="line-41"><code>	}</code></span>
+<span class="codeline" id="line-42"><code>	if sysattr.Env == nil {</code></span>
+<span class="codeline" id="line-43"><code>		sysattr.Env, err = execenv.Default(sysattr.Sys)</code></span>
+<span class="codeline" id="line-44"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-45"><code>			return nil, err</code></span>
+<span class="codeline" id="line-46"><code>		}</code></span>
+<span class="codeline" id="line-47"><code>	}</code></span>
+<span class="codeline" id="line-48"><code>	sysattr.Files = make([]uintptr, 0, len(attr.Files))</code></span>
+<span class="codeline" id="line-49"><code>	for _, f := range attr.Files {</code></span>
+<span class="codeline" id="line-50"><code>		sysattr.Files = append(sysattr.Files, f.Fd())</code></span>
+<span class="codeline" id="line-51"><code>	}</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>	pid, h, e := syscall.StartProcess(name, argv, sysattr)</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>	// Make sure we don't run the finalizers of attr.Files.</code></span>
+<span class="codeline" id="line-56"><code>	runtime.KeepAlive(attr)</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-59"><code>		return nil, &amp;PathError{Op: "fork/exec", Path: name, Err: e}</code></span>
+<span class="codeline" id="line-60"><code>	}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>	return newProcess(pid, h), nil</code></span>
+<span class="codeline" id="line-63"><code>}</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>func (p *Process) kill() error {</code></span>
+<span class="codeline" id="line-66"><code>	return p.Signal(Kill)</code></span>
+<span class="codeline" id="line-67"><code>}</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>// ProcessState stores information about a process, as reported by Wait.</code></span>
+<span class="codeline" id="line-70"><code>type ProcessState struct {</code></span>
+<span class="codeline" id="line-71"><code>	pid    int                // The process's id.</code></span>
+<span class="codeline" id="line-72"><code>	status syscall.WaitStatus // System-dependent status info.</code></span>
+<span class="codeline" id="line-73"><code>	rusage *syscall.Rusage</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>// Pid returns the process id of the exited process.</code></span>
+<span class="codeline" id="line-77"><code>func (p *ProcessState) Pid() int {</code></span>
+<span class="codeline" id="line-78"><code>	return p.pid</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+<span class="codeline" id="line-80"><code></code></span>
+<span class="codeline" id="line-81"><code>func (p *ProcessState) exited() bool {</code></span>
+<span class="codeline" id="line-82"><code>	return p.status.Exited()</code></span>
+<span class="codeline" id="line-83"><code>}</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>func (p *ProcessState) success() bool {</code></span>
+<span class="codeline" id="line-86"><code>	return p.status.ExitStatus() == 0</code></span>
+<span class="codeline" id="line-87"><code>}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>func (p *ProcessState) sys() interface{} {</code></span>
+<span class="codeline" id="line-90"><code>	return p.status</code></span>
+<span class="codeline" id="line-91"><code>}</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>func (p *ProcessState) sysUsage() interface{} {</code></span>
+<span class="codeline" id="line-94"><code>	return p.rusage</code></span>
+<span class="codeline" id="line-95"><code>}</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>func (p *ProcessState) String() string {</code></span>
+<span class="codeline" id="line-98"><code>	if p == nil {</code></span>
+<span class="codeline" id="line-99"><code>		return "&lt;nil&gt;"</code></span>
+<span class="codeline" id="line-100"><code>	}</code></span>
+<span class="codeline" id="line-101"><code>	status := p.Sys().(syscall.WaitStatus)</code></span>
+<span class="codeline" id="line-102"><code>	res := ""</code></span>
+<span class="codeline" id="line-103"><code>	switch {</code></span>
+<span class="codeline" id="line-104"><code>	case status.Exited():</code></span>
+<span class="codeline" id="line-105"><code>		res = "exit status " + itoa(status.ExitStatus())</code></span>
+<span class="codeline" id="line-106"><code>	case status.Signaled():</code></span>
+<span class="codeline" id="line-107"><code>		res = "signal: " + status.Signal().String()</code></span>
+<span class="codeline" id="line-108"><code>	case status.Stopped():</code></span>
+<span class="codeline" id="line-109"><code>		res = "stop signal: " + status.StopSignal().String()</code></span>
+<span class="codeline" id="line-110"><code>		if status.StopSignal() == syscall.SIGTRAP &amp;&amp; status.TrapCause() != 0 {</code></span>
+<span class="codeline" id="line-111"><code>			res += " (trap " + itoa(status.TrapCause()) + ")"</code></span>
+<span class="codeline" id="line-112"><code>		}</code></span>
+<span class="codeline" id="line-113"><code>	case status.Continued():</code></span>
+<span class="codeline" id="line-114"><code>		res = "continued"</code></span>
+<span class="codeline" id="line-115"><code>	}</code></span>
+<span class="codeline" id="line-116"><code>	if status.CoreDump() {</code></span>
+<span class="codeline" id="line-117"><code>		res += " (core dumped)"</code></span>
+<span class="codeline" id="line-118"><code>	}</code></span>
+<span class="codeline" id="line-119"><code>	return res</code></span>
+<span class="codeline" id="line-120"><code>}</code></span>
+<span class="codeline" id="line-121"><code></code></span>
+<span class="codeline" id="line-122"><code>// ExitCode returns the exit code of the exited process, or -1</code></span>
+<span class="codeline" id="line-123"><code>// if the process hasn't exited or was terminated by a signal.</code></span>
+<span class="codeline" id="line-124"><code>func (p *ProcessState) ExitCode() int {</code></span>
+<span class="codeline" id="line-125"><code>	// return -1 if the process hasn't started.</code></span>
+<span class="codeline" id="line-126"><code>	if p == nil {</code></span>
+<span class="codeline" id="line-127"><code>		return -1</code></span>
+<span class="codeline" id="line-128"><code>	}</code></span>
+<span class="codeline" id="line-129"><code>	return p.status.ExitStatus()</code></span>
+<span class="codeline" id="line-130"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

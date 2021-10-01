@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: checkptr.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	checkptr.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2019 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>func checkptrAlignment(p unsafe.Pointer, elem *_type, n uintptr) {</code></span>
+<span class="codeline" id="line-10"><code>	// Check that (*[n]elem)(p) is appropriately aligned.</code></span>
+<span class="codeline" id="line-11"><code>	// Note that we allow unaligned pointers if the types they point to contain</code></span>
+<span class="codeline" id="line-12"><code>	// no pointers themselves. See issue 37298.</code></span>
+<span class="codeline" id="line-13"><code>	// TODO(mdempsky): What about fieldAlign?</code></span>
+<span class="codeline" id="line-14"><code>	if elem.ptrdata != 0 &amp;&amp; uintptr(p)&amp;(uintptr(elem.align)-1) != 0 {</code></span>
+<span class="codeline" id="line-15"><code>		throw("checkptr: misaligned pointer conversion")</code></span>
+<span class="codeline" id="line-16"><code>	}</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>	// Check that (*[n]elem)(p) doesn't straddle multiple heap objects.</code></span>
+<span class="codeline" id="line-19"><code>	if size := n * elem.size; size &gt; 1 &amp;&amp; checkptrBase(p) != checkptrBase(add(p, size-1)) {</code></span>
+<span class="codeline" id="line-20"><code>		throw("checkptr: converted pointer straddles multiple allocations")</code></span>
+<span class="codeline" id="line-21"><code>	}</code></span>
+<span class="codeline" id="line-22"><code>}</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>func checkptrArithmetic(p unsafe.Pointer, originals []unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-25"><code>	if 0 &lt; uintptr(p) &amp;&amp; uintptr(p) &lt; minLegalPointer {</code></span>
+<span class="codeline" id="line-26"><code>		throw("checkptr: pointer arithmetic computed bad pointer value")</code></span>
+<span class="codeline" id="line-27"><code>	}</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>	// Check that if the computed pointer p points into a heap</code></span>
+<span class="codeline" id="line-30"><code>	// object, then one of the original pointers must have pointed</code></span>
+<span class="codeline" id="line-31"><code>	// into the same object.</code></span>
+<span class="codeline" id="line-32"><code>	base := checkptrBase(p)</code></span>
+<span class="codeline" id="line-33"><code>	if base == 0 {</code></span>
+<span class="codeline" id="line-34"><code>		return</code></span>
+<span class="codeline" id="line-35"><code>	}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>	for _, original := range originals {</code></span>
+<span class="codeline" id="line-38"><code>		if base == checkptrBase(original) {</code></span>
+<span class="codeline" id="line-39"><code>			return</code></span>
+<span class="codeline" id="line-40"><code>		}</code></span>
+<span class="codeline" id="line-41"><code>	}</code></span>
+<span class="codeline" id="line-42"><code></code></span>
+<span class="codeline" id="line-43"><code>	throw("checkptr: pointer arithmetic result points to invalid allocation")</code></span>
+<span class="codeline" id="line-44"><code>}</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>// checkptrBase returns the base address for the allocation containing</code></span>
+<span class="codeline" id="line-47"><code>// the address p.</code></span>
+<span class="codeline" id="line-48"><code>//</code></span>
+<span class="codeline" id="line-49"><code>// Importantly, if p1 and p2 point into the same variable, then</code></span>
+<span class="codeline" id="line-50"><code>// checkptrBase(p1) == checkptrBase(p2). However, the converse/inverse</code></span>
+<span class="codeline" id="line-51"><code>// is not necessarily true as allocations can have trailing padding,</code></span>
+<span class="codeline" id="line-52"><code>// and multiple variables may be packed into a single allocation.</code></span>
+<span class="codeline" id="line-53"><code>func checkptrBase(p unsafe.Pointer) uintptr {</code></span>
+<span class="codeline" id="line-54"><code>	// stack</code></span>
+<span class="codeline" id="line-55"><code>	if gp := getg(); gp.stack.lo &lt;= uintptr(p) &amp;&amp; uintptr(p) &lt; gp.stack.hi {</code></span>
+<span class="codeline" id="line-56"><code>		// TODO(mdempsky): Walk the stack to identify the</code></span>
+<span class="codeline" id="line-57"><code>		// specific stack frame or even stack object that p</code></span>
+<span class="codeline" id="line-58"><code>		// points into.</code></span>
+<span class="codeline" id="line-59"><code>		//</code></span>
+<span class="codeline" id="line-60"><code>		// In the mean time, use "1" as a pseudo-address to</code></span>
+<span class="codeline" id="line-61"><code>		// represent the stack. This is an invalid address on</code></span>
+<span class="codeline" id="line-62"><code>		// all platforms, so it's guaranteed to be distinct</code></span>
+<span class="codeline" id="line-63"><code>		// from any of the addresses we might return below.</code></span>
+<span class="codeline" id="line-64"><code>		return 1</code></span>
+<span class="codeline" id="line-65"><code>	}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>	// heap (must check after stack because of #35068)</code></span>
+<span class="codeline" id="line-68"><code>	if base, _, _ := findObject(uintptr(p), 0, 0); base != 0 {</code></span>
+<span class="codeline" id="line-69"><code>		return base</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code></code></span>
+<span class="codeline" id="line-72"><code>	// data or bss</code></span>
+<span class="codeline" id="line-73"><code>	for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-74"><code>		if datap.data &lt;= uintptr(p) &amp;&amp; uintptr(p) &lt; datap.edata {</code></span>
+<span class="codeline" id="line-75"><code>			return datap.data</code></span>
+<span class="codeline" id="line-76"><code>		}</code></span>
+<span class="codeline" id="line-77"><code>		if datap.bss &lt;= uintptr(p) &amp;&amp; uintptr(p) &lt; datap.ebss {</code></span>
+<span class="codeline" id="line-78"><code>			return datap.bss</code></span>
+<span class="codeline" id="line-79"><code>		}</code></span>
+<span class="codeline" id="line-80"><code>	}</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>	return 0</code></span>
+<span class="codeline" id="line-83"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

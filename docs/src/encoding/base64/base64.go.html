@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: base64.go in package encoding/base64</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	base64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/encoding/base64.html">encoding/base64</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package base64 implements base64 encoding as specified by RFC 4648.</code></span></div><span class="codeline" id="line-6"><code>package base64</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>import (</code></span>
+<span class="codeline" id="line-9"><code>	"encoding/binary"</code></span>
+<span class="codeline" id="line-10"><code>	"io"</code></span>
+<span class="codeline" id="line-11"><code>	"strconv"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>/*</code></span>
+<span class="codeline" id="line-15"><code> * Encodings</code></span>
+<span class="codeline" id="line-16"><code> */</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>// An Encoding is a radix 64 encoding/decoding scheme, defined by a</code></span>
+<span class="codeline" id="line-19"><code>// 64-character alphabet. The most common encoding is the "base64"</code></span>
+<span class="codeline" id="line-20"><code>// encoding defined in RFC 4648 and used in MIME (RFC 2045) and PEM</code></span>
+<span class="codeline" id="line-21"><code>// (RFC 1421).  RFC 4648 also defines an alternate encoding, which is</code></span>
+<span class="codeline" id="line-22"><code>// the standard encoding with - and _ substituted for + and /.</code></span>
+<span class="codeline" id="line-23"><code>type Encoding struct {</code></span>
+<span class="codeline" id="line-24"><code>	encode    [64]byte</code></span>
+<span class="codeline" id="line-25"><code>	decodeMap [256]byte</code></span>
+<span class="codeline" id="line-26"><code>	padChar   rune</code></span>
+<span class="codeline" id="line-27"><code>	strict    bool</code></span>
+<span class="codeline" id="line-28"><code>}</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>const (</code></span>
+<span class="codeline" id="line-31"><code>	StdPadding rune = '=' // Standard padding character</code></span>
+<span class="codeline" id="line-32"><code>	NoPadding  rune = -1  // No padding</code></span>
+<span class="codeline" id="line-33"><code>)</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>const encodeStd = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"</code></span>
+<span class="codeline" id="line-36"><code>const encodeURL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>// NewEncoding returns a new padded Encoding defined by the given alphabet,</code></span>
+<span class="codeline" id="line-39"><code>// which must be a 64-byte string that does not contain the padding character</code></span>
+<span class="codeline" id="line-40"><code>// or CR / LF ('\r', '\n').</code></span>
+<span class="codeline" id="line-41"><code>// The resulting Encoding uses the default padding character ('='),</code></span>
+<span class="codeline" id="line-42"><code>// which may be changed or disabled via WithPadding.</code></span>
+<span class="codeline" id="line-43"><code>func NewEncoding(encoder string) *Encoding {</code></span>
+<span class="codeline" id="line-44"><code>	if len(encoder) != 64 {</code></span>
+<span class="codeline" id="line-45"><code>		panic("encoding alphabet is not 64-bytes long")</code></span>
+<span class="codeline" id="line-46"><code>	}</code></span>
+<span class="codeline" id="line-47"><code>	for i := 0; i &lt; len(encoder); i++ {</code></span>
+<span class="codeline" id="line-48"><code>		if encoder[i] == '\n' || encoder[i] == '\r' {</code></span>
+<span class="codeline" id="line-49"><code>			panic("encoding alphabet contains newline character")</code></span>
+<span class="codeline" id="line-50"><code>		}</code></span>
+<span class="codeline" id="line-51"><code>	}</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>	e := new(Encoding)</code></span>
+<span class="codeline" id="line-54"><code>	e.padChar = StdPadding</code></span>
+<span class="codeline" id="line-55"><code>	copy(e.encode[:], encoder)</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>	for i := 0; i &lt; len(e.decodeMap); i++ {</code></span>
+<span class="codeline" id="line-58"><code>		e.decodeMap[i] = 0xFF</code></span>
+<span class="codeline" id="line-59"><code>	}</code></span>
+<span class="codeline" id="line-60"><code>	for i := 0; i &lt; len(encoder); i++ {</code></span>
+<span class="codeline" id="line-61"><code>		e.decodeMap[encoder[i]] = byte(i)</code></span>
+<span class="codeline" id="line-62"><code>	}</code></span>
+<span class="codeline" id="line-63"><code>	return e</code></span>
+<span class="codeline" id="line-64"><code>}</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>// WithPadding creates a new encoding identical to enc except</code></span>
+<span class="codeline" id="line-67"><code>// with a specified padding character, or NoPadding to disable padding.</code></span>
+<span class="codeline" id="line-68"><code>// The padding character must not be '\r' or '\n', must not</code></span>
+<span class="codeline" id="line-69"><code>// be contained in the encoding's alphabet and must be a rune equal or</code></span>
+<span class="codeline" id="line-70"><code>// below '\xff'.</code></span>
+<span class="codeline" id="line-71"><code>func (enc Encoding) WithPadding(padding rune) *Encoding {</code></span>
+<span class="codeline" id="line-72"><code>	if padding == '\r' || padding == '\n' || padding &gt; 0xff {</code></span>
+<span class="codeline" id="line-73"><code>		panic("invalid padding")</code></span>
+<span class="codeline" id="line-74"><code>	}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>	for i := 0; i &lt; len(enc.encode); i++ {</code></span>
+<span class="codeline" id="line-77"><code>		if rune(enc.encode[i]) == padding {</code></span>
+<span class="codeline" id="line-78"><code>			panic("padding contained in alphabet")</code></span>
+<span class="codeline" id="line-79"><code>		}</code></span>
+<span class="codeline" id="line-80"><code>	}</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>	enc.padChar = padding</code></span>
+<span class="codeline" id="line-83"><code>	return &amp;enc</code></span>
+<span class="codeline" id="line-84"><code>}</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>// Strict creates a new encoding identical to enc except with</code></span>
+<span class="codeline" id="line-87"><code>// strict decoding enabled. In this mode, the decoder requires that</code></span>
+<span class="codeline" id="line-88"><code>// trailing padding bits are zero, as described in RFC 4648 section 3.5.</code></span>
+<span class="codeline" id="line-89"><code>//</code></span>
+<span class="codeline" id="line-90"><code>// Note that the input is still malleable, as new line characters</code></span>
+<span class="codeline" id="line-91"><code>// (CR and LF) are still ignored.</code></span>
+<span class="codeline" id="line-92"><code>func (enc Encoding) Strict() *Encoding {</code></span>
+<span class="codeline" id="line-93"><code>	enc.strict = true</code></span>
+<span class="codeline" id="line-94"><code>	return &amp;enc</code></span>
+<span class="codeline" id="line-95"><code>}</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>// StdEncoding is the standard base64 encoding, as defined in</code></span>
+<span class="codeline" id="line-98"><code>// RFC 4648.</code></span>
+<span class="codeline" id="line-99"><code>var StdEncoding = NewEncoding(encodeStd)</code></span>
+<span class="codeline" id="line-100"><code></code></span>
+<span class="codeline" id="line-101"><code>// URLEncoding is the alternate base64 encoding defined in RFC 4648.</code></span>
+<span class="codeline" id="line-102"><code>// It is typically used in URLs and file names.</code></span>
+<span class="codeline" id="line-103"><code>var URLEncoding = NewEncoding(encodeURL)</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>// RawStdEncoding is the standard raw, unpadded base64 encoding,</code></span>
+<span class="codeline" id="line-106"><code>// as defined in RFC 4648 section 3.2.</code></span>
+<span class="codeline" id="line-107"><code>// This is the same as StdEncoding but omits padding characters.</code></span>
+<span class="codeline" id="line-108"><code>var RawStdEncoding = StdEncoding.WithPadding(NoPadding)</code></span>
+<span class="codeline" id="line-109"><code></code></span>
+<span class="codeline" id="line-110"><code>// RawURLEncoding is the unpadded alternate base64 encoding defined in RFC 4648.</code></span>
+<span class="codeline" id="line-111"><code>// It is typically used in URLs and file names.</code></span>
+<span class="codeline" id="line-112"><code>// This is the same as URLEncoding but omits padding characters.</code></span>
+<span class="codeline" id="line-113"><code>var RawURLEncoding = URLEncoding.WithPadding(NoPadding)</code></span>
+<span class="codeline" id="line-114"><code></code></span>
+<span class="codeline" id="line-115"><code>/*</code></span>
+<span class="codeline" id="line-116"><code> * Encoder</code></span>
+<span class="codeline" id="line-117"><code> */</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>// Encode encodes src using the encoding enc, writing</code></span>
+<span class="codeline" id="line-120"><code>// EncodedLen(len(src)) bytes to dst.</code></span>
+<span class="codeline" id="line-121"><code>//</code></span>
+<span class="codeline" id="line-122"><code>// The encoding pads the output to a multiple of 4 bytes,</code></span>
+<span class="codeline" id="line-123"><code>// so Encode is not appropriate for use on individual blocks</code></span>
+<span class="codeline" id="line-124"><code>// of a large data stream. Use NewEncoder() instead.</code></span>
+<span class="codeline" id="line-125"><code>func (enc *Encoding) Encode(dst, src []byte) {</code></span>
+<span class="codeline" id="line-126"><code>	if len(src) == 0 {</code></span>
+<span class="codeline" id="line-127"><code>		return</code></span>
+<span class="codeline" id="line-128"><code>	}</code></span>
+<span class="codeline" id="line-129"><code>	// enc is a pointer receiver, so the use of enc.encode within the hot</code></span>
+<span class="codeline" id="line-130"><code>	// loop below means a nil check at every operation. Lift that nil check</code></span>
+<span class="codeline" id="line-131"><code>	// outside of the loop to speed up the encoder.</code></span>
+<span class="codeline" id="line-132"><code>	_ = enc.encode</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>	di, si := 0, 0</code></span>
+<span class="codeline" id="line-135"><code>	n := (len(src) / 3) * 3</code></span>
+<span class="codeline" id="line-136"><code>	for si &lt; n {</code></span>
+<span class="codeline" id="line-137"><code>		// Convert 3x 8bit source bytes into 4 bytes</code></span>
+<span class="codeline" id="line-138"><code>		val := uint(src[si+0])&lt;&lt;16 | uint(src[si+1])&lt;&lt;8 | uint(src[si+2])</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>		dst[di+0] = enc.encode[val&gt;&gt;18&amp;0x3F]</code></span>
+<span class="codeline" id="line-141"><code>		dst[di+1] = enc.encode[val&gt;&gt;12&amp;0x3F]</code></span>
+<span class="codeline" id="line-142"><code>		dst[di+2] = enc.encode[val&gt;&gt;6&amp;0x3F]</code></span>
+<span class="codeline" id="line-143"><code>		dst[di+3] = enc.encode[val&amp;0x3F]</code></span>
+<span class="codeline" id="line-144"><code></code></span>
+<span class="codeline" id="line-145"><code>		si += 3</code></span>
+<span class="codeline" id="line-146"><code>		di += 4</code></span>
+<span class="codeline" id="line-147"><code>	}</code></span>
+<span class="codeline" id="line-148"><code></code></span>
+<span class="codeline" id="line-149"><code>	remain := len(src) - si</code></span>
+<span class="codeline" id="line-150"><code>	if remain == 0 {</code></span>
+<span class="codeline" id="line-151"><code>		return</code></span>
+<span class="codeline" id="line-152"><code>	}</code></span>
+<span class="codeline" id="line-153"><code>	// Add the remaining small block</code></span>
+<span class="codeline" id="line-154"><code>	val := uint(src[si+0]) &lt;&lt; 16</code></span>
+<span class="codeline" id="line-155"><code>	if remain == 2 {</code></span>
+<span class="codeline" id="line-156"><code>		val |= uint(src[si+1]) &lt;&lt; 8</code></span>
+<span class="codeline" id="line-157"><code>	}</code></span>
+<span class="codeline" id="line-158"><code></code></span>
+<span class="codeline" id="line-159"><code>	dst[di+0] = enc.encode[val&gt;&gt;18&amp;0x3F]</code></span>
+<span class="codeline" id="line-160"><code>	dst[di+1] = enc.encode[val&gt;&gt;12&amp;0x3F]</code></span>
+<span class="codeline" id="line-161"><code></code></span>
+<span class="codeline" id="line-162"><code>	switch remain {</code></span>
+<span class="codeline" id="line-163"><code>	case 2:</code></span>
+<span class="codeline" id="line-164"><code>		dst[di+2] = enc.encode[val&gt;&gt;6&amp;0x3F]</code></span>
+<span class="codeline" id="line-165"><code>		if enc.padChar != NoPadding {</code></span>
+<span class="codeline" id="line-166"><code>			dst[di+3] = byte(enc.padChar)</code></span>
+<span class="codeline" id="line-167"><code>		}</code></span>
+<span class="codeline" id="line-168"><code>	case 1:</code></span>
+<span class="codeline" id="line-169"><code>		if enc.padChar != NoPadding {</code></span>
+<span class="codeline" id="line-170"><code>			dst[di+2] = byte(enc.padChar)</code></span>
+<span class="codeline" id="line-171"><code>			dst[di+3] = byte(enc.padChar)</code></span>
+<span class="codeline" id="line-172"><code>		}</code></span>
+<span class="codeline" id="line-173"><code>	}</code></span>
+<span class="codeline" id="line-174"><code>}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>// EncodeToString returns the base64 encoding of src.</code></span>
+<span class="codeline" id="line-177"><code>func (enc *Encoding) EncodeToString(src []byte) string {</code></span>
+<span class="codeline" id="line-178"><code>	buf := make([]byte, enc.EncodedLen(len(src)))</code></span>
+<span class="codeline" id="line-179"><code>	enc.Encode(buf, src)</code></span>
+<span class="codeline" id="line-180"><code>	return string(buf)</code></span>
+<span class="codeline" id="line-181"><code>}</code></span>
+<span class="codeline" id="line-182"><code></code></span>
+<span class="codeline" id="line-183"><code>type encoder struct {</code></span>
+<span class="codeline" id="line-184"><code>	err  error</code></span>
+<span class="codeline" id="line-185"><code>	enc  *Encoding</code></span>
+<span class="codeline" id="line-186"><code>	w    io.Writer</code></span>
+<span class="codeline" id="line-187"><code>	buf  [3]byte    // buffered data waiting to be encoded</code></span>
+<span class="codeline" id="line-188"><code>	nbuf int        // number of bytes in buf</code></span>
+<span class="codeline" id="line-189"><code>	out  [1024]byte // output buffer</code></span>
+<span class="codeline" id="line-190"><code>}</code></span>
+<span class="codeline" id="line-191"><code></code></span>
+<span class="codeline" id="line-192"><code>func (e *encoder) Write(p []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-193"><code>	if e.err != nil {</code></span>
+<span class="codeline" id="line-194"><code>		return 0, e.err</code></span>
+<span class="codeline" id="line-195"><code>	}</code></span>
+<span class="codeline" id="line-196"><code></code></span>
+<span class="codeline" id="line-197"><code>	// Leading fringe.</code></span>
+<span class="codeline" id="line-198"><code>	if e.nbuf &gt; 0 {</code></span>
+<span class="codeline" id="line-199"><code>		var i int</code></span>
+<span class="codeline" id="line-200"><code>		for i = 0; i &lt; len(p) &amp;&amp; e.nbuf &lt; 3; i++ {</code></span>
+<span class="codeline" id="line-201"><code>			e.buf[e.nbuf] = p[i]</code></span>
+<span class="codeline" id="line-202"><code>			e.nbuf++</code></span>
+<span class="codeline" id="line-203"><code>		}</code></span>
+<span class="codeline" id="line-204"><code>		n += i</code></span>
+<span class="codeline" id="line-205"><code>		p = p[i:]</code></span>
+<span class="codeline" id="line-206"><code>		if e.nbuf &lt; 3 {</code></span>
+<span class="codeline" id="line-207"><code>			return</code></span>
+<span class="codeline" id="line-208"><code>		}</code></span>
+<span class="codeline" id="line-209"><code>		e.enc.Encode(e.out[:], e.buf[:])</code></span>
+<span class="codeline" id="line-210"><code>		if _, e.err = e.w.Write(e.out[:4]); e.err != nil {</code></span>
+<span class="codeline" id="line-211"><code>			return n, e.err</code></span>
+<span class="codeline" id="line-212"><code>		}</code></span>
+<span class="codeline" id="line-213"><code>		e.nbuf = 0</code></span>
+<span class="codeline" id="line-214"><code>	}</code></span>
+<span class="codeline" id="line-215"><code></code></span>
+<span class="codeline" id="line-216"><code>	// Large interior chunks.</code></span>
+<span class="codeline" id="line-217"><code>	for len(p) &gt;= 3 {</code></span>
+<span class="codeline" id="line-218"><code>		nn := len(e.out) / 4 * 3</code></span>
+<span class="codeline" id="line-219"><code>		if nn &gt; len(p) {</code></span>
+<span class="codeline" id="line-220"><code>			nn = len(p)</code></span>
+<span class="codeline" id="line-221"><code>			nn -= nn % 3</code></span>
+<span class="codeline" id="line-222"><code>		}</code></span>
+<span class="codeline" id="line-223"><code>		e.enc.Encode(e.out[:], p[:nn])</code></span>
+<span class="codeline" id="line-224"><code>		if _, e.err = e.w.Write(e.out[0 : nn/3*4]); e.err != nil {</code></span>
+<span class="codeline" id="line-225"><code>			return n, e.err</code></span>
+<span class="codeline" id="line-226"><code>		}</code></span>
+<span class="codeline" id="line-227"><code>		n += nn</code></span>
+<span class="codeline" id="line-228"><code>		p = p[nn:]</code></span>
+<span class="codeline" id="line-229"><code>	}</code></span>
+<span class="codeline" id="line-230"><code></code></span>
+<span class="codeline" id="line-231"><code>	// Trailing fringe.</code></span>
+<span class="codeline" id="line-232"><code>	for i := 0; i &lt; len(p); i++ {</code></span>
+<span class="codeline" id="line-233"><code>		e.buf[i] = p[i]</code></span>
+<span class="codeline" id="line-234"><code>	}</code></span>
+<span class="codeline" id="line-235"><code>	e.nbuf = len(p)</code></span>
+<span class="codeline" id="line-236"><code>	n += len(p)</code></span>
+<span class="codeline" id="line-237"><code>	return</code></span>
+<span class="codeline" id="line-238"><code>}</code></span>
+<span class="codeline" id="line-239"><code></code></span>
+<span class="codeline" id="line-240"><code>// Close flushes any pending output from the encoder.</code></span>
+<span class="codeline" id="line-241"><code>// It is an error to call Write after calling Close.</code></span>
+<span class="codeline" id="line-242"><code>func (e *encoder) Close() error {</code></span>
+<span class="codeline" id="line-243"><code>	// If there's anything left in the buffer, flush it out</code></span>
+<span class="codeline" id="line-244"><code>	if e.err == nil &amp;&amp; e.nbuf &gt; 0 {</code></span>
+<span class="codeline" id="line-245"><code>		e.enc.Encode(e.out[:], e.buf[:e.nbuf])</code></span>
+<span class="codeline" id="line-246"><code>		_, e.err = e.w.Write(e.out[:e.enc.EncodedLen(e.nbuf)])</code></span>
+<span class="codeline" id="line-247"><code>		e.nbuf = 0</code></span>
+<span class="codeline" id="line-248"><code>	}</code></span>
+<span class="codeline" id="line-249"><code>	return e.err</code></span>
+<span class="codeline" id="line-250"><code>}</code></span>
+<span class="codeline" id="line-251"><code></code></span>
+<span class="codeline" id="line-252"><code>// NewEncoder returns a new base64 stream encoder. Data written to</code></span>
+<span class="codeline" id="line-253"><code>// the returned writer will be encoded using enc and then written to w.</code></span>
+<span class="codeline" id="line-254"><code>// Base64 encodings operate in 4-byte blocks; when finished</code></span>
+<span class="codeline" id="line-255"><code>// writing, the caller must Close the returned encoder to flush any</code></span>
+<span class="codeline" id="line-256"><code>// partially written blocks.</code></span>
+<span class="codeline" id="line-257"><code>func NewEncoder(enc *Encoding, w io.Writer) io.WriteCloser {</code></span>
+<span class="codeline" id="line-258"><code>	return &amp;encoder{enc: enc, w: w}</code></span>
+<span class="codeline" id="line-259"><code>}</code></span>
+<span class="codeline" id="line-260"><code></code></span>
+<span class="codeline" id="line-261"><code>// EncodedLen returns the length in bytes of the base64 encoding</code></span>
+<span class="codeline" id="line-262"><code>// of an input buffer of length n.</code></span>
+<span class="codeline" id="line-263"><code>func (enc *Encoding) EncodedLen(n int) int {</code></span>
+<span class="codeline" id="line-264"><code>	if enc.padChar == NoPadding {</code></span>
+<span class="codeline" id="line-265"><code>		return (n*8 + 5) / 6 // minimum # chars at 6 bits per char</code></span>
+<span class="codeline" id="line-266"><code>	}</code></span>
+<span class="codeline" id="line-267"><code>	return (n + 2) / 3 * 4 // minimum # 4-char quanta, 3 bytes each</code></span>
+<span class="codeline" id="line-268"><code>}</code></span>
+<span class="codeline" id="line-269"><code></code></span>
+<span class="codeline" id="line-270"><code>/*</code></span>
+<span class="codeline" id="line-271"><code> * Decoder</code></span>
+<span class="codeline" id="line-272"><code> */</code></span>
+<span class="codeline" id="line-273"><code></code></span>
+<span class="codeline" id="line-274"><code>type CorruptInputError int64</code></span>
+<span class="codeline" id="line-275"><code></code></span>
+<span class="codeline" id="line-276"><code>func (e CorruptInputError) Error() string {</code></span>
+<span class="codeline" id="line-277"><code>	return "illegal base64 data at input byte " + strconv.FormatInt(int64(e), 10)</code></span>
+<span class="codeline" id="line-278"><code>}</code></span>
+<span class="codeline" id="line-279"><code></code></span>
+<span class="codeline" id="line-280"><code>// decodeQuantum decodes up to 4 base64 bytes. The received parameters are</code></span>
+<span class="codeline" id="line-281"><code>// the destination buffer dst, the source buffer src and an index in the</code></span>
+<span class="codeline" id="line-282"><code>// source buffer si.</code></span>
+<span class="codeline" id="line-283"><code>// It returns the number of bytes read from src, the number of bytes written</code></span>
+<span class="codeline" id="line-284"><code>// to dst, and an error, if any.</code></span>
+<span class="codeline" id="line-285"><code>func (enc *Encoding) decodeQuantum(dst, src []byte, si int) (nsi, n int, err error) {</code></span>
+<span class="codeline" id="line-286"><code>	// Decode quantum using the base64 alphabet</code></span>
+<span class="codeline" id="line-287"><code>	var dbuf [4]byte</code></span>
+<span class="codeline" id="line-288"><code>	dlen := 4</code></span>
+<span class="codeline" id="line-289"><code></code></span>
+<span class="codeline" id="line-290"><code>	// Lift the nil check outside of the loop.</code></span>
+<span class="codeline" id="line-291"><code>	_ = enc.decodeMap</code></span>
+<span class="codeline" id="line-292"><code></code></span>
+<span class="codeline" id="line-293"><code>	for j := 0; j &lt; len(dbuf); j++ {</code></span>
+<span class="codeline" id="line-294"><code>		if len(src) == si {</code></span>
+<span class="codeline" id="line-295"><code>			switch {</code></span>
+<span class="codeline" id="line-296"><code>			case j == 0:</code></span>
+<span class="codeline" id="line-297"><code>				return si, 0, nil</code></span>
+<span class="codeline" id="line-298"><code>			case j == 1, enc.padChar != NoPadding:</code></span>
+<span class="codeline" id="line-299"><code>				return si, 0, CorruptInputError(si - j)</code></span>
+<span class="codeline" id="line-300"><code>			}</code></span>
+<span class="codeline" id="line-301"><code>			dlen = j</code></span>
+<span class="codeline" id="line-302"><code>			break</code></span>
+<span class="codeline" id="line-303"><code>		}</code></span>
+<span class="codeline" id="line-304"><code>		in := src[si]</code></span>
+<span class="codeline" id="line-305"><code>		si++</code></span>
+<span class="codeline" id="line-306"><code></code></span>
+<span class="codeline" id="line-307"><code>		out := enc.decodeMap[in]</code></span>
+<span class="codeline" id="line-308"><code>		if out != 0xff {</code></span>
+<span class="codeline" id="line-309"><code>			dbuf[j] = out</code></span>
+<span class="codeline" id="line-310"><code>			continue</code></span>
+<span class="codeline" id="line-311"><code>		}</code></span>
+<span class="codeline" id="line-312"><code></code></span>
+<span class="codeline" id="line-313"><code>		if in == '\n' || in == '\r' {</code></span>
+<span class="codeline" id="line-314"><code>			j--</code></span>
+<span class="codeline" id="line-315"><code>			continue</code></span>
+<span class="codeline" id="line-316"><code>		}</code></span>
+<span class="codeline" id="line-317"><code></code></span>
+<span class="codeline" id="line-318"><code>		if rune(in) != enc.padChar {</code></span>
+<span class="codeline" id="line-319"><code>			return si, 0, CorruptInputError(si - 1)</code></span>
+<span class="codeline" id="line-320"><code>		}</code></span>
+<span class="codeline" id="line-321"><code></code></span>
+<span class="codeline" id="line-322"><code>		// We've reached the end and there's padding</code></span>
+<span class="codeline" id="line-323"><code>		switch j {</code></span>
+<span class="codeline" id="line-324"><code>		case 0, 1:</code></span>
+<span class="codeline" id="line-325"><code>			// incorrect padding</code></span>
+<span class="codeline" id="line-326"><code>			return si, 0, CorruptInputError(si - 1)</code></span>
+<span class="codeline" id="line-327"><code>		case 2:</code></span>
+<span class="codeline" id="line-328"><code>			// "==" is expected, the first "=" is already consumed.</code></span>
+<span class="codeline" id="line-329"><code>			// skip over newlines</code></span>
+<span class="codeline" id="line-330"><code>			for si &lt; len(src) &amp;&amp; (src[si] == '\n' || src[si] == '\r') {</code></span>
+<span class="codeline" id="line-331"><code>				si++</code></span>
+<span class="codeline" id="line-332"><code>			}</code></span>
+<span class="codeline" id="line-333"><code>			if si == len(src) {</code></span>
+<span class="codeline" id="line-334"><code>				// not enough padding</code></span>
+<span class="codeline" id="line-335"><code>				return si, 0, CorruptInputError(len(src))</code></span>
+<span class="codeline" id="line-336"><code>			}</code></span>
+<span class="codeline" id="line-337"><code>			if rune(src[si]) != enc.padChar {</code></span>
+<span class="codeline" id="line-338"><code>				// incorrect padding</code></span>
+<span class="codeline" id="line-339"><code>				return si, 0, CorruptInputError(si - 1)</code></span>
+<span class="codeline" id="line-340"><code>			}</code></span>
+<span class="codeline" id="line-341"><code></code></span>
+<span class="codeline" id="line-342"><code>			si++</code></span>
+<span class="codeline" id="line-343"><code>		}</code></span>
+<span class="codeline" id="line-344"><code></code></span>
+<span class="codeline" id="line-345"><code>		// skip over newlines</code></span>
+<span class="codeline" id="line-346"><code>		for si &lt; len(src) &amp;&amp; (src[si] == '\n' || src[si] == '\r') {</code></span>
+<span class="codeline" id="line-347"><code>			si++</code></span>
+<span class="codeline" id="line-348"><code>		}</code></span>
+<span class="codeline" id="line-349"><code>		if si &lt; len(src) {</code></span>
+<span class="codeline" id="line-350"><code>			// trailing garbage</code></span>
+<span class="codeline" id="line-351"><code>			err = CorruptInputError(si)</code></span>
+<span class="codeline" id="line-352"><code>		}</code></span>
+<span class="codeline" id="line-353"><code>		dlen = j</code></span>
+<span class="codeline" id="line-354"><code>		break</code></span>
+<span class="codeline" id="line-355"><code>	}</code></span>
+<span class="codeline" id="line-356"><code></code></span>
+<span class="codeline" id="line-357"><code>	// Convert 4x 6bit source bytes into 3 bytes</code></span>
+<span class="codeline" id="line-358"><code>	val := uint(dbuf[0])&lt;&lt;18 | uint(dbuf[1])&lt;&lt;12 | uint(dbuf[2])&lt;&lt;6 | uint(dbuf[3])</code></span>
+<span class="codeline" id="line-359"><code>	dbuf[2], dbuf[1], dbuf[0] = byte(val&gt;&gt;0), byte(val&gt;&gt;8), byte(val&gt;&gt;16)</code></span>
+<span class="codeline" id="line-360"><code>	switch dlen {</code></span>
+<span class="codeline" id="line-361"><code>	case 4:</code></span>
+<span class="codeline" id="line-362"><code>		dst[2] = dbuf[2]</code></span>
+<span class="codeline" id="line-363"><code>		dbuf[2] = 0</code></span>
+<span class="codeline" id="line-364"><code>		fallthrough</code></span>
+<span class="codeline" id="line-365"><code>	case 3:</code></span>
+<span class="codeline" id="line-366"><code>		dst[1] = dbuf[1]</code></span>
+<span class="codeline" id="line-367"><code>		if enc.strict &amp;&amp; dbuf[2] != 0 {</code></span>
+<span class="codeline" id="line-368"><code>			return si, 0, CorruptInputError(si - 1)</code></span>
+<span class="codeline" id="line-369"><code>		}</code></span>
+<span class="codeline" id="line-370"><code>		dbuf[1] = 0</code></span>
+<span class="codeline" id="line-371"><code>		fallthrough</code></span>
+<span class="codeline" id="line-372"><code>	case 2:</code></span>
+<span class="codeline" id="line-373"><code>		dst[0] = dbuf[0]</code></span>
+<span class="codeline" id="line-374"><code>		if enc.strict &amp;&amp; (dbuf[1] != 0 || dbuf[2] != 0) {</code></span>
+<span class="codeline" id="line-375"><code>			return si, 0, CorruptInputError(si - 2)</code></span>
+<span class="codeline" id="line-376"><code>		}</code></span>
+<span class="codeline" id="line-377"><code>	}</code></span>
+<span class="codeline" id="line-378"><code></code></span>
+<span class="codeline" id="line-379"><code>	return si, dlen - 1, err</code></span>
+<span class="codeline" id="line-380"><code>}</code></span>
+<span class="codeline" id="line-381"><code></code></span>
+<span class="codeline" id="line-382"><code>// DecodeString returns the bytes represented by the base64 string s.</code></span>
+<span class="codeline" id="line-383"><code>func (enc *Encoding) DecodeString(s string) ([]byte, error) {</code></span>
+<span class="codeline" id="line-384"><code>	dbuf := make([]byte, enc.DecodedLen(len(s)))</code></span>
+<span class="codeline" id="line-385"><code>	n, err := enc.Decode(dbuf, []byte(s))</code></span>
+<span class="codeline" id="line-386"><code>	return dbuf[:n], err</code></span>
+<span class="codeline" id="line-387"><code>}</code></span>
+<span class="codeline" id="line-388"><code></code></span>
+<span class="codeline" id="line-389"><code>type decoder struct {</code></span>
+<span class="codeline" id="line-390"><code>	err     error</code></span>
+<span class="codeline" id="line-391"><code>	readErr error // error from r.Read</code></span>
+<span class="codeline" id="line-392"><code>	enc     *Encoding</code></span>
+<span class="codeline" id="line-393"><code>	r       io.Reader</code></span>
+<span class="codeline" id="line-394"><code>	buf     [1024]byte // leftover input</code></span>
+<span class="codeline" id="line-395"><code>	nbuf    int</code></span>
+<span class="codeline" id="line-396"><code>	out     []byte // leftover decoded output</code></span>
+<span class="codeline" id="line-397"><code>	outbuf  [1024 / 4 * 3]byte</code></span>
+<span class="codeline" id="line-398"><code>}</code></span>
+<span class="codeline" id="line-399"><code></code></span>
+<span class="codeline" id="line-400"><code>func (d *decoder) Read(p []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-401"><code>	// Use leftover decoded output from last read.</code></span>
+<span class="codeline" id="line-402"><code>	if len(d.out) &gt; 0 {</code></span>
+<span class="codeline" id="line-403"><code>		n = copy(p, d.out)</code></span>
+<span class="codeline" id="line-404"><code>		d.out = d.out[n:]</code></span>
+<span class="codeline" id="line-405"><code>		return n, nil</code></span>
+<span class="codeline" id="line-406"><code>	}</code></span>
+<span class="codeline" id="line-407"><code></code></span>
+<span class="codeline" id="line-408"><code>	if d.err != nil {</code></span>
+<span class="codeline" id="line-409"><code>		return 0, d.err</code></span>
+<span class="codeline" id="line-410"><code>	}</code></span>
+<span class="codeline" id="line-411"><code></code></span>
+<span class="codeline" id="line-412"><code>	// This code assumes that d.r strips supported whitespace ('\r' and '\n').</code></span>
+<span class="codeline" id="line-413"><code></code></span>
+<span class="codeline" id="line-414"><code>	// Refill buffer.</code></span>
+<span class="codeline" id="line-415"><code>	for d.nbuf &lt; 4 &amp;&amp; d.readErr == nil {</code></span>
+<span class="codeline" id="line-416"><code>		nn := len(p) / 3 * 4</code></span>
+<span class="codeline" id="line-417"><code>		if nn &lt; 4 {</code></span>
+<span class="codeline" id="line-418"><code>			nn = 4</code></span>
+<span class="codeline" id="line-419"><code>		}</code></span>
+<span class="codeline" id="line-420"><code>		if nn &gt; len(d.buf) {</code></span>
+<span class="codeline" id="line-421"><code>			nn = len(d.buf)</code></span>
+<span class="codeline" id="line-422"><code>		}</code></span>
+<span class="codeline" id="line-423"><code>		nn, d.readErr = d.r.Read(d.buf[d.nbuf:nn])</code></span>
+<span class="codeline" id="line-424"><code>		d.nbuf += nn</code></span>
+<span class="codeline" id="line-425"><code>	}</code></span>
+<span class="codeline" id="line-426"><code></code></span>
+<span class="codeline" id="line-427"><code>	if d.nbuf &lt; 4 {</code></span>
+<span class="codeline" id="line-428"><code>		if d.enc.padChar == NoPadding &amp;&amp; d.nbuf &gt; 0 {</code></span>
+<span class="codeline" id="line-429"><code>			// Decode final fragment, without padding.</code></span>
+<span class="codeline" id="line-430"><code>			var nw int</code></span>
+<span class="codeline" id="line-431"><code>			nw, d.err = d.enc.Decode(d.outbuf[:], d.buf[:d.nbuf])</code></span>
+<span class="codeline" id="line-432"><code>			d.nbuf = 0</code></span>
+<span class="codeline" id="line-433"><code>			d.out = d.outbuf[:nw]</code></span>
+<span class="codeline" id="line-434"><code>			n = copy(p, d.out)</code></span>
+<span class="codeline" id="line-435"><code>			d.out = d.out[n:]</code></span>
+<span class="codeline" id="line-436"><code>			if n &gt; 0 || len(p) == 0 &amp;&amp; len(d.out) &gt; 0 {</code></span>
+<span class="codeline" id="line-437"><code>				return n, nil</code></span>
+<span class="codeline" id="line-438"><code>			}</code></span>
+<span class="codeline" id="line-439"><code>			if d.err != nil {</code></span>
+<span class="codeline" id="line-440"><code>				return 0, d.err</code></span>
+<span class="codeline" id="line-441"><code>			}</code></span>
+<span class="codeline" id="line-442"><code>		}</code></span>
+<span class="codeline" id="line-443"><code>		d.err = d.readErr</code></span>
+<span class="codeline" id="line-444"><code>		if d.err == io.EOF &amp;&amp; d.nbuf &gt; 0 {</code></span>
+<span class="codeline" id="line-445"><code>			d.err = io.ErrUnexpectedEOF</code></span>
+<span class="codeline" id="line-446"><code>		}</code></span>
+<span class="codeline" id="line-447"><code>		return 0, d.err</code></span>
+<span class="codeline" id="line-448"><code>	}</code></span>
+<span class="codeline" id="line-449"><code></code></span>
+<span class="codeline" id="line-450"><code>	// Decode chunk into p, or d.out and then p if p is too small.</code></span>
+<span class="codeline" id="line-451"><code>	nr := d.nbuf / 4 * 4</code></span>
+<span class="codeline" id="line-452"><code>	nw := d.nbuf / 4 * 3</code></span>
+<span class="codeline" id="line-453"><code>	if nw &gt; len(p) {</code></span>
+<span class="codeline" id="line-454"><code>		nw, d.err = d.enc.Decode(d.outbuf[:], d.buf[:nr])</code></span>
+<span class="codeline" id="line-455"><code>		d.out = d.outbuf[:nw]</code></span>
+<span class="codeline" id="line-456"><code>		n = copy(p, d.out)</code></span>
+<span class="codeline" id="line-457"><code>		d.out = d.out[n:]</code></span>
+<span class="codeline" id="line-458"><code>	} else {</code></span>
+<span class="codeline" id="line-459"><code>		n, d.err = d.enc.Decode(p, d.buf[:nr])</code></span>
+<span class="codeline" id="line-460"><code>	}</code></span>
+<span class="codeline" id="line-461"><code>	d.nbuf -= nr</code></span>
+<span class="codeline" id="line-462"><code>	copy(d.buf[:d.nbuf], d.buf[nr:])</code></span>
+<span class="codeline" id="line-463"><code>	return n, d.err</code></span>
+<span class="codeline" id="line-464"><code>}</code></span>
+<span class="codeline" id="line-465"><code></code></span>
+<span class="codeline" id="line-466"><code>// Decode decodes src using the encoding enc. It writes at most</code></span>
+<span class="codeline" id="line-467"><code>// DecodedLen(len(src)) bytes to dst and returns the number of bytes</code></span>
+<span class="codeline" id="line-468"><code>// written. If src contains invalid base64 data, it will return the</code></span>
+<span class="codeline" id="line-469"><code>// number of bytes successfully written and CorruptInputError.</code></span>
+<span class="codeline" id="line-470"><code>// New line characters (\r and \n) are ignored.</code></span>
+<span class="codeline" id="line-471"><code>func (enc *Encoding) Decode(dst, src []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-472"><code>	if len(src) == 0 {</code></span>
+<span class="codeline" id="line-473"><code>		return 0, nil</code></span>
+<span class="codeline" id="line-474"><code>	}</code></span>
+<span class="codeline" id="line-475"><code></code></span>
+<span class="codeline" id="line-476"><code>	// Lift the nil check outside of the loop. enc.decodeMap is directly</code></span>
+<span class="codeline" id="line-477"><code>	// used later in this function, to let the compiler know that the</code></span>
+<span class="codeline" id="line-478"><code>	// receiver can't be nil.</code></span>
+<span class="codeline" id="line-479"><code>	_ = enc.decodeMap</code></span>
+<span class="codeline" id="line-480"><code></code></span>
+<span class="codeline" id="line-481"><code>	si := 0</code></span>
+<span class="codeline" id="line-482"><code>	for strconv.IntSize &gt;= 64 &amp;&amp; len(src)-si &gt;= 8 &amp;&amp; len(dst)-n &gt;= 8 {</code></span>
+<span class="codeline" id="line-483"><code>		src2 := src[si : si+8]</code></span>
+<span class="codeline" id="line-484"><code>		if dn, ok := assemble64(</code></span>
+<span class="codeline" id="line-485"><code>			enc.decodeMap[src2[0]],</code></span>
+<span class="codeline" id="line-486"><code>			enc.decodeMap[src2[1]],</code></span>
+<span class="codeline" id="line-487"><code>			enc.decodeMap[src2[2]],</code></span>
+<span class="codeline" id="line-488"><code>			enc.decodeMap[src2[3]],</code></span>
+<span class="codeline" id="line-489"><code>			enc.decodeMap[src2[4]],</code></span>
+<span class="codeline" id="line-490"><code>			enc.decodeMap[src2[5]],</code></span>
+<span class="codeline" id="line-491"><code>			enc.decodeMap[src2[6]],</code></span>
+<span class="codeline" id="line-492"><code>			enc.decodeMap[src2[7]],</code></span>
+<span class="codeline" id="line-493"><code>		); ok {</code></span>
+<span class="codeline" id="line-494"><code>			binary.BigEndian.PutUint64(dst[n:], dn)</code></span>
+<span class="codeline" id="line-495"><code>			n += 6</code></span>
+<span class="codeline" id="line-496"><code>			si += 8</code></span>
+<span class="codeline" id="line-497"><code>		} else {</code></span>
+<span class="codeline" id="line-498"><code>			var ninc int</code></span>
+<span class="codeline" id="line-499"><code>			si, ninc, err = enc.decodeQuantum(dst[n:], src, si)</code></span>
+<span class="codeline" id="line-500"><code>			n += ninc</code></span>
+<span class="codeline" id="line-501"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-502"><code>				return n, err</code></span>
+<span class="codeline" id="line-503"><code>			}</code></span>
+<span class="codeline" id="line-504"><code>		}</code></span>
+<span class="codeline" id="line-505"><code>	}</code></span>
+<span class="codeline" id="line-506"><code></code></span>
+<span class="codeline" id="line-507"><code>	for len(src)-si &gt;= 4 &amp;&amp; len(dst)-n &gt;= 4 {</code></span>
+<span class="codeline" id="line-508"><code>		src2 := src[si : si+4]</code></span>
+<span class="codeline" id="line-509"><code>		if dn, ok := assemble32(</code></span>
+<span class="codeline" id="line-510"><code>			enc.decodeMap[src2[0]],</code></span>
+<span class="codeline" id="line-511"><code>			enc.decodeMap[src2[1]],</code></span>
+<span class="codeline" id="line-512"><code>			enc.decodeMap[src2[2]],</code></span>
+<span class="codeline" id="line-513"><code>			enc.decodeMap[src2[3]],</code></span>
+<span class="codeline" id="line-514"><code>		); ok {</code></span>
+<span class="codeline" id="line-515"><code>			binary.BigEndian.PutUint32(dst[n:], dn)</code></span>
+<span class="codeline" id="line-516"><code>			n += 3</code></span>
+<span class="codeline" id="line-517"><code>			si += 4</code></span>
+<span class="codeline" id="line-518"><code>		} else {</code></span>
+<span class="codeline" id="line-519"><code>			var ninc int</code></span>
+<span class="codeline" id="line-520"><code>			si, ninc, err = enc.decodeQuantum(dst[n:], src, si)</code></span>
+<span class="codeline" id="line-521"><code>			n += ninc</code></span>
+<span class="codeline" id="line-522"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-523"><code>				return n, err</code></span>
+<span class="codeline" id="line-524"><code>			}</code></span>
+<span class="codeline" id="line-525"><code>		}</code></span>
+<span class="codeline" id="line-526"><code>	}</code></span>
+<span class="codeline" id="line-527"><code></code></span>
+<span class="codeline" id="line-528"><code>	for si &lt; len(src) {</code></span>
+<span class="codeline" id="line-529"><code>		var ninc int</code></span>
+<span class="codeline" id="line-530"><code>		si, ninc, err = enc.decodeQuantum(dst[n:], src, si)</code></span>
+<span class="codeline" id="line-531"><code>		n += ninc</code></span>
+<span class="codeline" id="line-532"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-533"><code>			return n, err</code></span>
+<span class="codeline" id="line-534"><code>		}</code></span>
+<span class="codeline" id="line-535"><code>	}</code></span>
+<span class="codeline" id="line-536"><code>	return n, err</code></span>
+<span class="codeline" id="line-537"><code>}</code></span>
+<span class="codeline" id="line-538"><code></code></span>
+<span class="codeline" id="line-539"><code>// assemble32 assembles 4 base64 digits into 3 bytes.</code></span>
+<span class="codeline" id="line-540"><code>// Each digit comes from the decode map, and will be 0xff</code></span>
+<span class="codeline" id="line-541"><code>// if it came from an invalid character.</code></span>
+<span class="codeline" id="line-542"><code>func assemble32(n1, n2, n3, n4 byte) (dn uint32, ok bool) {</code></span>
+<span class="codeline" id="line-543"><code>	// Check that all the digits are valid. If any of them was 0xff, their</code></span>
+<span class="codeline" id="line-544"><code>	// bitwise OR will be 0xff.</code></span>
+<span class="codeline" id="line-545"><code>	if n1|n2|n3|n4 == 0xff {</code></span>
+<span class="codeline" id="line-546"><code>		return 0, false</code></span>
+<span class="codeline" id="line-547"><code>	}</code></span>
+<span class="codeline" id="line-548"><code>	return uint32(n1)&lt;&lt;26 |</code></span>
+<span class="codeline" id="line-549"><code>			uint32(n2)&lt;&lt;20 |</code></span>
+<span class="codeline" id="line-550"><code>			uint32(n3)&lt;&lt;14 |</code></span>
+<span class="codeline" id="line-551"><code>			uint32(n4)&lt;&lt;8,</code></span>
+<span class="codeline" id="line-552"><code>		true</code></span>
+<span class="codeline" id="line-553"><code>}</code></span>
+<span class="codeline" id="line-554"><code></code></span>
+<span class="codeline" id="line-555"><code>// assemble64 assembles 8 base64 digits into 6 bytes.</code></span>
+<span class="codeline" id="line-556"><code>// Each digit comes from the decode map, and will be 0xff</code></span>
+<span class="codeline" id="line-557"><code>// if it came from an invalid character.</code></span>
+<span class="codeline" id="line-558"><code>func assemble64(n1, n2, n3, n4, n5, n6, n7, n8 byte) (dn uint64, ok bool) {</code></span>
+<span class="codeline" id="line-559"><code>	// Check that all the digits are valid. If any of them was 0xff, their</code></span>
+<span class="codeline" id="line-560"><code>	// bitwise OR will be 0xff.</code></span>
+<span class="codeline" id="line-561"><code>	if n1|n2|n3|n4|n5|n6|n7|n8 == 0xff {</code></span>
+<span class="codeline" id="line-562"><code>		return 0, false</code></span>
+<span class="codeline" id="line-563"><code>	}</code></span>
+<span class="codeline" id="line-564"><code>	return uint64(n1)&lt;&lt;58 |</code></span>
+<span class="codeline" id="line-565"><code>			uint64(n2)&lt;&lt;52 |</code></span>
+<span class="codeline" id="line-566"><code>			uint64(n3)&lt;&lt;46 |</code></span>
+<span class="codeline" id="line-567"><code>			uint64(n4)&lt;&lt;40 |</code></span>
+<span class="codeline" id="line-568"><code>			uint64(n5)&lt;&lt;34 |</code></span>
+<span class="codeline" id="line-569"><code>			uint64(n6)&lt;&lt;28 |</code></span>
+<span class="codeline" id="line-570"><code>			uint64(n7)&lt;&lt;22 |</code></span>
+<span class="codeline" id="line-571"><code>			uint64(n8)&lt;&lt;16,</code></span>
+<span class="codeline" id="line-572"><code>		true</code></span>
+<span class="codeline" id="line-573"><code>}</code></span>
+<span class="codeline" id="line-574"><code></code></span>
+<span class="codeline" id="line-575"><code>type newlineFilteringReader struct {</code></span>
+<span class="codeline" id="line-576"><code>	wrapped io.Reader</code></span>
+<span class="codeline" id="line-577"><code>}</code></span>
+<span class="codeline" id="line-578"><code></code></span>
+<span class="codeline" id="line-579"><code>func (r *newlineFilteringReader) Read(p []byte) (int, error) {</code></span>
+<span class="codeline" id="line-580"><code>	n, err := r.wrapped.Read(p)</code></span>
+<span class="codeline" id="line-581"><code>	for n &gt; 0 {</code></span>
+<span class="codeline" id="line-582"><code>		offset := 0</code></span>
+<span class="codeline" id="line-583"><code>		for i, b := range p[:n] {</code></span>
+<span class="codeline" id="line-584"><code>			if b != '\r' &amp;&amp; b != '\n' {</code></span>
+<span class="codeline" id="line-585"><code>				if i != offset {</code></span>
+<span class="codeline" id="line-586"><code>					p[offset] = b</code></span>
+<span class="codeline" id="line-587"><code>				}</code></span>
+<span class="codeline" id="line-588"><code>				offset++</code></span>
+<span class="codeline" id="line-589"><code>			}</code></span>
+<span class="codeline" id="line-590"><code>		}</code></span>
+<span class="codeline" id="line-591"><code>		if offset &gt; 0 {</code></span>
+<span class="codeline" id="line-592"><code>			return offset, err</code></span>
+<span class="codeline" id="line-593"><code>		}</code></span>
+<span class="codeline" id="line-594"><code>		// Previous buffer entirely whitespace, read again</code></span>
+<span class="codeline" id="line-595"><code>		n, err = r.wrapped.Read(p)</code></span>
+<span class="codeline" id="line-596"><code>	}</code></span>
+<span class="codeline" id="line-597"><code>	return n, err</code></span>
+<span class="codeline" id="line-598"><code>}</code></span>
+<span class="codeline" id="line-599"><code></code></span>
+<span class="codeline" id="line-600"><code>// NewDecoder constructs a new base64 stream decoder.</code></span>
+<span class="codeline" id="line-601"><code>func NewDecoder(enc *Encoding, r io.Reader) io.Reader {</code></span>
+<span class="codeline" id="line-602"><code>	return &amp;decoder{enc: enc, r: &amp;newlineFilteringReader{r}}</code></span>
+<span class="codeline" id="line-603"><code>}</code></span>
+<span class="codeline" id="line-604"><code></code></span>
+<span class="codeline" id="line-605"><code>// DecodedLen returns the maximum length in bytes of the decoded data</code></span>
+<span class="codeline" id="line-606"><code>// corresponding to n bytes of base64-encoded data.</code></span>
+<span class="codeline" id="line-607"><code>func (enc *Encoding) DecodedLen(n int) int {</code></span>
+<span class="codeline" id="line-608"><code>	if enc.padChar == NoPadding {</code></span>
+<span class="codeline" id="line-609"><code>		// Unpadded data may end with partial block of 2-3 characters.</code></span>
+<span class="codeline" id="line-610"><code>		return n * 6 / 8</code></span>
+<span class="codeline" id="line-611"><code>	}</code></span>
+<span class="codeline" id="line-612"><code>	// Padded base64 should always be a multiple of 4 characters in length.</code></span>
+<span class="codeline" id="line-613"><code>	return n / 4 * 3</code></span>
+<span class="codeline" id="line-614"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

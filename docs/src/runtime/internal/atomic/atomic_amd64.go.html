@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: atomic_amd64.go in package runtime/internal/atomic</title>
+<link href="../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	atomic_amd64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../pkg/runtime/internal/atomic.html">runtime/internal/atomic</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package atomic</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// Export some functions via linkname to assembly in sync/atomic.</code></span>
+<span class="codeline" id="line-10"><code>//go:linkname Load</code></span>
+<span class="codeline" id="line-11"><code>//go:linkname Loadp</code></span>
+<span class="codeline" id="line-12"><code>//go:linkname Load64</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-15"><code>//go:noinline</code></span>
+<span class="codeline" id="line-16"><code>func Load(ptr *uint32) uint32 {</code></span>
+<span class="codeline" id="line-17"><code>	return *ptr</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-21"><code>//go:noinline</code></span>
+<span class="codeline" id="line-22"><code>func Loadp(ptr unsafe.Pointer) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-23"><code>	return *(*unsafe.Pointer)(ptr)</code></span>
+<span class="codeline" id="line-24"><code>}</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-27"><code>//go:noinline</code></span>
+<span class="codeline" id="line-28"><code>func Load64(ptr *uint64) uint64 {</code></span>
+<span class="codeline" id="line-29"><code>	return *ptr</code></span>
+<span class="codeline" id="line-30"><code>}</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-33"><code>//go:noinline</code></span>
+<span class="codeline" id="line-34"><code>func LoadAcq(ptr *uint32) uint32 {</code></span>
+<span class="codeline" id="line-35"><code>	return *ptr</code></span>
+<span class="codeline" id="line-36"><code>}</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-39"><code>//go:noinline</code></span>
+<span class="codeline" id="line-40"><code>func LoadAcq64(ptr *uint64) uint64 {</code></span>
+<span class="codeline" id="line-41"><code>	return *ptr</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-45"><code>//go:noinline</code></span>
+<span class="codeline" id="line-46"><code>func LoadAcquintptr(ptr *uintptr) uintptr {</code></span>
+<span class="codeline" id="line-47"><code>	return *ptr</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>//go:noescape</code></span>
+<span class="codeline" id="line-51"><code>func Xadd(ptr *uint32, delta int32) uint32</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>//go:noescape</code></span>
+<span class="codeline" id="line-54"><code>func Xadd64(ptr *uint64, delta int64) uint64</code></span>
+<span class="codeline" id="line-55"><code></code></span>
+<span class="codeline" id="line-56"><code>//go:noescape</code></span>
+<span class="codeline" id="line-57"><code>func Xadduintptr(ptr *uintptr, delta uintptr) uintptr</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>//go:noescape</code></span>
+<span class="codeline" id="line-60"><code>func Xchg(ptr *uint32, new uint32) uint32</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>//go:noescape</code></span>
+<span class="codeline" id="line-63"><code>func Xchg64(ptr *uint64, new uint64) uint64</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>//go:noescape</code></span>
+<span class="codeline" id="line-66"><code>func Xchguintptr(ptr *uintptr, new uintptr) uintptr</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-69"><code>//go:noinline</code></span>
+<span class="codeline" id="line-70"><code>func Load8(ptr *uint8) uint8 {</code></span>
+<span class="codeline" id="line-71"><code>	return *ptr</code></span>
+<span class="codeline" id="line-72"><code>}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>//go:noescape</code></span>
+<span class="codeline" id="line-75"><code>func And8(ptr *uint8, val uint8)</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>//go:noescape</code></span>
+<span class="codeline" id="line-78"><code>func Or8(ptr *uint8, val uint8)</code></span>
+<span class="codeline" id="line-79"><code></code></span>
+<span class="codeline" id="line-80"><code>//go:noescape</code></span>
+<span class="codeline" id="line-81"><code>func And(ptr *uint32, val uint32)</code></span>
+<span class="codeline" id="line-82"><code></code></span>
+<span class="codeline" id="line-83"><code>//go:noescape</code></span>
+<span class="codeline" id="line-84"><code>func Or(ptr *uint32, val uint32)</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>// NOTE: Do not add atomicxor8 (XOR is not idempotent).</code></span>
+<span class="codeline" id="line-87"><code></code></span>
+<span class="codeline" id="line-88"><code>//go:noescape</code></span>
+<span class="codeline" id="line-89"><code>func Cas64(ptr *uint64, old, new uint64) bool</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>//go:noescape</code></span>
+<span class="codeline" id="line-92"><code>func CasRel(ptr *uint32, old, new uint32) bool</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>//go:noescape</code></span>
+<span class="codeline" id="line-95"><code>func Store(ptr *uint32, val uint32)</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>//go:noescape</code></span>
+<span class="codeline" id="line-98"><code>func Store8(ptr *uint8, val uint8)</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>//go:noescape</code></span>
+<span class="codeline" id="line-101"><code>func Store64(ptr *uint64, val uint64)</code></span>
+<span class="codeline" id="line-102"><code></code></span>
+<span class="codeline" id="line-103"><code>//go:noescape</code></span>
+<span class="codeline" id="line-104"><code>func StoreRel(ptr *uint32, val uint32)</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>//go:noescape</code></span>
+<span class="codeline" id="line-107"><code>func StoreRel64(ptr *uint64, val uint64)</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>//go:noescape</code></span>
+<span class="codeline" id="line-110"><code>func StoreReluintptr(ptr *uintptr, val uintptr)</code></span>
+<span class="codeline" id="line-111"><code></code></span>
+<span class="codeline" id="line-112"><code>// StorepNoWB performs *ptr = val atomically and without a write</code></span>
+<span class="codeline" id="line-113"><code>// barrier.</code></span>
+<span class="codeline" id="line-114"><code>//</code></span>
+<span class="codeline" id="line-115"><code>// NO go:noescape annotation; see atomic_pointer.go.</code></span>
+<span class="codeline" id="line-116"><code>func StorepNoWB(ptr unsafe.Pointer, val unsafe.Pointer)</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: symtab.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	symtab.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-9"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-10"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// Frames may be used to get function/file/line information for a</code></span>
+<span class="codeline" id="line-14"><code>// slice of PC values returned by Callers.</code></span>
+<span class="codeline" id="line-15"><code>type Frames struct {</code></span>
+<span class="codeline" id="line-16"><code>	// callers is a slice of PCs that have not yet been expanded to frames.</code></span>
+<span class="codeline" id="line-17"><code>	callers []uintptr</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>	// frames is a slice of Frames that have yet to be returned.</code></span>
+<span class="codeline" id="line-20"><code>	frames     []Frame</code></span>
+<span class="codeline" id="line-21"><code>	frameStore [2]Frame</code></span>
+<span class="codeline" id="line-22"><code>}</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>// Frame is the information returned by Frames for each call frame.</code></span>
+<span class="codeline" id="line-25"><code>type Frame struct {</code></span>
+<span class="codeline" id="line-26"><code>	// PC is the program counter for the location in this frame.</code></span>
+<span class="codeline" id="line-27"><code>	// For a frame that calls another frame, this will be the</code></span>
+<span class="codeline" id="line-28"><code>	// program counter of a call instruction. Because of inlining,</code></span>
+<span class="codeline" id="line-29"><code>	// multiple frames may have the same PC value, but different</code></span>
+<span class="codeline" id="line-30"><code>	// symbolic information.</code></span>
+<span class="codeline" id="line-31"><code>	PC uintptr</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	// Func is the Func value of this call frame. This may be nil</code></span>
+<span class="codeline" id="line-34"><code>	// for non-Go code or fully inlined functions.</code></span>
+<span class="codeline" id="line-35"><code>	Func *Func</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>	// Function is the package path-qualified function name of</code></span>
+<span class="codeline" id="line-38"><code>	// this call frame. If non-empty, this string uniquely</code></span>
+<span class="codeline" id="line-39"><code>	// identifies a single function in the program.</code></span>
+<span class="codeline" id="line-40"><code>	// This may be the empty string if not known.</code></span>
+<span class="codeline" id="line-41"><code>	// If Func is not nil then Function == Func.Name().</code></span>
+<span class="codeline" id="line-42"><code>	Function string</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	// File and Line are the file name and line number of the</code></span>
+<span class="codeline" id="line-45"><code>	// location in this frame. For non-leaf frames, this will be</code></span>
+<span class="codeline" id="line-46"><code>	// the location of a call. These may be the empty string and</code></span>
+<span class="codeline" id="line-47"><code>	// zero, respectively, if not known.</code></span>
+<span class="codeline" id="line-48"><code>	File string</code></span>
+<span class="codeline" id="line-49"><code>	Line int</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>	// Entry point program counter for the function; may be zero</code></span>
+<span class="codeline" id="line-52"><code>	// if not known. If Func is not nil then Entry ==</code></span>
+<span class="codeline" id="line-53"><code>	// Func.Entry().</code></span>
+<span class="codeline" id="line-54"><code>	Entry uintptr</code></span>
+<span class="codeline" id="line-55"><code></code></span>
+<span class="codeline" id="line-56"><code>	// The runtime's internal view of the function. This field</code></span>
+<span class="codeline" id="line-57"><code>	// is set (funcInfo.valid() returns true) only for Go functions,</code></span>
+<span class="codeline" id="line-58"><code>	// not for C functions.</code></span>
+<span class="codeline" id="line-59"><code>	funcInfo funcInfo</code></span>
+<span class="codeline" id="line-60"><code>}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>// CallersFrames takes a slice of PC values returned by Callers and</code></span>
+<span class="codeline" id="line-63"><code>// prepares to return function/file/line information.</code></span>
+<span class="codeline" id="line-64"><code>// Do not change the slice until you are done with the Frames.</code></span>
+<span class="codeline" id="line-65"><code>func CallersFrames(callers []uintptr) *Frames {</code></span>
+<span class="codeline" id="line-66"><code>	f := &amp;Frames{callers: callers}</code></span>
+<span class="codeline" id="line-67"><code>	f.frames = f.frameStore[:0]</code></span>
+<span class="codeline" id="line-68"><code>	return f</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>// Next returns frame information for the next caller.</code></span>
+<span class="codeline" id="line-72"><code>// If more is false, there are no more callers (the Frame value is valid).</code></span>
+<span class="codeline" id="line-73"><code>func (ci *Frames) Next() (frame Frame, more bool) {</code></span>
+<span class="codeline" id="line-74"><code>	for len(ci.frames) &lt; 2 {</code></span>
+<span class="codeline" id="line-75"><code>		// Find the next frame.</code></span>
+<span class="codeline" id="line-76"><code>		// We need to look for 2 frames so we know what</code></span>
+<span class="codeline" id="line-77"><code>		// to return for the "more" result.</code></span>
+<span class="codeline" id="line-78"><code>		if len(ci.callers) == 0 {</code></span>
+<span class="codeline" id="line-79"><code>			break</code></span>
+<span class="codeline" id="line-80"><code>		}</code></span>
+<span class="codeline" id="line-81"><code>		pc := ci.callers[0]</code></span>
+<span class="codeline" id="line-82"><code>		ci.callers = ci.callers[1:]</code></span>
+<span class="codeline" id="line-83"><code>		funcInfo := findfunc(pc)</code></span>
+<span class="codeline" id="line-84"><code>		if !funcInfo.valid() {</code></span>
+<span class="codeline" id="line-85"><code>			if cgoSymbolizer != nil {</code></span>
+<span class="codeline" id="line-86"><code>				// Pre-expand cgo frames. We could do this</code></span>
+<span class="codeline" id="line-87"><code>				// incrementally, too, but there's no way to</code></span>
+<span class="codeline" id="line-88"><code>				// avoid allocation in this case anyway.</code></span>
+<span class="codeline" id="line-89"><code>				ci.frames = append(ci.frames, expandCgoFrames(pc)...)</code></span>
+<span class="codeline" id="line-90"><code>			}</code></span>
+<span class="codeline" id="line-91"><code>			continue</code></span>
+<span class="codeline" id="line-92"><code>		}</code></span>
+<span class="codeline" id="line-93"><code>		f := funcInfo._Func()</code></span>
+<span class="codeline" id="line-94"><code>		entry := f.Entry()</code></span>
+<span class="codeline" id="line-95"><code>		if pc &gt; entry {</code></span>
+<span class="codeline" id="line-96"><code>			// We store the pc of the start of the instruction following</code></span>
+<span class="codeline" id="line-97"><code>			// the instruction in question (the call or the inline mark).</code></span>
+<span class="codeline" id="line-98"><code>			// This is done for historical reasons, and to make FuncForPC</code></span>
+<span class="codeline" id="line-99"><code>			// work correctly for entries in the result of runtime.Callers.</code></span>
+<span class="codeline" id="line-100"><code>			pc--</code></span>
+<span class="codeline" id="line-101"><code>		}</code></span>
+<span class="codeline" id="line-102"><code>		name := funcname(funcInfo)</code></span>
+<span class="codeline" id="line-103"><code>		if inldata := funcdata(funcInfo, _FUNCDATA_InlTree); inldata != nil {</code></span>
+<span class="codeline" id="line-104"><code>			inltree := (*[1 &lt;&lt; 20]inlinedCall)(inldata)</code></span>
+<span class="codeline" id="line-105"><code>			// Non-strict as cgoTraceback may have added bogus PCs</code></span>
+<span class="codeline" id="line-106"><code>			// with a valid funcInfo but invalid PCDATA.</code></span>
+<span class="codeline" id="line-107"><code>			ix := pcdatavalue1(funcInfo, _PCDATA_InlTreeIndex, pc, nil, false)</code></span>
+<span class="codeline" id="line-108"><code>			if ix &gt;= 0 {</code></span>
+<span class="codeline" id="line-109"><code>				// Note: entry is not modified. It always refers to a real frame, not an inlined one.</code></span>
+<span class="codeline" id="line-110"><code>				f = nil</code></span>
+<span class="codeline" id="line-111"><code>				name = funcnameFromNameoff(funcInfo, inltree[ix].func_)</code></span>
+<span class="codeline" id="line-112"><code>				// File/line is already correct.</code></span>
+<span class="codeline" id="line-113"><code>				// TODO: remove file/line from InlinedCall?</code></span>
+<span class="codeline" id="line-114"><code>			}</code></span>
+<span class="codeline" id="line-115"><code>		}</code></span>
+<span class="codeline" id="line-116"><code>		ci.frames = append(ci.frames, Frame{</code></span>
+<span class="codeline" id="line-117"><code>			PC:       pc,</code></span>
+<span class="codeline" id="line-118"><code>			Func:     f,</code></span>
+<span class="codeline" id="line-119"><code>			Function: name,</code></span>
+<span class="codeline" id="line-120"><code>			Entry:    entry,</code></span>
+<span class="codeline" id="line-121"><code>			funcInfo: funcInfo,</code></span>
+<span class="codeline" id="line-122"><code>			// Note: File,Line set below</code></span>
+<span class="codeline" id="line-123"><code>		})</code></span>
+<span class="codeline" id="line-124"><code>	}</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>	// Pop one frame from the frame list. Keep the rest.</code></span>
+<span class="codeline" id="line-127"><code>	// Avoid allocation in the common case, which is 1 or 2 frames.</code></span>
+<span class="codeline" id="line-128"><code>	switch len(ci.frames) {</code></span>
+<span class="codeline" id="line-129"><code>	case 0: // In the rare case when there are no frames at all, we return Frame{}.</code></span>
+<span class="codeline" id="line-130"><code>		return</code></span>
+<span class="codeline" id="line-131"><code>	case 1:</code></span>
+<span class="codeline" id="line-132"><code>		frame = ci.frames[0]</code></span>
+<span class="codeline" id="line-133"><code>		ci.frames = ci.frameStore[:0]</code></span>
+<span class="codeline" id="line-134"><code>	case 2:</code></span>
+<span class="codeline" id="line-135"><code>		frame = ci.frames[0]</code></span>
+<span class="codeline" id="line-136"><code>		ci.frameStore[0] = ci.frames[1]</code></span>
+<span class="codeline" id="line-137"><code>		ci.frames = ci.frameStore[:1]</code></span>
+<span class="codeline" id="line-138"><code>	default:</code></span>
+<span class="codeline" id="line-139"><code>		frame = ci.frames[0]</code></span>
+<span class="codeline" id="line-140"><code>		ci.frames = ci.frames[1:]</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>	more = len(ci.frames) &gt; 0</code></span>
+<span class="codeline" id="line-143"><code>	if frame.funcInfo.valid() {</code></span>
+<span class="codeline" id="line-144"><code>		// Compute file/line just before we need to return it,</code></span>
+<span class="codeline" id="line-145"><code>		// as it can be expensive. This avoids computing file/line</code></span>
+<span class="codeline" id="line-146"><code>		// for the Frame we find but don't return. See issue 32093.</code></span>
+<span class="codeline" id="line-147"><code>		file, line := funcline1(frame.funcInfo, frame.PC, false)</code></span>
+<span class="codeline" id="line-148"><code>		frame.File, frame.Line = file, int(line)</code></span>
+<span class="codeline" id="line-149"><code>	}</code></span>
+<span class="codeline" id="line-150"><code>	return</code></span>
+<span class="codeline" id="line-151"><code>}</code></span>
+<span class="codeline" id="line-152"><code></code></span>
+<span class="codeline" id="line-153"><code>// runtime_expandFinalInlineFrame expands the final pc in stk to include all</code></span>
+<span class="codeline" id="line-154"><code>// "callers" if pc is inline.</code></span>
+<span class="codeline" id="line-155"><code>//</code></span>
+<span class="codeline" id="line-156"><code>//go:linkname runtime_expandFinalInlineFrame runtime/pprof.runtime_expandFinalInlineFrame</code></span>
+<span class="codeline" id="line-157"><code>func runtime_expandFinalInlineFrame(stk []uintptr) []uintptr {</code></span>
+<span class="codeline" id="line-158"><code>	if len(stk) == 0 {</code></span>
+<span class="codeline" id="line-159"><code>		return stk</code></span>
+<span class="codeline" id="line-160"><code>	}</code></span>
+<span class="codeline" id="line-161"><code>	pc := stk[len(stk)-1]</code></span>
+<span class="codeline" id="line-162"><code>	tracepc := pc - 1</code></span>
+<span class="codeline" id="line-163"><code></code></span>
+<span class="codeline" id="line-164"><code>	f := findfunc(tracepc)</code></span>
+<span class="codeline" id="line-165"><code>	if !f.valid() {</code></span>
+<span class="codeline" id="line-166"><code>		// Not a Go function.</code></span>
+<span class="codeline" id="line-167"><code>		return stk</code></span>
+<span class="codeline" id="line-168"><code>	}</code></span>
+<span class="codeline" id="line-169"><code></code></span>
+<span class="codeline" id="line-170"><code>	inldata := funcdata(f, _FUNCDATA_InlTree)</code></span>
+<span class="codeline" id="line-171"><code>	if inldata == nil {</code></span>
+<span class="codeline" id="line-172"><code>		// Nothing inline in f.</code></span>
+<span class="codeline" id="line-173"><code>		return stk</code></span>
+<span class="codeline" id="line-174"><code>	}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>	// Treat the previous func as normal. We haven't actually checked, but</code></span>
+<span class="codeline" id="line-177"><code>	// since this pc was included in the stack, we know it shouldn't be</code></span>
+<span class="codeline" id="line-178"><code>	// elided.</code></span>
+<span class="codeline" id="line-179"><code>	lastFuncID := funcID_normal</code></span>
+<span class="codeline" id="line-180"><code></code></span>
+<span class="codeline" id="line-181"><code>	// Remove pc from stk; we'll re-add it below.</code></span>
+<span class="codeline" id="line-182"><code>	stk = stk[:len(stk)-1]</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>	// See inline expansion in gentraceback.</code></span>
+<span class="codeline" id="line-185"><code>	var cache pcvalueCache</code></span>
+<span class="codeline" id="line-186"><code>	inltree := (*[1 &lt;&lt; 20]inlinedCall)(inldata)</code></span>
+<span class="codeline" id="line-187"><code>	for {</code></span>
+<span class="codeline" id="line-188"><code>		ix := pcdatavalue(f, _PCDATA_InlTreeIndex, tracepc, &amp;cache)</code></span>
+<span class="codeline" id="line-189"><code>		if ix &lt; 0 {</code></span>
+<span class="codeline" id="line-190"><code>			break</code></span>
+<span class="codeline" id="line-191"><code>		}</code></span>
+<span class="codeline" id="line-192"><code>		if inltree[ix].funcID == funcID_wrapper &amp;&amp; elideWrapperCalling(lastFuncID) {</code></span>
+<span class="codeline" id="line-193"><code>			// ignore wrappers</code></span>
+<span class="codeline" id="line-194"><code>		} else {</code></span>
+<span class="codeline" id="line-195"><code>			stk = append(stk, pc)</code></span>
+<span class="codeline" id="line-196"><code>		}</code></span>
+<span class="codeline" id="line-197"><code>		lastFuncID = inltree[ix].funcID</code></span>
+<span class="codeline" id="line-198"><code>		// Back up to an instruction in the "caller".</code></span>
+<span class="codeline" id="line-199"><code>		tracepc = f.entry + uintptr(inltree[ix].parentPc)</code></span>
+<span class="codeline" id="line-200"><code>		pc = tracepc + 1</code></span>
+<span class="codeline" id="line-201"><code>	}</code></span>
+<span class="codeline" id="line-202"><code></code></span>
+<span class="codeline" id="line-203"><code>	// N.B. we want to keep the last parentPC which is not inline.</code></span>
+<span class="codeline" id="line-204"><code>	stk = append(stk, pc)</code></span>
+<span class="codeline" id="line-205"><code></code></span>
+<span class="codeline" id="line-206"><code>	return stk</code></span>
+<span class="codeline" id="line-207"><code>}</code></span>
+<span class="codeline" id="line-208"><code></code></span>
+<span class="codeline" id="line-209"><code>// expandCgoFrames expands frame information for pc, known to be</code></span>
+<span class="codeline" id="line-210"><code>// a non-Go function, using the cgoSymbolizer hook. expandCgoFrames</code></span>
+<span class="codeline" id="line-211"><code>// returns nil if pc could not be expanded.</code></span>
+<span class="codeline" id="line-212"><code>func expandCgoFrames(pc uintptr) []Frame {</code></span>
+<span class="codeline" id="line-213"><code>	arg := cgoSymbolizerArg{pc: pc}</code></span>
+<span class="codeline" id="line-214"><code>	callCgoSymbolizer(&amp;arg)</code></span>
+<span class="codeline" id="line-215"><code></code></span>
+<span class="codeline" id="line-216"><code>	if arg.file == nil &amp;&amp; arg.funcName == nil {</code></span>
+<span class="codeline" id="line-217"><code>		// No useful information from symbolizer.</code></span>
+<span class="codeline" id="line-218"><code>		return nil</code></span>
+<span class="codeline" id="line-219"><code>	}</code></span>
+<span class="codeline" id="line-220"><code></code></span>
+<span class="codeline" id="line-221"><code>	var frames []Frame</code></span>
+<span class="codeline" id="line-222"><code>	for {</code></span>
+<span class="codeline" id="line-223"><code>		frames = append(frames, Frame{</code></span>
+<span class="codeline" id="line-224"><code>			PC:       pc,</code></span>
+<span class="codeline" id="line-225"><code>			Func:     nil,</code></span>
+<span class="codeline" id="line-226"><code>			Function: gostring(arg.funcName),</code></span>
+<span class="codeline" id="line-227"><code>			File:     gostring(arg.file),</code></span>
+<span class="codeline" id="line-228"><code>			Line:     int(arg.lineno),</code></span>
+<span class="codeline" id="line-229"><code>			Entry:    arg.entry,</code></span>
+<span class="codeline" id="line-230"><code>			// funcInfo is zero, which implies !funcInfo.valid().</code></span>
+<span class="codeline" id="line-231"><code>			// That ensures that we use the File/Line info given here.</code></span>
+<span class="codeline" id="line-232"><code>		})</code></span>
+<span class="codeline" id="line-233"><code>		if arg.more == 0 {</code></span>
+<span class="codeline" id="line-234"><code>			break</code></span>
+<span class="codeline" id="line-235"><code>		}</code></span>
+<span class="codeline" id="line-236"><code>		callCgoSymbolizer(&amp;arg)</code></span>
+<span class="codeline" id="line-237"><code>	}</code></span>
+<span class="codeline" id="line-238"><code></code></span>
+<span class="codeline" id="line-239"><code>	// No more frames for this PC. Tell the symbolizer we are done.</code></span>
+<span class="codeline" id="line-240"><code>	// We don't try to maintain a single cgoSymbolizerArg for the</code></span>
+<span class="codeline" id="line-241"><code>	// whole use of Frames, because there would be no good way to tell</code></span>
+<span class="codeline" id="line-242"><code>	// the symbolizer when we are done.</code></span>
+<span class="codeline" id="line-243"><code>	arg.pc = 0</code></span>
+<span class="codeline" id="line-244"><code>	callCgoSymbolizer(&amp;arg)</code></span>
+<span class="codeline" id="line-245"><code></code></span>
+<span class="codeline" id="line-246"><code>	return frames</code></span>
+<span class="codeline" id="line-247"><code>}</code></span>
+<span class="codeline" id="line-248"><code></code></span>
+<span class="codeline" id="line-249"><code>// NOTE: Func does not expose the actual unexported fields, because we return *Func</code></span>
+<span class="codeline" id="line-250"><code>// values to users, and we want to keep them from being able to overwrite the data</code></span>
+<span class="codeline" id="line-251"><code>// with (say) *f = Func{}.</code></span>
+<span class="codeline" id="line-252"><code>// All code operating on a *Func must call raw() to get the *_func</code></span>
+<span class="codeline" id="line-253"><code>// or funcInfo() to get the funcInfo instead.</code></span>
+<span class="codeline" id="line-254"><code></code></span>
+<span class="codeline" id="line-255"><code>// A Func represents a Go function in the running binary.</code></span>
+<span class="codeline" id="line-256"><code>type Func struct {</code></span>
+<span class="codeline" id="line-257"><code>	opaque struct{} // unexported field to disallow conversions</code></span>
+<span class="codeline" id="line-258"><code>}</code></span>
+<span class="codeline" id="line-259"><code></code></span>
+<span class="codeline" id="line-260"><code>func (f *Func) raw() *_func {</code></span>
+<span class="codeline" id="line-261"><code>	return (*_func)(unsafe.Pointer(f))</code></span>
+<span class="codeline" id="line-262"><code>}</code></span>
+<span class="codeline" id="line-263"><code></code></span>
+<span class="codeline" id="line-264"><code>func (f *Func) funcInfo() funcInfo {</code></span>
+<span class="codeline" id="line-265"><code>	fn := f.raw()</code></span>
+<span class="codeline" id="line-266"><code>	return funcInfo{fn, findmoduledatap(fn.entry)}</code></span>
+<span class="codeline" id="line-267"><code>}</code></span>
+<span class="codeline" id="line-268"><code></code></span>
+<span class="codeline" id="line-269"><code>// PCDATA and FUNCDATA table indexes.</code></span>
+<span class="codeline" id="line-270"><code>//</code></span>
+<span class="codeline" id="line-271"><code>// See funcdata.h and ../cmd/internal/objabi/funcdata.go.</code></span>
+<span class="codeline" id="line-272"><code>const (</code></span>
+<span class="codeline" id="line-273"><code>	_PCDATA_UnsafePoint   = 0</code></span>
+<span class="codeline" id="line-274"><code>	_PCDATA_StackMapIndex = 1</code></span>
+<span class="codeline" id="line-275"><code>	_PCDATA_InlTreeIndex  = 2</code></span>
+<span class="codeline" id="line-276"><code></code></span>
+<span class="codeline" id="line-277"><code>	_FUNCDATA_ArgsPointerMaps    = 0</code></span>
+<span class="codeline" id="line-278"><code>	_FUNCDATA_LocalsPointerMaps  = 1</code></span>
+<span class="codeline" id="line-279"><code>	_FUNCDATA_StackObjects       = 2</code></span>
+<span class="codeline" id="line-280"><code>	_FUNCDATA_InlTree            = 3</code></span>
+<span class="codeline" id="line-281"><code>	_FUNCDATA_OpenCodedDeferInfo = 4</code></span>
+<span class="codeline" id="line-282"><code></code></span>
+<span class="codeline" id="line-283"><code>	_ArgsSizeUnknown = -0x80000000</code></span>
+<span class="codeline" id="line-284"><code>)</code></span>
+<span class="codeline" id="line-285"><code></code></span>
+<span class="codeline" id="line-286"><code>const (</code></span>
+<span class="codeline" id="line-287"><code>	// PCDATA_UnsafePoint values.</code></span>
+<span class="codeline" id="line-288"><code>	_PCDATA_UnsafePointSafe   = -1 // Safe for async preemption</code></span>
+<span class="codeline" id="line-289"><code>	_PCDATA_UnsafePointUnsafe = -2 // Unsafe for async preemption</code></span>
+<span class="codeline" id="line-290"><code></code></span>
+<span class="codeline" id="line-291"><code>	// _PCDATA_Restart1(2) apply on a sequence of instructions, within</code></span>
+<span class="codeline" id="line-292"><code>	// which if an async preemption happens, we should back off the PC</code></span>
+<span class="codeline" id="line-293"><code>	// to the start of the sequence when resume.</code></span>
+<span class="codeline" id="line-294"><code>	// We need two so we can distinguish the start/end of the sequence</code></span>
+<span class="codeline" id="line-295"><code>	// in case that two sequences are next to each other.</code></span>
+<span class="codeline" id="line-296"><code>	_PCDATA_Restart1 = -3</code></span>
+<span class="codeline" id="line-297"><code>	_PCDATA_Restart2 = -4</code></span>
+<span class="codeline" id="line-298"><code></code></span>
+<span class="codeline" id="line-299"><code>	// Like _PCDATA_RestartAtEntry, but back to function entry if async</code></span>
+<span class="codeline" id="line-300"><code>	// preempted.</code></span>
+<span class="codeline" id="line-301"><code>	_PCDATA_RestartAtEntry = -5</code></span>
+<span class="codeline" id="line-302"><code>)</code></span>
+<span class="codeline" id="line-303"><code></code></span>
+<span class="codeline" id="line-304"><code>// A FuncID identifies particular functions that need to be treated</code></span>
+<span class="codeline" id="line-305"><code>// specially by the runtime.</code></span>
+<span class="codeline" id="line-306"><code>// Note that in some situations involving plugins, there may be multiple</code></span>
+<span class="codeline" id="line-307"><code>// copies of a particular special runtime function.</code></span>
+<span class="codeline" id="line-308"><code>// Note: this list must match the list in cmd/internal/objabi/funcid.go.</code></span>
+<span class="codeline" id="line-309"><code>type funcID uint8</code></span>
+<span class="codeline" id="line-310"><code></code></span>
+<span class="codeline" id="line-311"><code>const (</code></span>
+<span class="codeline" id="line-312"><code>	funcID_normal funcID = iota // not a special function</code></span>
+<span class="codeline" id="line-313"><code>	funcID_runtime_main</code></span>
+<span class="codeline" id="line-314"><code>	funcID_goexit</code></span>
+<span class="codeline" id="line-315"><code>	funcID_jmpdefer</code></span>
+<span class="codeline" id="line-316"><code>	funcID_mcall</code></span>
+<span class="codeline" id="line-317"><code>	funcID_morestack</code></span>
+<span class="codeline" id="line-318"><code>	funcID_mstart</code></span>
+<span class="codeline" id="line-319"><code>	funcID_rt0_go</code></span>
+<span class="codeline" id="line-320"><code>	funcID_asmcgocall</code></span>
+<span class="codeline" id="line-321"><code>	funcID_sigpanic</code></span>
+<span class="codeline" id="line-322"><code>	funcID_runfinq</code></span>
+<span class="codeline" id="line-323"><code>	funcID_gcBgMarkWorker</code></span>
+<span class="codeline" id="line-324"><code>	funcID_systemstack_switch</code></span>
+<span class="codeline" id="line-325"><code>	funcID_systemstack</code></span>
+<span class="codeline" id="line-326"><code>	funcID_cgocallback</code></span>
+<span class="codeline" id="line-327"><code>	funcID_gogo</code></span>
+<span class="codeline" id="line-328"><code>	funcID_externalthreadhandler</code></span>
+<span class="codeline" id="line-329"><code>	funcID_debugCallV1</code></span>
+<span class="codeline" id="line-330"><code>	funcID_gopanic</code></span>
+<span class="codeline" id="line-331"><code>	funcID_panicwrap</code></span>
+<span class="codeline" id="line-332"><code>	funcID_handleAsyncEvent</code></span>
+<span class="codeline" id="line-333"><code>	funcID_asyncPreempt</code></span>
+<span class="codeline" id="line-334"><code>	funcID_wrapper // any autogenerated code (hash/eq algorithms, method wrappers, etc.)</code></span>
+<span class="codeline" id="line-335"><code>)</code></span>
+<span class="codeline" id="line-336"><code></code></span>
+<span class="codeline" id="line-337"><code>// pcHeader holds data used by the pclntab lookups.</code></span>
+<span class="codeline" id="line-338"><code>type pcHeader struct {</code></span>
+<span class="codeline" id="line-339"><code>	magic          uint32  // 0xFFFFFFFA</code></span>
+<span class="codeline" id="line-340"><code>	pad1, pad2     uint8   // 0,0</code></span>
+<span class="codeline" id="line-341"><code>	minLC          uint8   // min instruction size</code></span>
+<span class="codeline" id="line-342"><code>	ptrSize        uint8   // size of a ptr in bytes</code></span>
+<span class="codeline" id="line-343"><code>	nfunc          int     // number of functions in the module</code></span>
+<span class="codeline" id="line-344"><code>	nfiles         uint    // number of entries in the file tab.</code></span>
+<span class="codeline" id="line-345"><code>	funcnameOffset uintptr // offset to the funcnametab variable from pcHeader</code></span>
+<span class="codeline" id="line-346"><code>	cuOffset       uintptr // offset to the cutab variable from pcHeader</code></span>
+<span class="codeline" id="line-347"><code>	filetabOffset  uintptr // offset to the filetab variable from pcHeader</code></span>
+<span class="codeline" id="line-348"><code>	pctabOffset    uintptr // offset to the pctab varible from pcHeader</code></span>
+<span class="codeline" id="line-349"><code>	pclnOffset     uintptr // offset to the pclntab variable from pcHeader</code></span>
+<span class="codeline" id="line-350"><code>}</code></span>
+<span class="codeline" id="line-351"><code></code></span>
+<span class="codeline" id="line-352"><code>// moduledata records information about the layout of the executable</code></span>
+<span class="codeline" id="line-353"><code>// image. It is written by the linker. Any changes here must be</code></span>
+<span class="codeline" id="line-354"><code>// matched changes to the code in cmd/internal/ld/symtab.go:symtab.</code></span>
+<span class="codeline" id="line-355"><code>// moduledata is stored in statically allocated non-pointer memory;</code></span>
+<span class="codeline" id="line-356"><code>// none of the pointers here are visible to the garbage collector.</code></span>
+<span class="codeline" id="line-357"><code>type moduledata struct {</code></span>
+<span class="codeline" id="line-358"><code>	pcHeader     *pcHeader</code></span>
+<span class="codeline" id="line-359"><code>	funcnametab  []byte</code></span>
+<span class="codeline" id="line-360"><code>	cutab        []uint32</code></span>
+<span class="codeline" id="line-361"><code>	filetab      []byte</code></span>
+<span class="codeline" id="line-362"><code>	pctab        []byte</code></span>
+<span class="codeline" id="line-363"><code>	pclntable    []byte</code></span>
+<span class="codeline" id="line-364"><code>	ftab         []functab</code></span>
+<span class="codeline" id="line-365"><code>	findfunctab  uintptr</code></span>
+<span class="codeline" id="line-366"><code>	minpc, maxpc uintptr</code></span>
+<span class="codeline" id="line-367"><code></code></span>
+<span class="codeline" id="line-368"><code>	text, etext           uintptr</code></span>
+<span class="codeline" id="line-369"><code>	noptrdata, enoptrdata uintptr</code></span>
+<span class="codeline" id="line-370"><code>	data, edata           uintptr</code></span>
+<span class="codeline" id="line-371"><code>	bss, ebss             uintptr</code></span>
+<span class="codeline" id="line-372"><code>	noptrbss, enoptrbss   uintptr</code></span>
+<span class="codeline" id="line-373"><code>	end, gcdata, gcbss    uintptr</code></span>
+<span class="codeline" id="line-374"><code>	types, etypes         uintptr</code></span>
+<span class="codeline" id="line-375"><code></code></span>
+<span class="codeline" id="line-376"><code>	textsectmap []textsect</code></span>
+<span class="codeline" id="line-377"><code>	typelinks   []int32 // offsets from types</code></span>
+<span class="codeline" id="line-378"><code>	itablinks   []*itab</code></span>
+<span class="codeline" id="line-379"><code></code></span>
+<span class="codeline" id="line-380"><code>	ptab []ptabEntry</code></span>
+<span class="codeline" id="line-381"><code></code></span>
+<span class="codeline" id="line-382"><code>	pluginpath string</code></span>
+<span class="codeline" id="line-383"><code>	pkghashes  []modulehash</code></span>
+<span class="codeline" id="line-384"><code></code></span>
+<span class="codeline" id="line-385"><code>	modulename   string</code></span>
+<span class="codeline" id="line-386"><code>	modulehashes []modulehash</code></span>
+<span class="codeline" id="line-387"><code></code></span>
+<span class="codeline" id="line-388"><code>	hasmain uint8 // 1 if module contains the main function, 0 otherwise</code></span>
+<span class="codeline" id="line-389"><code></code></span>
+<span class="codeline" id="line-390"><code>	gcdatamask, gcbssmask bitvector</code></span>
+<span class="codeline" id="line-391"><code></code></span>
+<span class="codeline" id="line-392"><code>	typemap map[typeOff]*_type // offset to *_rtype in previous module</code></span>
+<span class="codeline" id="line-393"><code></code></span>
+<span class="codeline" id="line-394"><code>	bad bool // module failed to load and should be ignored</code></span>
+<span class="codeline" id="line-395"><code></code></span>
+<span class="codeline" id="line-396"><code>	next *moduledata</code></span>
+<span class="codeline" id="line-397"><code>}</code></span>
+<span class="codeline" id="line-398"><code></code></span>
+<span class="codeline" id="line-399"><code>// A modulehash is used to compare the ABI of a new module or a</code></span>
+<span class="codeline" id="line-400"><code>// package in a new module with the loaded program.</code></span>
+<span class="codeline" id="line-401"><code>//</code></span>
+<span class="codeline" id="line-402"><code>// For each shared library a module links against, the linker creates an entry in the</code></span>
+<span class="codeline" id="line-403"><code>// moduledata.modulehashes slice containing the name of the module, the abi hash seen</code></span>
+<span class="codeline" id="line-404"><code>// at link time and a pointer to the runtime abi hash. These are checked in</code></span>
+<span class="codeline" id="line-405"><code>// moduledataverify1 below.</code></span>
+<span class="codeline" id="line-406"><code>//</code></span>
+<span class="codeline" id="line-407"><code>// For each loaded plugin, the pkghashes slice has a modulehash of the</code></span>
+<span class="codeline" id="line-408"><code>// newly loaded package that can be used to check the plugin's version of</code></span>
+<span class="codeline" id="line-409"><code>// a package against any previously loaded version of the package.</code></span>
+<span class="codeline" id="line-410"><code>// This is done in plugin.lastmoduleinit.</code></span>
+<span class="codeline" id="line-411"><code>type modulehash struct {</code></span>
+<span class="codeline" id="line-412"><code>	modulename   string</code></span>
+<span class="codeline" id="line-413"><code>	linktimehash string</code></span>
+<span class="codeline" id="line-414"><code>	runtimehash  *string</code></span>
+<span class="codeline" id="line-415"><code>}</code></span>
+<span class="codeline" id="line-416"><code></code></span>
+<span class="codeline" id="line-417"><code>// pinnedTypemaps are the map[typeOff]*_type from the moduledata objects.</code></span>
+<span class="codeline" id="line-418"><code>//</code></span>
+<span class="codeline" id="line-419"><code>// These typemap objects are allocated at run time on the heap, but the</code></span>
+<span class="codeline" id="line-420"><code>// only direct reference to them is in the moduledata, created by the</code></span>
+<span class="codeline" id="line-421"><code>// linker and marked SNOPTRDATA so it is ignored by the GC.</code></span>
+<span class="codeline" id="line-422"><code>//</code></span>
+<span class="codeline" id="line-423"><code>// To make sure the map isn't collected, we keep a second reference here.</code></span>
+<span class="codeline" id="line-424"><code>var pinnedTypemaps []map[typeOff]*_type</code></span>
+<span class="codeline" id="line-425"><code></code></span>
+<span class="codeline" id="line-426"><code>var firstmoduledata moduledata  // linker symbol</code></span>
+<span class="codeline" id="line-427"><code>var lastmoduledatap *moduledata // linker symbol</code></span>
+<span class="codeline" id="line-428"><code>var modulesSlice *[]*moduledata // see activeModules</code></span>
+<span class="codeline" id="line-429"><code></code></span>
+<span class="codeline" id="line-430"><code>// activeModules returns a slice of active modules.</code></span>
+<span class="codeline" id="line-431"><code>//</code></span>
+<span class="codeline" id="line-432"><code>// A module is active once its gcdatamask and gcbssmask have been</code></span>
+<span class="codeline" id="line-433"><code>// assembled and it is usable by the GC.</code></span>
+<span class="codeline" id="line-434"><code>//</code></span>
+<span class="codeline" id="line-435"><code>// This is nosplit/nowritebarrier because it is called by the</code></span>
+<span class="codeline" id="line-436"><code>// cgo pointer checking code.</code></span>
+<span class="codeline" id="line-437"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-438"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-439"><code>func activeModules() []*moduledata {</code></span>
+<span class="codeline" id="line-440"><code>	p := (*[]*moduledata)(atomic.Loadp(unsafe.Pointer(&amp;modulesSlice)))</code></span>
+<span class="codeline" id="line-441"><code>	if p == nil {</code></span>
+<span class="codeline" id="line-442"><code>		return nil</code></span>
+<span class="codeline" id="line-443"><code>	}</code></span>
+<span class="codeline" id="line-444"><code>	return *p</code></span>
+<span class="codeline" id="line-445"><code>}</code></span>
+<span class="codeline" id="line-446"><code></code></span>
+<span class="codeline" id="line-447"><code>// modulesinit creates the active modules slice out of all loaded modules.</code></span>
+<span class="codeline" id="line-448"><code>//</code></span>
+<span class="codeline" id="line-449"><code>// When a module is first loaded by the dynamic linker, an .init_array</code></span>
+<span class="codeline" id="line-450"><code>// function (written by cmd/link) is invoked to call addmoduledata,</code></span>
+<span class="codeline" id="line-451"><code>// appending to the module to the linked list that starts with</code></span>
+<span class="codeline" id="line-452"><code>// firstmoduledata.</code></span>
+<span class="codeline" id="line-453"><code>//</code></span>
+<span class="codeline" id="line-454"><code>// There are two times this can happen in the lifecycle of a Go</code></span>
+<span class="codeline" id="line-455"><code>// program. First, if compiled with -linkshared, a number of modules</code></span>
+<span class="codeline" id="line-456"><code>// built with -buildmode=shared can be loaded at program initialization.</code></span>
+<span class="codeline" id="line-457"><code>// Second, a Go program can load a module while running that was built</code></span>
+<span class="codeline" id="line-458"><code>// with -buildmode=plugin.</code></span>
+<span class="codeline" id="line-459"><code>//</code></span>
+<span class="codeline" id="line-460"><code>// After loading, this function is called which initializes the</code></span>
+<span class="codeline" id="line-461"><code>// moduledata so it is usable by the GC and creates a new activeModules</code></span>
+<span class="codeline" id="line-462"><code>// list.</code></span>
+<span class="codeline" id="line-463"><code>//</code></span>
+<span class="codeline" id="line-464"><code>// Only one goroutine may call modulesinit at a time.</code></span>
+<span class="codeline" id="line-465"><code>func modulesinit() {</code></span>
+<span class="codeline" id="line-466"><code>	modules := new([]*moduledata)</code></span>
+<span class="codeline" id="line-467"><code>	for md := &amp;firstmoduledata; md != nil; md = md.next {</code></span>
+<span class="codeline" id="line-468"><code>		if md.bad {</code></span>
+<span class="codeline" id="line-469"><code>			continue</code></span>
+<span class="codeline" id="line-470"><code>		}</code></span>
+<span class="codeline" id="line-471"><code>		*modules = append(*modules, md)</code></span>
+<span class="codeline" id="line-472"><code>		if md.gcdatamask == (bitvector{}) {</code></span>
+<span class="codeline" id="line-473"><code>			md.gcdatamask = progToPointerMask((*byte)(unsafe.Pointer(md.gcdata)), md.edata-md.data)</code></span>
+<span class="codeline" id="line-474"><code>			md.gcbssmask = progToPointerMask((*byte)(unsafe.Pointer(md.gcbss)), md.ebss-md.bss)</code></span>
+<span class="codeline" id="line-475"><code>		}</code></span>
+<span class="codeline" id="line-476"><code>	}</code></span>
+<span class="codeline" id="line-477"><code></code></span>
+<span class="codeline" id="line-478"><code>	// Modules appear in the moduledata linked list in the order they are</code></span>
+<span class="codeline" id="line-479"><code>	// loaded by the dynamic loader, with one exception: the</code></span>
+<span class="codeline" id="line-480"><code>	// firstmoduledata itself the module that contains the runtime. This</code></span>
+<span class="codeline" id="line-481"><code>	// is not always the first module (when using -buildmode=shared, it</code></span>
+<span class="codeline" id="line-482"><code>	// is typically libstd.so, the second module). The order matters for</code></span>
+<span class="codeline" id="line-483"><code>	// typelinksinit, so we swap the first module with whatever module</code></span>
+<span class="codeline" id="line-484"><code>	// contains the main function.</code></span>
+<span class="codeline" id="line-485"><code>	//</code></span>
+<span class="codeline" id="line-486"><code>	// See Issue #18729.</code></span>
+<span class="codeline" id="line-487"><code>	for i, md := range *modules {</code></span>
+<span class="codeline" id="line-488"><code>		if md.hasmain != 0 {</code></span>
+<span class="codeline" id="line-489"><code>			(*modules)[0] = md</code></span>
+<span class="codeline" id="line-490"><code>			(*modules)[i] = &amp;firstmoduledata</code></span>
+<span class="codeline" id="line-491"><code>			break</code></span>
+<span class="codeline" id="line-492"><code>		}</code></span>
+<span class="codeline" id="line-493"><code>	}</code></span>
+<span class="codeline" id="line-494"><code></code></span>
+<span class="codeline" id="line-495"><code>	atomicstorep(unsafe.Pointer(&amp;modulesSlice), unsafe.Pointer(modules))</code></span>
+<span class="codeline" id="line-496"><code>}</code></span>
+<span class="codeline" id="line-497"><code></code></span>
+<span class="codeline" id="line-498"><code>type functab struct {</code></span>
+<span class="codeline" id="line-499"><code>	entry   uintptr</code></span>
+<span class="codeline" id="line-500"><code>	funcoff uintptr</code></span>
+<span class="codeline" id="line-501"><code>}</code></span>
+<span class="codeline" id="line-502"><code></code></span>
+<span class="codeline" id="line-503"><code>// Mapping information for secondary text sections</code></span>
+<span class="codeline" id="line-504"><code></code></span>
+<span class="codeline" id="line-505"><code>type textsect struct {</code></span>
+<span class="codeline" id="line-506"><code>	vaddr    uintptr // prelinked section vaddr</code></span>
+<span class="codeline" id="line-507"><code>	length   uintptr // section length</code></span>
+<span class="codeline" id="line-508"><code>	baseaddr uintptr // relocated section address</code></span>
+<span class="codeline" id="line-509"><code>}</code></span>
+<span class="codeline" id="line-510"><code></code></span>
+<span class="codeline" id="line-511"><code>const minfunc = 16                 // minimum function size</code></span>
+<span class="codeline" id="line-512"><code>const pcbucketsize = 256 * minfunc // size of bucket in the pc-&gt;func lookup table</code></span>
+<span class="codeline" id="line-513"><code></code></span>
+<span class="codeline" id="line-514"><code>// findfunctab is an array of these structures.</code></span>
+<span class="codeline" id="line-515"><code>// Each bucket represents 4096 bytes of the text segment.</code></span>
+<span class="codeline" id="line-516"><code>// Each subbucket represents 256 bytes of the text segment.</code></span>
+<span class="codeline" id="line-517"><code>// To find a function given a pc, locate the bucket and subbucket for</code></span>
+<span class="codeline" id="line-518"><code>// that pc. Add together the idx and subbucket value to obtain a</code></span>
+<span class="codeline" id="line-519"><code>// function index. Then scan the functab array starting at that</code></span>
+<span class="codeline" id="line-520"><code>// index to find the target function.</code></span>
+<span class="codeline" id="line-521"><code>// This table uses 20 bytes for every 4096 bytes of code, or ~0.5% overhead.</code></span>
+<span class="codeline" id="line-522"><code>type findfuncbucket struct {</code></span>
+<span class="codeline" id="line-523"><code>	idx        uint32</code></span>
+<span class="codeline" id="line-524"><code>	subbuckets [16]byte</code></span>
+<span class="codeline" id="line-525"><code>}</code></span>
+<span class="codeline" id="line-526"><code></code></span>
+<span class="codeline" id="line-527"><code>func moduledataverify() {</code></span>
+<span class="codeline" id="line-528"><code>	for datap := &amp;firstmoduledata; datap != nil; datap = datap.next {</code></span>
+<span class="codeline" id="line-529"><code>		moduledataverify1(datap)</code></span>
+<span class="codeline" id="line-530"><code>	}</code></span>
+<span class="codeline" id="line-531"><code>}</code></span>
+<span class="codeline" id="line-532"><code></code></span>
+<span class="codeline" id="line-533"><code>const debugPcln = false</code></span>
+<span class="codeline" id="line-534"><code></code></span>
+<span class="codeline" id="line-535"><code>func moduledataverify1(datap *moduledata) {</code></span>
+<span class="codeline" id="line-536"><code>	// Check that the pclntab's format is valid.</code></span>
+<span class="codeline" id="line-537"><code>	hdr := datap.pcHeader</code></span>
+<span class="codeline" id="line-538"><code>	if hdr.magic != 0xfffffffa || hdr.pad1 != 0 || hdr.pad2 != 0 || hdr.minLC != sys.PCQuantum || hdr.ptrSize != sys.PtrSize {</code></span>
+<span class="codeline" id="line-539"><code>		println("runtime: function symbol table header:", hex(hdr.magic), hex(hdr.pad1), hex(hdr.pad2), hex(hdr.minLC), hex(hdr.ptrSize))</code></span>
+<span class="codeline" id="line-540"><code>		throw("invalid function symbol table\n")</code></span>
+<span class="codeline" id="line-541"><code>	}</code></span>
+<span class="codeline" id="line-542"><code></code></span>
+<span class="codeline" id="line-543"><code>	// ftab is lookup table for function by program counter.</code></span>
+<span class="codeline" id="line-544"><code>	nftab := len(datap.ftab) - 1</code></span>
+<span class="codeline" id="line-545"><code>	for i := 0; i &lt; nftab; i++ {</code></span>
+<span class="codeline" id="line-546"><code>		// NOTE: ftab[nftab].entry is legal; it is the address beyond the final function.</code></span>
+<span class="codeline" id="line-547"><code>		if datap.ftab[i].entry &gt; datap.ftab[i+1].entry {</code></span>
+<span class="codeline" id="line-548"><code>			f1 := funcInfo{(*_func)(unsafe.Pointer(&amp;datap.pclntable[datap.ftab[i].funcoff])), datap}</code></span>
+<span class="codeline" id="line-549"><code>			f2 := funcInfo{(*_func)(unsafe.Pointer(&amp;datap.pclntable[datap.ftab[i+1].funcoff])), datap}</code></span>
+<span class="codeline" id="line-550"><code>			f2name := "end"</code></span>
+<span class="codeline" id="line-551"><code>			if i+1 &lt; nftab {</code></span>
+<span class="codeline" id="line-552"><code>				f2name = funcname(f2)</code></span>
+<span class="codeline" id="line-553"><code>			}</code></span>
+<span class="codeline" id="line-554"><code>			println("function symbol table not sorted by program counter:", hex(datap.ftab[i].entry), funcname(f1), "&gt;", hex(datap.ftab[i+1].entry), f2name)</code></span>
+<span class="codeline" id="line-555"><code>			for j := 0; j &lt;= i; j++ {</code></span>
+<span class="codeline" id="line-556"><code>				print("\t", hex(datap.ftab[j].entry), " ", funcname(funcInfo{(*_func)(unsafe.Pointer(&amp;datap.pclntable[datap.ftab[j].funcoff])), datap}), "\n")</code></span>
+<span class="codeline" id="line-557"><code>			}</code></span>
+<span class="codeline" id="line-558"><code>			if GOOS == "aix" &amp;&amp; isarchive {</code></span>
+<span class="codeline" id="line-559"><code>				println("-Wl,-bnoobjreorder is mandatory on aix/ppc64 with c-archive")</code></span>
+<span class="codeline" id="line-560"><code>			}</code></span>
+<span class="codeline" id="line-561"><code>			throw("invalid runtime symbol table")</code></span>
+<span class="codeline" id="line-562"><code>		}</code></span>
+<span class="codeline" id="line-563"><code>	}</code></span>
+<span class="codeline" id="line-564"><code></code></span>
+<span class="codeline" id="line-565"><code>	if datap.minpc != datap.ftab[0].entry ||</code></span>
+<span class="codeline" id="line-566"><code>		datap.maxpc != datap.ftab[nftab].entry {</code></span>
+<span class="codeline" id="line-567"><code>		throw("minpc or maxpc invalid")</code></span>
+<span class="codeline" id="line-568"><code>	}</code></span>
+<span class="codeline" id="line-569"><code></code></span>
+<span class="codeline" id="line-570"><code>	for _, modulehash := range datap.modulehashes {</code></span>
+<span class="codeline" id="line-571"><code>		if modulehash.linktimehash != *modulehash.runtimehash {</code></span>
+<span class="codeline" id="line-572"><code>			println("abi mismatch detected between", datap.modulename, "and", modulehash.modulename)</code></span>
+<span class="codeline" id="line-573"><code>			throw("abi mismatch")</code></span>
+<span class="codeline" id="line-574"><code>		}</code></span>
+<span class="codeline" id="line-575"><code>	}</code></span>
+<span class="codeline" id="line-576"><code>}</code></span>
+<span class="codeline" id="line-577"><code></code></span>
+<span class="codeline" id="line-578"><code>// FuncForPC returns a *Func describing the function that contains the</code></span>
+<span class="codeline" id="line-579"><code>// given program counter address, or else nil.</code></span>
+<span class="codeline" id="line-580"><code>//</code></span>
+<span class="codeline" id="line-581"><code>// If pc represents multiple functions because of inlining, it returns</code></span>
+<span class="codeline" id="line-582"><code>// the *Func describing the innermost function, but with an entry of</code></span>
+<span class="codeline" id="line-583"><code>// the outermost function.</code></span>
+<span class="codeline" id="line-584"><code>func FuncForPC(pc uintptr) *Func {</code></span>
+<span class="codeline" id="line-585"><code>	f := findfunc(pc)</code></span>
+<span class="codeline" id="line-586"><code>	if !f.valid() {</code></span>
+<span class="codeline" id="line-587"><code>		return nil</code></span>
+<span class="codeline" id="line-588"><code>	}</code></span>
+<span class="codeline" id="line-589"><code>	if inldata := funcdata(f, _FUNCDATA_InlTree); inldata != nil {</code></span>
+<span class="codeline" id="line-590"><code>		// Note: strict=false so bad PCs (those between functions) don't crash the runtime.</code></span>
+<span class="codeline" id="line-591"><code>		// We just report the preceding function in that situation. See issue 29735.</code></span>
+<span class="codeline" id="line-592"><code>		// TODO: Perhaps we should report no function at all in that case.</code></span>
+<span class="codeline" id="line-593"><code>		// The runtime currently doesn't have function end info, alas.</code></span>
+<span class="codeline" id="line-594"><code>		if ix := pcdatavalue1(f, _PCDATA_InlTreeIndex, pc, nil, false); ix &gt;= 0 {</code></span>
+<span class="codeline" id="line-595"><code>			inltree := (*[1 &lt;&lt; 20]inlinedCall)(inldata)</code></span>
+<span class="codeline" id="line-596"><code>			name := funcnameFromNameoff(f, inltree[ix].func_)</code></span>
+<span class="codeline" id="line-597"><code>			file, line := funcline(f, pc)</code></span>
+<span class="codeline" id="line-598"><code>			fi := &amp;funcinl{</code></span>
+<span class="codeline" id="line-599"><code>				entry: f.entry, // entry of the real (the outermost) function.</code></span>
+<span class="codeline" id="line-600"><code>				name:  name,</code></span>
+<span class="codeline" id="line-601"><code>				file:  file,</code></span>
+<span class="codeline" id="line-602"><code>				line:  int(line),</code></span>
+<span class="codeline" id="line-603"><code>			}</code></span>
+<span class="codeline" id="line-604"><code>			return (*Func)(unsafe.Pointer(fi))</code></span>
+<span class="codeline" id="line-605"><code>		}</code></span>
+<span class="codeline" id="line-606"><code>	}</code></span>
+<span class="codeline" id="line-607"><code>	return f._Func()</code></span>
+<span class="codeline" id="line-608"><code>}</code></span>
+<span class="codeline" id="line-609"><code></code></span>
+<span class="codeline" id="line-610"><code>// Name returns the name of the function.</code></span>
+<span class="codeline" id="line-611"><code>func (f *Func) Name() string {</code></span>
+<span class="codeline" id="line-612"><code>	if f == nil {</code></span>
+<span class="codeline" id="line-613"><code>		return ""</code></span>
+<span class="codeline" id="line-614"><code>	}</code></span>
+<span class="codeline" id="line-615"><code>	fn := f.raw()</code></span>
+<span class="codeline" id="line-616"><code>	if fn.entry == 0 { // inlined version</code></span>
+<span class="codeline" id="line-617"><code>		fi := (*funcinl)(unsafe.Pointer(fn))</code></span>
+<span class="codeline" id="line-618"><code>		return fi.name</code></span>
+<span class="codeline" id="line-619"><code>	}</code></span>
+<span class="codeline" id="line-620"><code>	return funcname(f.funcInfo())</code></span>
+<span class="codeline" id="line-621"><code>}</code></span>
+<span class="codeline" id="line-622"><code></code></span>
+<span class="codeline" id="line-623"><code>// Entry returns the entry address of the function.</code></span>
+<span class="codeline" id="line-624"><code>func (f *Func) Entry() uintptr {</code></span>
+<span class="codeline" id="line-625"><code>	fn := f.raw()</code></span>
+<span class="codeline" id="line-626"><code>	if fn.entry == 0 { // inlined version</code></span>
+<span class="codeline" id="line-627"><code>		fi := (*funcinl)(unsafe.Pointer(fn))</code></span>
+<span class="codeline" id="line-628"><code>		return fi.entry</code></span>
+<span class="codeline" id="line-629"><code>	}</code></span>
+<span class="codeline" id="line-630"><code>	return fn.entry</code></span>
+<span class="codeline" id="line-631"><code>}</code></span>
+<span class="codeline" id="line-632"><code></code></span>
+<span class="codeline" id="line-633"><code>// FileLine returns the file name and line number of the</code></span>
+<span class="codeline" id="line-634"><code>// source code corresponding to the program counter pc.</code></span>
+<span class="codeline" id="line-635"><code>// The result will not be accurate if pc is not a program</code></span>
+<span class="codeline" id="line-636"><code>// counter within f.</code></span>
+<span class="codeline" id="line-637"><code>func (f *Func) FileLine(pc uintptr) (file string, line int) {</code></span>
+<span class="codeline" id="line-638"><code>	fn := f.raw()</code></span>
+<span class="codeline" id="line-639"><code>	if fn.entry == 0 { // inlined version</code></span>
+<span class="codeline" id="line-640"><code>		fi := (*funcinl)(unsafe.Pointer(fn))</code></span>
+<span class="codeline" id="line-641"><code>		return fi.file, fi.line</code></span>
+<span class="codeline" id="line-642"><code>	}</code></span>
+<span class="codeline" id="line-643"><code>	// Pass strict=false here, because anyone can call this function,</code></span>
+<span class="codeline" id="line-644"><code>	// and they might just be wrong about targetpc belonging to f.</code></span>
+<span class="codeline" id="line-645"><code>	file, line32 := funcline1(f.funcInfo(), pc, false)</code></span>
+<span class="codeline" id="line-646"><code>	return file, int(line32)</code></span>
+<span class="codeline" id="line-647"><code>}</code></span>
+<span class="codeline" id="line-648"><code></code></span>
+<span class="codeline" id="line-649"><code>func findmoduledatap(pc uintptr) *moduledata {</code></span>
+<span class="codeline" id="line-650"><code>	for datap := &amp;firstmoduledata; datap != nil; datap = datap.next {</code></span>
+<span class="codeline" id="line-651"><code>		if datap.minpc &lt;= pc &amp;&amp; pc &lt; datap.maxpc {</code></span>
+<span class="codeline" id="line-652"><code>			return datap</code></span>
+<span class="codeline" id="line-653"><code>		}</code></span>
+<span class="codeline" id="line-654"><code>	}</code></span>
+<span class="codeline" id="line-655"><code>	return nil</code></span>
+<span class="codeline" id="line-656"><code>}</code></span>
+<span class="codeline" id="line-657"><code></code></span>
+<span class="codeline" id="line-658"><code>type funcInfo struct {</code></span>
+<span class="codeline" id="line-659"><code>	*_func</code></span>
+<span class="codeline" id="line-660"><code>	datap *moduledata</code></span>
+<span class="codeline" id="line-661"><code>}</code></span>
+<span class="codeline" id="line-662"><code></code></span>
+<span class="codeline" id="line-663"><code>func (f funcInfo) valid() bool {</code></span>
+<span class="codeline" id="line-664"><code>	return f._func != nil</code></span>
+<span class="codeline" id="line-665"><code>}</code></span>
+<span class="codeline" id="line-666"><code></code></span>
+<span class="codeline" id="line-667"><code>func (f funcInfo) _Func() *Func {</code></span>
+<span class="codeline" id="line-668"><code>	return (*Func)(unsafe.Pointer(f._func))</code></span>
+<span class="codeline" id="line-669"><code>}</code></span>
+<span class="codeline" id="line-670"><code></code></span>
+<span class="codeline" id="line-671"><code>func findfunc(pc uintptr) funcInfo {</code></span>
+<span class="codeline" id="line-672"><code>	datap := findmoduledatap(pc)</code></span>
+<span class="codeline" id="line-673"><code>	if datap == nil {</code></span>
+<span class="codeline" id="line-674"><code>		return funcInfo{}</code></span>
+<span class="codeline" id="line-675"><code>	}</code></span>
+<span class="codeline" id="line-676"><code>	const nsub = uintptr(len(findfuncbucket{}.subbuckets))</code></span>
+<span class="codeline" id="line-677"><code></code></span>
+<span class="codeline" id="line-678"><code>	x := pc - datap.minpc</code></span>
+<span class="codeline" id="line-679"><code>	b := x / pcbucketsize</code></span>
+<span class="codeline" id="line-680"><code>	i := x % pcbucketsize / (pcbucketsize / nsub)</code></span>
+<span class="codeline" id="line-681"><code></code></span>
+<span class="codeline" id="line-682"><code>	ffb := (*findfuncbucket)(add(unsafe.Pointer(datap.findfunctab), b*unsafe.Sizeof(findfuncbucket{})))</code></span>
+<span class="codeline" id="line-683"><code>	idx := ffb.idx + uint32(ffb.subbuckets[i])</code></span>
+<span class="codeline" id="line-684"><code></code></span>
+<span class="codeline" id="line-685"><code>	// If the idx is beyond the end of the ftab, set it to the end of the table and search backward.</code></span>
+<span class="codeline" id="line-686"><code>	// This situation can occur if multiple text sections are generated to handle large text sections</code></span>
+<span class="codeline" id="line-687"><code>	// and the linker has inserted jump tables between them.</code></span>
+<span class="codeline" id="line-688"><code></code></span>
+<span class="codeline" id="line-689"><code>	if idx &gt;= uint32(len(datap.ftab)) {</code></span>
+<span class="codeline" id="line-690"><code>		idx = uint32(len(datap.ftab) - 1)</code></span>
+<span class="codeline" id="line-691"><code>	}</code></span>
+<span class="codeline" id="line-692"><code>	if pc &lt; datap.ftab[idx].entry {</code></span>
+<span class="codeline" id="line-693"><code>		// With multiple text sections, the idx might reference a function address that</code></span>
+<span class="codeline" id="line-694"><code>		// is higher than the pc being searched, so search backward until the matching address is found.</code></span>
+<span class="codeline" id="line-695"><code></code></span>
+<span class="codeline" id="line-696"><code>		for datap.ftab[idx].entry &gt; pc &amp;&amp; idx &gt; 0 {</code></span>
+<span class="codeline" id="line-697"><code>			idx--</code></span>
+<span class="codeline" id="line-698"><code>		}</code></span>
+<span class="codeline" id="line-699"><code>		if idx == 0 {</code></span>
+<span class="codeline" id="line-700"><code>			throw("findfunc: bad findfunctab entry idx")</code></span>
+<span class="codeline" id="line-701"><code>		}</code></span>
+<span class="codeline" id="line-702"><code>	} else {</code></span>
+<span class="codeline" id="line-703"><code>		// linear search to find func with pc &gt;= entry.</code></span>
+<span class="codeline" id="line-704"><code>		for datap.ftab[idx+1].entry &lt;= pc {</code></span>
+<span class="codeline" id="line-705"><code>			idx++</code></span>
+<span class="codeline" id="line-706"><code>		}</code></span>
+<span class="codeline" id="line-707"><code>	}</code></span>
+<span class="codeline" id="line-708"><code>	funcoff := datap.ftab[idx].funcoff</code></span>
+<span class="codeline" id="line-709"><code>	if funcoff == ^uintptr(0) {</code></span>
+<span class="codeline" id="line-710"><code>		// With multiple text sections, there may be functions inserted by the external</code></span>
+<span class="codeline" id="line-711"><code>		// linker that are not known by Go. This means there may be holes in the PC</code></span>
+<span class="codeline" id="line-712"><code>		// range covered by the func table. The invalid funcoff value indicates a hole.</code></span>
+<span class="codeline" id="line-713"><code>		// See also cmd/link/internal/ld/pcln.go:pclntab</code></span>
+<span class="codeline" id="line-714"><code>		return funcInfo{}</code></span>
+<span class="codeline" id="line-715"><code>	}</code></span>
+<span class="codeline" id="line-716"><code>	return funcInfo{(*_func)(unsafe.Pointer(&amp;datap.pclntable[funcoff])), datap}</code></span>
+<span class="codeline" id="line-717"><code>}</code></span>
+<span class="codeline" id="line-718"><code></code></span>
+<span class="codeline" id="line-719"><code>type pcvalueCache struct {</code></span>
+<span class="codeline" id="line-720"><code>	entries [2][8]pcvalueCacheEnt</code></span>
+<span class="codeline" id="line-721"><code>}</code></span>
+<span class="codeline" id="line-722"><code></code></span>
+<span class="codeline" id="line-723"><code>type pcvalueCacheEnt struct {</code></span>
+<span class="codeline" id="line-724"><code>	// targetpc and off together are the key of this cache entry.</code></span>
+<span class="codeline" id="line-725"><code>	targetpc uintptr</code></span>
+<span class="codeline" id="line-726"><code>	off      uint32</code></span>
+<span class="codeline" id="line-727"><code>	// val is the value of this cached pcvalue entry.</code></span>
+<span class="codeline" id="line-728"><code>	val int32</code></span>
+<span class="codeline" id="line-729"><code>}</code></span>
+<span class="codeline" id="line-730"><code></code></span>
+<span class="codeline" id="line-731"><code>// pcvalueCacheKey returns the outermost index in a pcvalueCache to use for targetpc.</code></span>
+<span class="codeline" id="line-732"><code>// It must be very cheap to calculate.</code></span>
+<span class="codeline" id="line-733"><code>// For now, align to sys.PtrSize and reduce mod the number of entries.</code></span>
+<span class="codeline" id="line-734"><code>// In practice, this appears to be fairly randomly and evenly distributed.</code></span>
+<span class="codeline" id="line-735"><code>func pcvalueCacheKey(targetpc uintptr) uintptr {</code></span>
+<span class="codeline" id="line-736"><code>	return (targetpc / sys.PtrSize) % uintptr(len(pcvalueCache{}.entries))</code></span>
+<span class="codeline" id="line-737"><code>}</code></span>
+<span class="codeline" id="line-738"><code></code></span>
+<span class="codeline" id="line-739"><code>// Returns the PCData value, and the PC where this value starts.</code></span>
+<span class="codeline" id="line-740"><code>// TODO: the start PC is returned only when cache is nil.</code></span>
+<span class="codeline" id="line-741"><code>func pcvalue(f funcInfo, off uint32, targetpc uintptr, cache *pcvalueCache, strict bool) (int32, uintptr) {</code></span>
+<span class="codeline" id="line-742"><code>	if off == 0 {</code></span>
+<span class="codeline" id="line-743"><code>		return -1, 0</code></span>
+<span class="codeline" id="line-744"><code>	}</code></span>
+<span class="codeline" id="line-745"><code></code></span>
+<span class="codeline" id="line-746"><code>	// Check the cache. This speeds up walks of deep stacks, which</code></span>
+<span class="codeline" id="line-747"><code>	// tend to have the same recursive functions over and over.</code></span>
+<span class="codeline" id="line-748"><code>	//</code></span>
+<span class="codeline" id="line-749"><code>	// This cache is small enough that full associativity is</code></span>
+<span class="codeline" id="line-750"><code>	// cheaper than doing the hashing for a less associative</code></span>
+<span class="codeline" id="line-751"><code>	// cache.</code></span>
+<span class="codeline" id="line-752"><code>	if cache != nil {</code></span>
+<span class="codeline" id="line-753"><code>		x := pcvalueCacheKey(targetpc)</code></span>
+<span class="codeline" id="line-754"><code>		for i := range cache.entries[x] {</code></span>
+<span class="codeline" id="line-755"><code>			// We check off first because we're more</code></span>
+<span class="codeline" id="line-756"><code>			// likely to have multiple entries with</code></span>
+<span class="codeline" id="line-757"><code>			// different offsets for the same targetpc</code></span>
+<span class="codeline" id="line-758"><code>			// than the other way around, so we'll usually</code></span>
+<span class="codeline" id="line-759"><code>			// fail in the first clause.</code></span>
+<span class="codeline" id="line-760"><code>			ent := &amp;cache.entries[x][i]</code></span>
+<span class="codeline" id="line-761"><code>			if ent.off == off &amp;&amp; ent.targetpc == targetpc {</code></span>
+<span class="codeline" id="line-762"><code>				return ent.val, 0</code></span>
+<span class="codeline" id="line-763"><code>			}</code></span>
+<span class="codeline" id="line-764"><code>		}</code></span>
+<span class="codeline" id="line-765"><code>	}</code></span>
+<span class="codeline" id="line-766"><code></code></span>
+<span class="codeline" id="line-767"><code>	if !f.valid() {</code></span>
+<span class="codeline" id="line-768"><code>		if strict &amp;&amp; panicking == 0 {</code></span>
+<span class="codeline" id="line-769"><code>			print("runtime: no module data for ", hex(f.entry), "\n")</code></span>
+<span class="codeline" id="line-770"><code>			throw("no module data")</code></span>
+<span class="codeline" id="line-771"><code>		}</code></span>
+<span class="codeline" id="line-772"><code>		return -1, 0</code></span>
+<span class="codeline" id="line-773"><code>	}</code></span>
+<span class="codeline" id="line-774"><code>	datap := f.datap</code></span>
+<span class="codeline" id="line-775"><code>	p := datap.pctab[off:]</code></span>
+<span class="codeline" id="line-776"><code>	pc := f.entry</code></span>
+<span class="codeline" id="line-777"><code>	prevpc := pc</code></span>
+<span class="codeline" id="line-778"><code>	val := int32(-1)</code></span>
+<span class="codeline" id="line-779"><code>	for {</code></span>
+<span class="codeline" id="line-780"><code>		var ok bool</code></span>
+<span class="codeline" id="line-781"><code>		p, ok = step(p, &amp;pc, &amp;val, pc == f.entry)</code></span>
+<span class="codeline" id="line-782"><code>		if !ok {</code></span>
+<span class="codeline" id="line-783"><code>			break</code></span>
+<span class="codeline" id="line-784"><code>		}</code></span>
+<span class="codeline" id="line-785"><code>		if targetpc &lt; pc {</code></span>
+<span class="codeline" id="line-786"><code>			// Replace a random entry in the cache. Random</code></span>
+<span class="codeline" id="line-787"><code>			// replacement prevents a performance cliff if</code></span>
+<span class="codeline" id="line-788"><code>			// a recursive stack's cycle is slightly</code></span>
+<span class="codeline" id="line-789"><code>			// larger than the cache.</code></span>
+<span class="codeline" id="line-790"><code>			// Put the new element at the beginning,</code></span>
+<span class="codeline" id="line-791"><code>			// since it is the most likely to be newly used.</code></span>
+<span class="codeline" id="line-792"><code>			if cache != nil {</code></span>
+<span class="codeline" id="line-793"><code>				x := pcvalueCacheKey(targetpc)</code></span>
+<span class="codeline" id="line-794"><code>				e := &amp;cache.entries[x]</code></span>
+<span class="codeline" id="line-795"><code>				ci := fastrand() % uint32(len(cache.entries[x]))</code></span>
+<span class="codeline" id="line-796"><code>				e[ci] = e[0]</code></span>
+<span class="codeline" id="line-797"><code>				e[0] = pcvalueCacheEnt{</code></span>
+<span class="codeline" id="line-798"><code>					targetpc: targetpc,</code></span>
+<span class="codeline" id="line-799"><code>					off:      off,</code></span>
+<span class="codeline" id="line-800"><code>					val:      val,</code></span>
+<span class="codeline" id="line-801"><code>				}</code></span>
+<span class="codeline" id="line-802"><code>			}</code></span>
+<span class="codeline" id="line-803"><code></code></span>
+<span class="codeline" id="line-804"><code>			return val, prevpc</code></span>
+<span class="codeline" id="line-805"><code>		}</code></span>
+<span class="codeline" id="line-806"><code>		prevpc = pc</code></span>
+<span class="codeline" id="line-807"><code>	}</code></span>
+<span class="codeline" id="line-808"><code></code></span>
+<span class="codeline" id="line-809"><code>	// If there was a table, it should have covered all program counters.</code></span>
+<span class="codeline" id="line-810"><code>	// If not, something is wrong.</code></span>
+<span class="codeline" id="line-811"><code>	if panicking != 0 || !strict {</code></span>
+<span class="codeline" id="line-812"><code>		return -1, 0</code></span>
+<span class="codeline" id="line-813"><code>	}</code></span>
+<span class="codeline" id="line-814"><code></code></span>
+<span class="codeline" id="line-815"><code>	print("runtime: invalid pc-encoded table f=", funcname(f), " pc=", hex(pc), " targetpc=", hex(targetpc), " tab=", p, "\n")</code></span>
+<span class="codeline" id="line-816"><code></code></span>
+<span class="codeline" id="line-817"><code>	p = datap.pctab[off:]</code></span>
+<span class="codeline" id="line-818"><code>	pc = f.entry</code></span>
+<span class="codeline" id="line-819"><code>	val = -1</code></span>
+<span class="codeline" id="line-820"><code>	for {</code></span>
+<span class="codeline" id="line-821"><code>		var ok bool</code></span>
+<span class="codeline" id="line-822"><code>		p, ok = step(p, &amp;pc, &amp;val, pc == f.entry)</code></span>
+<span class="codeline" id="line-823"><code>		if !ok {</code></span>
+<span class="codeline" id="line-824"><code>			break</code></span>
+<span class="codeline" id="line-825"><code>		}</code></span>
+<span class="codeline" id="line-826"><code>		print("\tvalue=", val, " until pc=", hex(pc), "\n")</code></span>
+<span class="codeline" id="line-827"><code>	}</code></span>
+<span class="codeline" id="line-828"><code></code></span>
+<span class="codeline" id="line-829"><code>	throw("invalid runtime symbol table")</code></span>
+<span class="codeline" id="line-830"><code>	return -1, 0</code></span>
+<span class="codeline" id="line-831"><code>}</code></span>
+<span class="codeline" id="line-832"><code></code></span>
+<span class="codeline" id="line-833"><code>func cfuncname(f funcInfo) *byte {</code></span>
+<span class="codeline" id="line-834"><code>	if !f.valid() || f.nameoff == 0 {</code></span>
+<span class="codeline" id="line-835"><code>		return nil</code></span>
+<span class="codeline" id="line-836"><code>	}</code></span>
+<span class="codeline" id="line-837"><code>	return &amp;f.datap.funcnametab[f.nameoff]</code></span>
+<span class="codeline" id="line-838"><code>}</code></span>
+<span class="codeline" id="line-839"><code></code></span>
+<span class="codeline" id="line-840"><code>func funcname(f funcInfo) string {</code></span>
+<span class="codeline" id="line-841"><code>	return gostringnocopy(cfuncname(f))</code></span>
+<span class="codeline" id="line-842"><code>}</code></span>
+<span class="codeline" id="line-843"><code></code></span>
+<span class="codeline" id="line-844"><code>func funcpkgpath(f funcInfo) string {</code></span>
+<span class="codeline" id="line-845"><code>	name := funcname(f)</code></span>
+<span class="codeline" id="line-846"><code>	i := len(name) - 1</code></span>
+<span class="codeline" id="line-847"><code>	for ; i &gt; 0; i-- {</code></span>
+<span class="codeline" id="line-848"><code>		if name[i] == '/' {</code></span>
+<span class="codeline" id="line-849"><code>			break</code></span>
+<span class="codeline" id="line-850"><code>		}</code></span>
+<span class="codeline" id="line-851"><code>	}</code></span>
+<span class="codeline" id="line-852"><code>	for ; i &lt; len(name); i++ {</code></span>
+<span class="codeline" id="line-853"><code>		if name[i] == '.' {</code></span>
+<span class="codeline" id="line-854"><code>			break</code></span>
+<span class="codeline" id="line-855"><code>		}</code></span>
+<span class="codeline" id="line-856"><code>	}</code></span>
+<span class="codeline" id="line-857"><code>	return name[:i]</code></span>
+<span class="codeline" id="line-858"><code>}</code></span>
+<span class="codeline" id="line-859"><code></code></span>
+<span class="codeline" id="line-860"><code>func cfuncnameFromNameoff(f funcInfo, nameoff int32) *byte {</code></span>
+<span class="codeline" id="line-861"><code>	if !f.valid() {</code></span>
+<span class="codeline" id="line-862"><code>		return nil</code></span>
+<span class="codeline" id="line-863"><code>	}</code></span>
+<span class="codeline" id="line-864"><code>	return &amp;f.datap.funcnametab[nameoff]</code></span>
+<span class="codeline" id="line-865"><code>}</code></span>
+<span class="codeline" id="line-866"><code></code></span>
+<span class="codeline" id="line-867"><code>func funcnameFromNameoff(f funcInfo, nameoff int32) string {</code></span>
+<span class="codeline" id="line-868"><code>	return gostringnocopy(cfuncnameFromNameoff(f, nameoff))</code></span>
+<span class="codeline" id="line-869"><code>}</code></span>
+<span class="codeline" id="line-870"><code></code></span>
+<span class="codeline" id="line-871"><code>func funcfile(f funcInfo, fileno int32) string {</code></span>
+<span class="codeline" id="line-872"><code>	datap := f.datap</code></span>
+<span class="codeline" id="line-873"><code>	if !f.valid() {</code></span>
+<span class="codeline" id="line-874"><code>		return "?"</code></span>
+<span class="codeline" id="line-875"><code>	}</code></span>
+<span class="codeline" id="line-876"><code>	// Make sure the cu index and file offset are valid</code></span>
+<span class="codeline" id="line-877"><code>	if fileoff := datap.cutab[f.cuOffset+uint32(fileno)]; fileoff != ^uint32(0) {</code></span>
+<span class="codeline" id="line-878"><code>		return gostringnocopy(&amp;datap.filetab[fileoff])</code></span>
+<span class="codeline" id="line-879"><code>	}</code></span>
+<span class="codeline" id="line-880"><code>	// pcln section is corrupt.</code></span>
+<span class="codeline" id="line-881"><code>	return "?"</code></span>
+<span class="codeline" id="line-882"><code>}</code></span>
+<span class="codeline" id="line-883"><code></code></span>
+<span class="codeline" id="line-884"><code>func funcline1(f funcInfo, targetpc uintptr, strict bool) (file string, line int32) {</code></span>
+<span class="codeline" id="line-885"><code>	datap := f.datap</code></span>
+<span class="codeline" id="line-886"><code>	if !f.valid() {</code></span>
+<span class="codeline" id="line-887"><code>		return "?", 0</code></span>
+<span class="codeline" id="line-888"><code>	}</code></span>
+<span class="codeline" id="line-889"><code>	fileno, _ := pcvalue(f, f.pcfile, targetpc, nil, strict)</code></span>
+<span class="codeline" id="line-890"><code>	line, _ = pcvalue(f, f.pcln, targetpc, nil, strict)</code></span>
+<span class="codeline" id="line-891"><code>	if fileno == -1 || line == -1 || int(fileno) &gt;= len(datap.filetab) {</code></span>
+<span class="codeline" id="line-892"><code>		// print("looking for ", hex(targetpc), " in ", funcname(f), " got file=", fileno, " line=", lineno, "\n")</code></span>
+<span class="codeline" id="line-893"><code>		return "?", 0</code></span>
+<span class="codeline" id="line-894"><code>	}</code></span>
+<span class="codeline" id="line-895"><code>	file = funcfile(f, fileno)</code></span>
+<span class="codeline" id="line-896"><code>	return</code></span>
+<span class="codeline" id="line-897"><code>}</code></span>
+<span class="codeline" id="line-898"><code></code></span>
+<span class="codeline" id="line-899"><code>func funcline(f funcInfo, targetpc uintptr) (file string, line int32) {</code></span>
+<span class="codeline" id="line-900"><code>	return funcline1(f, targetpc, true)</code></span>
+<span class="codeline" id="line-901"><code>}</code></span>
+<span class="codeline" id="line-902"><code></code></span>
+<span class="codeline" id="line-903"><code>func funcspdelta(f funcInfo, targetpc uintptr, cache *pcvalueCache) int32 {</code></span>
+<span class="codeline" id="line-904"><code>	x, _ := pcvalue(f, f.pcsp, targetpc, cache, true)</code></span>
+<span class="codeline" id="line-905"><code>	if x&amp;(sys.PtrSize-1) != 0 {</code></span>
+<span class="codeline" id="line-906"><code>		print("invalid spdelta ", funcname(f), " ", hex(f.entry), " ", hex(targetpc), " ", hex(f.pcsp), " ", x, "\n")</code></span>
+<span class="codeline" id="line-907"><code>	}</code></span>
+<span class="codeline" id="line-908"><code>	return x</code></span>
+<span class="codeline" id="line-909"><code>}</code></span>
+<span class="codeline" id="line-910"><code></code></span>
+<span class="codeline" id="line-911"><code>// funcMaxSPDelta returns the maximum spdelta at any point in f.</code></span>
+<span class="codeline" id="line-912"><code>func funcMaxSPDelta(f funcInfo) int32 {</code></span>
+<span class="codeline" id="line-913"><code>	datap := f.datap</code></span>
+<span class="codeline" id="line-914"><code>	p := datap.pctab[f.pcsp:]</code></span>
+<span class="codeline" id="line-915"><code>	pc := f.entry</code></span>
+<span class="codeline" id="line-916"><code>	val := int32(-1)</code></span>
+<span class="codeline" id="line-917"><code>	max := int32(0)</code></span>
+<span class="codeline" id="line-918"><code>	for {</code></span>
+<span class="codeline" id="line-919"><code>		var ok bool</code></span>
+<span class="codeline" id="line-920"><code>		p, ok = step(p, &amp;pc, &amp;val, pc == f.entry)</code></span>
+<span class="codeline" id="line-921"><code>		if !ok {</code></span>
+<span class="codeline" id="line-922"><code>			return max</code></span>
+<span class="codeline" id="line-923"><code>		}</code></span>
+<span class="codeline" id="line-924"><code>		if val &gt; max {</code></span>
+<span class="codeline" id="line-925"><code>			max = val</code></span>
+<span class="codeline" id="line-926"><code>		}</code></span>
+<span class="codeline" id="line-927"><code>	}</code></span>
+<span class="codeline" id="line-928"><code>}</code></span>
+<span class="codeline" id="line-929"><code></code></span>
+<span class="codeline" id="line-930"><code>func pcdatastart(f funcInfo, table uint32) uint32 {</code></span>
+<span class="codeline" id="line-931"><code>	return *(*uint32)(add(unsafe.Pointer(&amp;f.nfuncdata), unsafe.Sizeof(f.nfuncdata)+uintptr(table)*4))</code></span>
+<span class="codeline" id="line-932"><code>}</code></span>
+<span class="codeline" id="line-933"><code></code></span>
+<span class="codeline" id="line-934"><code>func pcdatavalue(f funcInfo, table uint32, targetpc uintptr, cache *pcvalueCache) int32 {</code></span>
+<span class="codeline" id="line-935"><code>	if table &gt;= f.npcdata {</code></span>
+<span class="codeline" id="line-936"><code>		return -1</code></span>
+<span class="codeline" id="line-937"><code>	}</code></span>
+<span class="codeline" id="line-938"><code>	r, _ := pcvalue(f, pcdatastart(f, table), targetpc, cache, true)</code></span>
+<span class="codeline" id="line-939"><code>	return r</code></span>
+<span class="codeline" id="line-940"><code>}</code></span>
+<span class="codeline" id="line-941"><code></code></span>
+<span class="codeline" id="line-942"><code>func pcdatavalue1(f funcInfo, table uint32, targetpc uintptr, cache *pcvalueCache, strict bool) int32 {</code></span>
+<span class="codeline" id="line-943"><code>	if table &gt;= f.npcdata {</code></span>
+<span class="codeline" id="line-944"><code>		return -1</code></span>
+<span class="codeline" id="line-945"><code>	}</code></span>
+<span class="codeline" id="line-946"><code>	r, _ := pcvalue(f, pcdatastart(f, table), targetpc, cache, strict)</code></span>
+<span class="codeline" id="line-947"><code>	return r</code></span>
+<span class="codeline" id="line-948"><code>}</code></span>
+<span class="codeline" id="line-949"><code></code></span>
+<span class="codeline" id="line-950"><code>// Like pcdatavalue, but also return the start PC of this PCData value.</code></span>
+<span class="codeline" id="line-951"><code>// It doesn't take a cache.</code></span>
+<span class="codeline" id="line-952"><code>func pcdatavalue2(f funcInfo, table uint32, targetpc uintptr) (int32, uintptr) {</code></span>
+<span class="codeline" id="line-953"><code>	if table &gt;= f.npcdata {</code></span>
+<span class="codeline" id="line-954"><code>		return -1, 0</code></span>
+<span class="codeline" id="line-955"><code>	}</code></span>
+<span class="codeline" id="line-956"><code>	return pcvalue(f, pcdatastart(f, table), targetpc, nil, true)</code></span>
+<span class="codeline" id="line-957"><code>}</code></span>
+<span class="codeline" id="line-958"><code></code></span>
+<span class="codeline" id="line-959"><code>func funcdata(f funcInfo, i uint8) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-960"><code>	if i &lt; 0 || i &gt;= f.nfuncdata {</code></span>
+<span class="codeline" id="line-961"><code>		return nil</code></span>
+<span class="codeline" id="line-962"><code>	}</code></span>
+<span class="codeline" id="line-963"><code>	p := add(unsafe.Pointer(&amp;f.nfuncdata), unsafe.Sizeof(f.nfuncdata)+uintptr(f.npcdata)*4)</code></span>
+<span class="codeline" id="line-964"><code>	if sys.PtrSize == 8 &amp;&amp; uintptr(p)&amp;4 != 0 {</code></span>
+<span class="codeline" id="line-965"><code>		if uintptr(unsafe.Pointer(f._func))&amp;4 != 0 {</code></span>
+<span class="codeline" id="line-966"><code>			println("runtime: misaligned func", f._func)</code></span>
+<span class="codeline" id="line-967"><code>		}</code></span>
+<span class="codeline" id="line-968"><code>		p = add(p, 4)</code></span>
+<span class="codeline" id="line-969"><code>	}</code></span>
+<span class="codeline" id="line-970"><code>	return *(*unsafe.Pointer)(add(p, uintptr(i)*sys.PtrSize))</code></span>
+<span class="codeline" id="line-971"><code>}</code></span>
+<span class="codeline" id="line-972"><code></code></span>
+<span class="codeline" id="line-973"><code>// step advances to the next pc, value pair in the encoded table.</code></span>
+<span class="codeline" id="line-974"><code>func step(p []byte, pc *uintptr, val *int32, first bool) (newp []byte, ok bool) {</code></span>
+<span class="codeline" id="line-975"><code>	// For both uvdelta and pcdelta, the common case (~70%)</code></span>
+<span class="codeline" id="line-976"><code>	// is that they are a single byte. If so, avoid calling readvarint.</code></span>
+<span class="codeline" id="line-977"><code>	uvdelta := uint32(p[0])</code></span>
+<span class="codeline" id="line-978"><code>	if uvdelta == 0 &amp;&amp; !first {</code></span>
+<span class="codeline" id="line-979"><code>		return nil, false</code></span>
+<span class="codeline" id="line-980"><code>	}</code></span>
+<span class="codeline" id="line-981"><code>	n := uint32(1)</code></span>
+<span class="codeline" id="line-982"><code>	if uvdelta&amp;0x80 != 0 {</code></span>
+<span class="codeline" id="line-983"><code>		n, uvdelta = readvarint(p)</code></span>
+<span class="codeline" id="line-984"><code>	}</code></span>
+<span class="codeline" id="line-985"><code>	*val += int32(-(uvdelta &amp; 1) ^ (uvdelta &gt;&gt; 1))</code></span>
+<span class="codeline" id="line-986"><code>	p = p[n:]</code></span>
+<span class="codeline" id="line-987"><code></code></span>
+<span class="codeline" id="line-988"><code>	pcdelta := uint32(p[0])</code></span>
+<span class="codeline" id="line-989"><code>	n = 1</code></span>
+<span class="codeline" id="line-990"><code>	if pcdelta&amp;0x80 != 0 {</code></span>
+<span class="codeline" id="line-991"><code>		n, pcdelta = readvarint(p)</code></span>
+<span class="codeline" id="line-992"><code>	}</code></span>
+<span class="codeline" id="line-993"><code>	p = p[n:]</code></span>
+<span class="codeline" id="line-994"><code>	*pc += uintptr(pcdelta * sys.PCQuantum)</code></span>
+<span class="codeline" id="line-995"><code>	return p, true</code></span>
+<span class="codeline" id="line-996"><code>}</code></span>
+<span class="codeline" id="line-997"><code></code></span>
+<span class="codeline" id="line-998"><code>// readvarint reads a varint from p.</code></span>
+<span class="codeline" id="line-999"><code>func readvarint(p []byte) (read uint32, val uint32) {</code></span>
+<span class="codeline" id="line-1000"><code>	var v, shift, n uint32</code></span>
+<span class="codeline" id="line-1001"><code>	for {</code></span>
+<span class="codeline" id="line-1002"><code>		b := p[n]</code></span>
+<span class="codeline" id="line-1003"><code>		n++</code></span>
+<span class="codeline" id="line-1004"><code>		v |= uint32(b&amp;0x7F) &lt;&lt; (shift &amp; 31)</code></span>
+<span class="codeline" id="line-1005"><code>		if b&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-1006"><code>			break</code></span>
+<span class="codeline" id="line-1007"><code>		}</code></span>
+<span class="codeline" id="line-1008"><code>		shift += 7</code></span>
+<span class="codeline" id="line-1009"><code>	}</code></span>
+<span class="codeline" id="line-1010"><code>	return n, v</code></span>
+<span class="codeline" id="line-1011"><code>}</code></span>
+<span class="codeline" id="line-1012"><code></code></span>
+<span class="codeline" id="line-1013"><code>type stackmap struct {</code></span>
+<span class="codeline" id="line-1014"><code>	n        int32   // number of bitmaps</code></span>
+<span class="codeline" id="line-1015"><code>	nbit     int32   // number of bits in each bitmap</code></span>
+<span class="codeline" id="line-1016"><code>	bytedata [1]byte // bitmaps, each starting on a byte boundary</code></span>
+<span class="codeline" id="line-1017"><code>}</code></span>
+<span class="codeline" id="line-1018"><code></code></span>
+<span class="codeline" id="line-1019"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-1020"><code>func stackmapdata(stkmap *stackmap, n int32) bitvector {</code></span>
+<span class="codeline" id="line-1021"><code>	// Check this invariant only when stackDebug is on at all.</code></span>
+<span class="codeline" id="line-1022"><code>	// The invariant is already checked by many of stackmapdata's callers,</code></span>
+<span class="codeline" id="line-1023"><code>	// and disabling it by default allows stackmapdata to be inlined.</code></span>
+<span class="codeline" id="line-1024"><code>	if stackDebug &gt; 0 &amp;&amp; (n &lt; 0 || n &gt;= stkmap.n) {</code></span>
+<span class="codeline" id="line-1025"><code>		throw("stackmapdata: index out of range")</code></span>
+<span class="codeline" id="line-1026"><code>	}</code></span>
+<span class="codeline" id="line-1027"><code>	return bitvector{stkmap.nbit, addb(&amp;stkmap.bytedata[0], uintptr(n*((stkmap.nbit+7)&gt;&gt;3)))}</code></span>
+<span class="codeline" id="line-1028"><code>}</code></span>
+<span class="codeline" id="line-1029"><code></code></span>
+<span class="codeline" id="line-1030"><code>// inlinedCall is the encoding of entries in the FUNCDATA_InlTree table.</code></span>
+<span class="codeline" id="line-1031"><code>type inlinedCall struct {</code></span>
+<span class="codeline" id="line-1032"><code>	parent   int16  // index of parent in the inltree, or &lt; 0</code></span>
+<span class="codeline" id="line-1033"><code>	funcID   funcID // type of the called function</code></span>
+<span class="codeline" id="line-1034"><code>	_        byte</code></span>
+<span class="codeline" id="line-1035"><code>	file     int32 // perCU file index for inlined call. See cmd/link:pcln.go</code></span>
+<span class="codeline" id="line-1036"><code>	line     int32 // line number of the call site</code></span>
+<span class="codeline" id="line-1037"><code>	func_    int32 // offset into pclntab for name of called function</code></span>
+<span class="codeline" id="line-1038"><code>	parentPc int32 // position of an instruction whose source position is the call site (offset from entry)</code></span>
+<span class="codeline" id="line-1039"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

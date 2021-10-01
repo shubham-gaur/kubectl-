@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: zfuncversion.go in package sort</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	zfuncversion.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/sort.html">sort</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Code generated from sort.go using genzfunc.go; DO NOT EDIT.</code></span>
+<span class="codeline" id="line-2"><code></code></span>
+<span class="codeline" id="line-3"><code>// Copyright 2016 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-4"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-5"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package sort</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// Auto-generated variant of sort.go:insertionSort</code></span>
+<span class="codeline" id="line-10"><code>func insertionSort_func(data lessSwap, a, b int) {</code></span>
+<span class="codeline" id="line-11"><code>	for i := a + 1; i &lt; b; i++ {</code></span>
+<span class="codeline" id="line-12"><code>		for j := i; j &gt; a &amp;&amp; data.Less(j, j-1); j-- {</code></span>
+<span class="codeline" id="line-13"><code>			data.Swap(j, j-1)</code></span>
+<span class="codeline" id="line-14"><code>		}</code></span>
+<span class="codeline" id="line-15"><code>	}</code></span>
+<span class="codeline" id="line-16"><code>}</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>// Auto-generated variant of sort.go:siftDown</code></span>
+<span class="codeline" id="line-19"><code>func siftDown_func(data lessSwap, lo, hi, first int) {</code></span>
+<span class="codeline" id="line-20"><code>	root := lo</code></span>
+<span class="codeline" id="line-21"><code>	for {</code></span>
+<span class="codeline" id="line-22"><code>		child := 2*root + 1</code></span>
+<span class="codeline" id="line-23"><code>		if child &gt;= hi {</code></span>
+<span class="codeline" id="line-24"><code>			break</code></span>
+<span class="codeline" id="line-25"><code>		}</code></span>
+<span class="codeline" id="line-26"><code>		if child+1 &lt; hi &amp;&amp; data.Less(first+child, first+child+1) {</code></span>
+<span class="codeline" id="line-27"><code>			child++</code></span>
+<span class="codeline" id="line-28"><code>		}</code></span>
+<span class="codeline" id="line-29"><code>		if !data.Less(first+root, first+child) {</code></span>
+<span class="codeline" id="line-30"><code>			return</code></span>
+<span class="codeline" id="line-31"><code>		}</code></span>
+<span class="codeline" id="line-32"><code>		data.Swap(first+root, first+child)</code></span>
+<span class="codeline" id="line-33"><code>		root = child</code></span>
+<span class="codeline" id="line-34"><code>	}</code></span>
+<span class="codeline" id="line-35"><code>}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>// Auto-generated variant of sort.go:heapSort</code></span>
+<span class="codeline" id="line-38"><code>func heapSort_func(data lessSwap, a, b int) {</code></span>
+<span class="codeline" id="line-39"><code>	first := a</code></span>
+<span class="codeline" id="line-40"><code>	lo := 0</code></span>
+<span class="codeline" id="line-41"><code>	hi := b - a</code></span>
+<span class="codeline" id="line-42"><code>	for i := (hi - 1) / 2; i &gt;= 0; i-- {</code></span>
+<span class="codeline" id="line-43"><code>		siftDown_func(data, i, hi, first)</code></span>
+<span class="codeline" id="line-44"><code>	}</code></span>
+<span class="codeline" id="line-45"><code>	for i := hi - 1; i &gt;= 0; i-- {</code></span>
+<span class="codeline" id="line-46"><code>		data.Swap(first, first+i)</code></span>
+<span class="codeline" id="line-47"><code>		siftDown_func(data, lo, i, first)</code></span>
+<span class="codeline" id="line-48"><code>	}</code></span>
+<span class="codeline" id="line-49"><code>}</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>// Auto-generated variant of sort.go:medianOfThree</code></span>
+<span class="codeline" id="line-52"><code>func medianOfThree_func(data lessSwap, m1, m0, m2 int) {</code></span>
+<span class="codeline" id="line-53"><code>	if data.Less(m1, m0) {</code></span>
+<span class="codeline" id="line-54"><code>		data.Swap(m1, m0)</code></span>
+<span class="codeline" id="line-55"><code>	}</code></span>
+<span class="codeline" id="line-56"><code>	if data.Less(m2, m1) {</code></span>
+<span class="codeline" id="line-57"><code>		data.Swap(m2, m1)</code></span>
+<span class="codeline" id="line-58"><code>		if data.Less(m1, m0) {</code></span>
+<span class="codeline" id="line-59"><code>			data.Swap(m1, m0)</code></span>
+<span class="codeline" id="line-60"><code>		}</code></span>
+<span class="codeline" id="line-61"><code>	}</code></span>
+<span class="codeline" id="line-62"><code>}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>// Auto-generated variant of sort.go:swapRange</code></span>
+<span class="codeline" id="line-65"><code>func swapRange_func(data lessSwap, a, b, n int) {</code></span>
+<span class="codeline" id="line-66"><code>	for i := 0; i &lt; n; i++ {</code></span>
+<span class="codeline" id="line-67"><code>		data.Swap(a+i, b+i)</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>// Auto-generated variant of sort.go:doPivot</code></span>
+<span class="codeline" id="line-72"><code>func doPivot_func(data lessSwap, lo, hi int) (midlo, midhi int) {</code></span>
+<span class="codeline" id="line-73"><code>	m := int(uint(lo+hi) &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-74"><code>	if hi-lo &gt; 40 {</code></span>
+<span class="codeline" id="line-75"><code>		s := (hi - lo) / 8</code></span>
+<span class="codeline" id="line-76"><code>		medianOfThree_func(data, lo, lo+s, lo+2*s)</code></span>
+<span class="codeline" id="line-77"><code>		medianOfThree_func(data, m, m-s, m+s)</code></span>
+<span class="codeline" id="line-78"><code>		medianOfThree_func(data, hi-1, hi-1-s, hi-1-2*s)</code></span>
+<span class="codeline" id="line-79"><code>	}</code></span>
+<span class="codeline" id="line-80"><code>	medianOfThree_func(data, lo, m, hi-1)</code></span>
+<span class="codeline" id="line-81"><code>	pivot := lo</code></span>
+<span class="codeline" id="line-82"><code>	a, c := lo+1, hi-1</code></span>
+<span class="codeline" id="line-83"><code>	for ; a &lt; c &amp;&amp; data.Less(a, pivot); a++ {</code></span>
+<span class="codeline" id="line-84"><code>	}</code></span>
+<span class="codeline" id="line-85"><code>	b := a</code></span>
+<span class="codeline" id="line-86"><code>	for {</code></span>
+<span class="codeline" id="line-87"><code>		for ; b &lt; c &amp;&amp; !data.Less(pivot, b); b++ {</code></span>
+<span class="codeline" id="line-88"><code>		}</code></span>
+<span class="codeline" id="line-89"><code>		for ; b &lt; c &amp;&amp; data.Less(pivot, c-1); c-- {</code></span>
+<span class="codeline" id="line-90"><code>		}</code></span>
+<span class="codeline" id="line-91"><code>		if b &gt;= c {</code></span>
+<span class="codeline" id="line-92"><code>			break</code></span>
+<span class="codeline" id="line-93"><code>		}</code></span>
+<span class="codeline" id="line-94"><code>		data.Swap(b, c-1)</code></span>
+<span class="codeline" id="line-95"><code>		b++</code></span>
+<span class="codeline" id="line-96"><code>		c--</code></span>
+<span class="codeline" id="line-97"><code>	}</code></span>
+<span class="codeline" id="line-98"><code>	protect := hi-c &lt; 5</code></span>
+<span class="codeline" id="line-99"><code>	if !protect &amp;&amp; hi-c &lt; (hi-lo)/4 {</code></span>
+<span class="codeline" id="line-100"><code>		dups := 0</code></span>
+<span class="codeline" id="line-101"><code>		if !data.Less(pivot, hi-1) {</code></span>
+<span class="codeline" id="line-102"><code>			data.Swap(c, hi-1)</code></span>
+<span class="codeline" id="line-103"><code>			c++</code></span>
+<span class="codeline" id="line-104"><code>			dups++</code></span>
+<span class="codeline" id="line-105"><code>		}</code></span>
+<span class="codeline" id="line-106"><code>		if !data.Less(b-1, pivot) {</code></span>
+<span class="codeline" id="line-107"><code>			b--</code></span>
+<span class="codeline" id="line-108"><code>			dups++</code></span>
+<span class="codeline" id="line-109"><code>		}</code></span>
+<span class="codeline" id="line-110"><code>		if !data.Less(m, pivot) {</code></span>
+<span class="codeline" id="line-111"><code>			data.Swap(m, b-1)</code></span>
+<span class="codeline" id="line-112"><code>			b--</code></span>
+<span class="codeline" id="line-113"><code>			dups++</code></span>
+<span class="codeline" id="line-114"><code>		}</code></span>
+<span class="codeline" id="line-115"><code>		protect = dups &gt; 1</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code>	if protect {</code></span>
+<span class="codeline" id="line-118"><code>		for {</code></span>
+<span class="codeline" id="line-119"><code>			for ; a &lt; b &amp;&amp; !data.Less(b-1, pivot); b-- {</code></span>
+<span class="codeline" id="line-120"><code>			}</code></span>
+<span class="codeline" id="line-121"><code>			for ; a &lt; b &amp;&amp; data.Less(a, pivot); a++ {</code></span>
+<span class="codeline" id="line-122"><code>			}</code></span>
+<span class="codeline" id="line-123"><code>			if a &gt;= b {</code></span>
+<span class="codeline" id="line-124"><code>				break</code></span>
+<span class="codeline" id="line-125"><code>			}</code></span>
+<span class="codeline" id="line-126"><code>			data.Swap(a, b-1)</code></span>
+<span class="codeline" id="line-127"><code>			a++</code></span>
+<span class="codeline" id="line-128"><code>			b--</code></span>
+<span class="codeline" id="line-129"><code>		}</code></span>
+<span class="codeline" id="line-130"><code>	}</code></span>
+<span class="codeline" id="line-131"><code>	data.Swap(pivot, b-1)</code></span>
+<span class="codeline" id="line-132"><code>	return b - 1, c</code></span>
+<span class="codeline" id="line-133"><code>}</code></span>
+<span class="codeline" id="line-134"><code></code></span>
+<span class="codeline" id="line-135"><code>// Auto-generated variant of sort.go:quickSort</code></span>
+<span class="codeline" id="line-136"><code>func quickSort_func(data lessSwap, a, b, maxDepth int) {</code></span>
+<span class="codeline" id="line-137"><code>	for b-a &gt; 12 {</code></span>
+<span class="codeline" id="line-138"><code>		if maxDepth == 0 {</code></span>
+<span class="codeline" id="line-139"><code>			heapSort_func(data, a, b)</code></span>
+<span class="codeline" id="line-140"><code>			return</code></span>
+<span class="codeline" id="line-141"><code>		}</code></span>
+<span class="codeline" id="line-142"><code>		maxDepth--</code></span>
+<span class="codeline" id="line-143"><code>		mlo, mhi := doPivot_func(data, a, b)</code></span>
+<span class="codeline" id="line-144"><code>		if mlo-a &lt; b-mhi {</code></span>
+<span class="codeline" id="line-145"><code>			quickSort_func(data, a, mlo, maxDepth)</code></span>
+<span class="codeline" id="line-146"><code>			a = mhi</code></span>
+<span class="codeline" id="line-147"><code>		} else {</code></span>
+<span class="codeline" id="line-148"><code>			quickSort_func(data, mhi, b, maxDepth)</code></span>
+<span class="codeline" id="line-149"><code>			b = mlo</code></span>
+<span class="codeline" id="line-150"><code>		}</code></span>
+<span class="codeline" id="line-151"><code>	}</code></span>
+<span class="codeline" id="line-152"><code>	if b-a &gt; 1 {</code></span>
+<span class="codeline" id="line-153"><code>		for i := a + 6; i &lt; b; i++ {</code></span>
+<span class="codeline" id="line-154"><code>			if data.Less(i, i-6) {</code></span>
+<span class="codeline" id="line-155"><code>				data.Swap(i, i-6)</code></span>
+<span class="codeline" id="line-156"><code>			}</code></span>
+<span class="codeline" id="line-157"><code>		}</code></span>
+<span class="codeline" id="line-158"><code>		insertionSort_func(data, a, b)</code></span>
+<span class="codeline" id="line-159"><code>	}</code></span>
+<span class="codeline" id="line-160"><code>}</code></span>
+<span class="codeline" id="line-161"><code></code></span>
+<span class="codeline" id="line-162"><code>// Auto-generated variant of sort.go:stable</code></span>
+<span class="codeline" id="line-163"><code>func stable_func(data lessSwap, n int) {</code></span>
+<span class="codeline" id="line-164"><code>	blockSize := 20</code></span>
+<span class="codeline" id="line-165"><code>	a, b := 0, blockSize</code></span>
+<span class="codeline" id="line-166"><code>	for b &lt;= n {</code></span>
+<span class="codeline" id="line-167"><code>		insertionSort_func(data, a, b)</code></span>
+<span class="codeline" id="line-168"><code>		a = b</code></span>
+<span class="codeline" id="line-169"><code>		b += blockSize</code></span>
+<span class="codeline" id="line-170"><code>	}</code></span>
+<span class="codeline" id="line-171"><code>	insertionSort_func(data, a, n)</code></span>
+<span class="codeline" id="line-172"><code>	for blockSize &lt; n {</code></span>
+<span class="codeline" id="line-173"><code>		a, b = 0, 2*blockSize</code></span>
+<span class="codeline" id="line-174"><code>		for b &lt;= n {</code></span>
+<span class="codeline" id="line-175"><code>			symMerge_func(data, a, a+blockSize, b)</code></span>
+<span class="codeline" id="line-176"><code>			a = b</code></span>
+<span class="codeline" id="line-177"><code>			b += 2 * blockSize</code></span>
+<span class="codeline" id="line-178"><code>		}</code></span>
+<span class="codeline" id="line-179"><code>		if m := a + blockSize; m &lt; n {</code></span>
+<span class="codeline" id="line-180"><code>			symMerge_func(data, a, m, n)</code></span>
+<span class="codeline" id="line-181"><code>		}</code></span>
+<span class="codeline" id="line-182"><code>		blockSize *= 2</code></span>
+<span class="codeline" id="line-183"><code>	}</code></span>
+<span class="codeline" id="line-184"><code>}</code></span>
+<span class="codeline" id="line-185"><code></code></span>
+<span class="codeline" id="line-186"><code>// Auto-generated variant of sort.go:symMerge</code></span>
+<span class="codeline" id="line-187"><code>func symMerge_func(data lessSwap, a, m, b int) {</code></span>
+<span class="codeline" id="line-188"><code>	if m-a == 1 {</code></span>
+<span class="codeline" id="line-189"><code>		i := m</code></span>
+<span class="codeline" id="line-190"><code>		j := b</code></span>
+<span class="codeline" id="line-191"><code>		for i &lt; j {</code></span>
+<span class="codeline" id="line-192"><code>			h := int(uint(i+j) &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-193"><code>			if data.Less(h, a) {</code></span>
+<span class="codeline" id="line-194"><code>				i = h + 1</code></span>
+<span class="codeline" id="line-195"><code>			} else {</code></span>
+<span class="codeline" id="line-196"><code>				j = h</code></span>
+<span class="codeline" id="line-197"><code>			}</code></span>
+<span class="codeline" id="line-198"><code>		}</code></span>
+<span class="codeline" id="line-199"><code>		for k := a; k &lt; i-1; k++ {</code></span>
+<span class="codeline" id="line-200"><code>			data.Swap(k, k+1)</code></span>
+<span class="codeline" id="line-201"><code>		}</code></span>
+<span class="codeline" id="line-202"><code>		return</code></span>
+<span class="codeline" id="line-203"><code>	}</code></span>
+<span class="codeline" id="line-204"><code>	if b-m == 1 {</code></span>
+<span class="codeline" id="line-205"><code>		i := a</code></span>
+<span class="codeline" id="line-206"><code>		j := m</code></span>
+<span class="codeline" id="line-207"><code>		for i &lt; j {</code></span>
+<span class="codeline" id="line-208"><code>			h := int(uint(i+j) &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-209"><code>			if !data.Less(m, h) {</code></span>
+<span class="codeline" id="line-210"><code>				i = h + 1</code></span>
+<span class="codeline" id="line-211"><code>			} else {</code></span>
+<span class="codeline" id="line-212"><code>				j = h</code></span>
+<span class="codeline" id="line-213"><code>			}</code></span>
+<span class="codeline" id="line-214"><code>		}</code></span>
+<span class="codeline" id="line-215"><code>		for k := m; k &gt; i; k-- {</code></span>
+<span class="codeline" id="line-216"><code>			data.Swap(k, k-1)</code></span>
+<span class="codeline" id="line-217"><code>		}</code></span>
+<span class="codeline" id="line-218"><code>		return</code></span>
+<span class="codeline" id="line-219"><code>	}</code></span>
+<span class="codeline" id="line-220"><code>	mid := int(uint(a+b) &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-221"><code>	n := mid + m</code></span>
+<span class="codeline" id="line-222"><code>	var start, r int</code></span>
+<span class="codeline" id="line-223"><code>	if m &gt; mid {</code></span>
+<span class="codeline" id="line-224"><code>		start = n - b</code></span>
+<span class="codeline" id="line-225"><code>		r = mid</code></span>
+<span class="codeline" id="line-226"><code>	} else {</code></span>
+<span class="codeline" id="line-227"><code>		start = a</code></span>
+<span class="codeline" id="line-228"><code>		r = m</code></span>
+<span class="codeline" id="line-229"><code>	}</code></span>
+<span class="codeline" id="line-230"><code>	p := n - 1</code></span>
+<span class="codeline" id="line-231"><code>	for start &lt; r {</code></span>
+<span class="codeline" id="line-232"><code>		c := int(uint(start+r) &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-233"><code>		if !data.Less(p-c, c) {</code></span>
+<span class="codeline" id="line-234"><code>			start = c + 1</code></span>
+<span class="codeline" id="line-235"><code>		} else {</code></span>
+<span class="codeline" id="line-236"><code>			r = c</code></span>
+<span class="codeline" id="line-237"><code>		}</code></span>
+<span class="codeline" id="line-238"><code>	}</code></span>
+<span class="codeline" id="line-239"><code>	end := n - start</code></span>
+<span class="codeline" id="line-240"><code>	if start &lt; m &amp;&amp; m &lt; end {</code></span>
+<span class="codeline" id="line-241"><code>		rotate_func(data, start, m, end)</code></span>
+<span class="codeline" id="line-242"><code>	}</code></span>
+<span class="codeline" id="line-243"><code>	if a &lt; start &amp;&amp; start &lt; mid {</code></span>
+<span class="codeline" id="line-244"><code>		symMerge_func(data, a, start, mid)</code></span>
+<span class="codeline" id="line-245"><code>	}</code></span>
+<span class="codeline" id="line-246"><code>	if mid &lt; end &amp;&amp; end &lt; b {</code></span>
+<span class="codeline" id="line-247"><code>		symMerge_func(data, mid, end, b)</code></span>
+<span class="codeline" id="line-248"><code>	}</code></span>
+<span class="codeline" id="line-249"><code>}</code></span>
+<span class="codeline" id="line-250"><code></code></span>
+<span class="codeline" id="line-251"><code>// Auto-generated variant of sort.go:rotate</code></span>
+<span class="codeline" id="line-252"><code>func rotate_func(data lessSwap, a, m, b int) {</code></span>
+<span class="codeline" id="line-253"><code>	i := m - a</code></span>
+<span class="codeline" id="line-254"><code>	j := b - m</code></span>
+<span class="codeline" id="line-255"><code>	for i != j {</code></span>
+<span class="codeline" id="line-256"><code>		if i &gt; j {</code></span>
+<span class="codeline" id="line-257"><code>			swapRange_func(data, m-i, m, j)</code></span>
+<span class="codeline" id="line-258"><code>			i -= j</code></span>
+<span class="codeline" id="line-259"><code>		} else {</code></span>
+<span class="codeline" id="line-260"><code>			swapRange_func(data, m-i, m+j-i, i)</code></span>
+<span class="codeline" id="line-261"><code>			j -= i</code></span>
+<span class="codeline" id="line-262"><code>		}</code></span>
+<span class="codeline" id="line-263"><code>	}</code></span>
+<span class="codeline" id="line-264"><code>	swapRange_func(data, m-i, m, i)</code></span>
+<span class="codeline" id="line-265"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: stubs2.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	stubs2.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build !aix</code></span>
+<span class="codeline" id="line-6"><code>// +build !darwin</code></span>
+<span class="codeline" id="line-7"><code>// +build !js</code></span>
+<span class="codeline" id="line-8"><code>// +build !openbsd</code></span>
+<span class="codeline" id="line-9"><code>// +build !plan9</code></span>
+<span class="codeline" id="line-10"><code>// +build !solaris</code></span>
+<span class="codeline" id="line-11"><code>// +build !windows</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>package runtime</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// read calls the read system call.</code></span>
+<span class="codeline" id="line-18"><code>// It returns a non-negative number of bytes written or a negative errno value.</code></span>
+<span class="codeline" id="line-19"><code>func read(fd int32, p unsafe.Pointer, n int32) int32</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>func closefd(fd int32) int32</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>func exit(code int32)</code></span>
+<span class="codeline" id="line-24"><code>func usleep(usec uint32)</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>// write calls the write system call.</code></span>
+<span class="codeline" id="line-27"><code>// It returns a non-negative number of bytes written or a negative errno value.</code></span>
+<span class="codeline" id="line-28"><code>//go:noescape</code></span>
+<span class="codeline" id="line-29"><code>func write1(fd uintptr, p unsafe.Pointer, n int32) int32</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>//go:noescape</code></span>
+<span class="codeline" id="line-32"><code>func open(name *byte, mode, perm int32) int32</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>// return value is only set on linux to be used in osinit()</code></span>
+<span class="codeline" id="line-35"><code>func madvise(addr unsafe.Pointer, n uintptr, flags int32) int32</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>// exitThread terminates the current thread, writing *wait = 0 when</code></span>
+<span class="codeline" id="line-38"><code>// the stack is safe to reclaim.</code></span>
+<span class="codeline" id="line-39"><code>//</code></span>
+<span class="codeline" id="line-40"><code>//go:noescape</code></span>
+<span class="codeline" id="line-41"><code>func exitThread(wait *uint32)</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: log.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	log.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>/*</code></span>
+<span class="codeline" id="line-8"><code>	Floating-point logarithm.</code></span>
+<span class="codeline" id="line-9"><code>*/</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// The original C code, the long comment, and the constants</code></span>
+<span class="codeline" id="line-12"><code>// below are from FreeBSD's /usr/src/lib/msun/src/e_log.c</code></span>
+<span class="codeline" id="line-13"><code>// and came with this notice. The go code is a simpler</code></span>
+<span class="codeline" id="line-14"><code>// version of the original C.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>// ====================================================</code></span>
+<span class="codeline" id="line-17"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-20"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-21"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-22"><code>// is preserved.</code></span>
+<span class="codeline" id="line-23"><code>// ====================================================</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>// __ieee754_log(x)</code></span>
+<span class="codeline" id="line-26"><code>// Return the logarithm of x</code></span>
+<span class="codeline" id="line-27"><code>//</code></span>
+<span class="codeline" id="line-28"><code>// Method :</code></span>
+<span class="codeline" id="line-29"><code>//   1. Argument Reduction: find k and f such that</code></span>
+<span class="codeline" id="line-30"><code>//			x = 2**k * (1+f),</code></span>
+<span class="codeline" id="line-31"><code>//	   where  sqrt(2)/2 &lt; 1+f &lt; sqrt(2) .</code></span>
+<span class="codeline" id="line-32"><code>//</code></span>
+<span class="codeline" id="line-33"><code>//   2. Approximation of log(1+f).</code></span>
+<span class="codeline" id="line-34"><code>//	Let s = f/(2+f) ; based on log(1+f) = log(1+s) - log(1-s)</code></span>
+<span class="codeline" id="line-35"><code>//		 = 2s + 2/3 s**3 + 2/5 s**5 + .....,</code></span>
+<span class="codeline" id="line-36"><code>//	     	 = 2s + s*R</code></span>
+<span class="codeline" id="line-37"><code>//      We use a special Reme algorithm on [0,0.1716] to generate</code></span>
+<span class="codeline" id="line-38"><code>//	a polynomial of degree 14 to approximate R.  The maximum error</code></span>
+<span class="codeline" id="line-39"><code>//	of this polynomial approximation is bounded by 2**-58.45. In</code></span>
+<span class="codeline" id="line-40"><code>//	other words,</code></span>
+<span class="codeline" id="line-41"><code>//		        2      4      6      8      10      12      14</code></span>
+<span class="codeline" id="line-42"><code>//	    R(z) ~ L1*s +L2*s +L3*s +L4*s +L5*s  +L6*s  +L7*s</code></span>
+<span class="codeline" id="line-43"><code>//	(the values of L1 to L7 are listed in the program) and</code></span>
+<span class="codeline" id="line-44"><code>//	    |      2          14          |     -58.45</code></span>
+<span class="codeline" id="line-45"><code>//	    | L1*s +...+L7*s    -  R(z) | &lt;= 2</code></span>
+<span class="codeline" id="line-46"><code>//	    |                             |</code></span>
+<span class="codeline" id="line-47"><code>//	Note that 2s = f - s*f = f - hfsq + s*hfsq, where hfsq = f*f/2.</code></span>
+<span class="codeline" id="line-48"><code>//	In order to guarantee error in log below 1ulp, we compute log by</code></span>
+<span class="codeline" id="line-49"><code>//		log(1+f) = f - s*(f - R)		(if f is not too large)</code></span>
+<span class="codeline" id="line-50"><code>//		log(1+f) = f - (hfsq - s*(hfsq+R)).	(better accuracy)</code></span>
+<span class="codeline" id="line-51"><code>//</code></span>
+<span class="codeline" id="line-52"><code>//	3. Finally,  log(x) = k*Ln2 + log(1+f).</code></span>
+<span class="codeline" id="line-53"><code>//			    = k*Ln2_hi+(f-(hfsq-(s*(hfsq+R)+k*Ln2_lo)))</code></span>
+<span class="codeline" id="line-54"><code>//	   Here Ln2 is split into two floating point number:</code></span>
+<span class="codeline" id="line-55"><code>//			Ln2_hi + Ln2_lo,</code></span>
+<span class="codeline" id="line-56"><code>//	   where n*Ln2_hi is always exact for |n| &lt; 2000.</code></span>
+<span class="codeline" id="line-57"><code>//</code></span>
+<span class="codeline" id="line-58"><code>// Special cases:</code></span>
+<span class="codeline" id="line-59"><code>//	log(x) is NaN with signal if x &lt; 0 (including -INF) ;</code></span>
+<span class="codeline" id="line-60"><code>//	log(+INF) is +INF; log(0) is -INF with signal;</code></span>
+<span class="codeline" id="line-61"><code>//	log(NaN) is that NaN with no signal.</code></span>
+<span class="codeline" id="line-62"><code>//</code></span>
+<span class="codeline" id="line-63"><code>// Accuracy:</code></span>
+<span class="codeline" id="line-64"><code>//	according to an error analysis, the error is always less than</code></span>
+<span class="codeline" id="line-65"><code>//	1 ulp (unit in the last place).</code></span>
+<span class="codeline" id="line-66"><code>//</code></span>
+<span class="codeline" id="line-67"><code>// Constants:</code></span>
+<span class="codeline" id="line-68"><code>// The hexadecimal values are the intended ones for the following</code></span>
+<span class="codeline" id="line-69"><code>// constants. The decimal values may be used, provided that the</code></span>
+<span class="codeline" id="line-70"><code>// compiler will convert from decimal to binary accurately enough</code></span>
+<span class="codeline" id="line-71"><code>// to produce the hexadecimal values shown.</code></span>
+<span class="codeline" id="line-72"><code></code></span>
+<span class="codeline" id="line-73"><code>// Log returns the natural logarithm of x.</code></span>
+<span class="codeline" id="line-74"><code>//</code></span>
+<span class="codeline" id="line-75"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-76"><code>//	Log(+Inf) = +Inf</code></span>
+<span class="codeline" id="line-77"><code>//	Log(0) = -Inf</code></span>
+<span class="codeline" id="line-78"><code>//	Log(x &lt; 0) = NaN</code></span>
+<span class="codeline" id="line-79"><code>//	Log(NaN) = NaN</code></span>
+<span class="codeline" id="line-80"><code>func Log(x float64) float64</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>func log(x float64) float64 {</code></span>
+<span class="codeline" id="line-83"><code>	const (</code></span>
+<span class="codeline" id="line-84"><code>		Ln2Hi = 6.93147180369123816490e-01 /* 3fe62e42 fee00000 */</code></span>
+<span class="codeline" id="line-85"><code>		Ln2Lo = 1.90821492927058770002e-10 /* 3dea39ef 35793c76 */</code></span>
+<span class="codeline" id="line-86"><code>		L1    = 6.666666666666735130e-01   /* 3FE55555 55555593 */</code></span>
+<span class="codeline" id="line-87"><code>		L2    = 3.999999999940941908e-01   /* 3FD99999 9997FA04 */</code></span>
+<span class="codeline" id="line-88"><code>		L3    = 2.857142874366239149e-01   /* 3FD24924 94229359 */</code></span>
+<span class="codeline" id="line-89"><code>		L4    = 2.222219843214978396e-01   /* 3FCC71C5 1D8E78AF */</code></span>
+<span class="codeline" id="line-90"><code>		L5    = 1.818357216161805012e-01   /* 3FC74664 96CB03DE */</code></span>
+<span class="codeline" id="line-91"><code>		L6    = 1.531383769920937332e-01   /* 3FC39A09 D078C69F */</code></span>
+<span class="codeline" id="line-92"><code>		L7    = 1.479819860511658591e-01   /* 3FC2F112 DF3E5244 */</code></span>
+<span class="codeline" id="line-93"><code>	)</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>	// special cases</code></span>
+<span class="codeline" id="line-96"><code>	switch {</code></span>
+<span class="codeline" id="line-97"><code>	case IsNaN(x) || IsInf(x, 1):</code></span>
+<span class="codeline" id="line-98"><code>		return x</code></span>
+<span class="codeline" id="line-99"><code>	case x &lt; 0:</code></span>
+<span class="codeline" id="line-100"><code>		return NaN()</code></span>
+<span class="codeline" id="line-101"><code>	case x == 0:</code></span>
+<span class="codeline" id="line-102"><code>		return Inf(-1)</code></span>
+<span class="codeline" id="line-103"><code>	}</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>	// reduce</code></span>
+<span class="codeline" id="line-106"><code>	f1, ki := Frexp(x)</code></span>
+<span class="codeline" id="line-107"><code>	if f1 &lt; Sqrt2/2 {</code></span>
+<span class="codeline" id="line-108"><code>		f1 *= 2</code></span>
+<span class="codeline" id="line-109"><code>		ki--</code></span>
+<span class="codeline" id="line-110"><code>	}</code></span>
+<span class="codeline" id="line-111"><code>	f := f1 - 1</code></span>
+<span class="codeline" id="line-112"><code>	k := float64(ki)</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>	// compute</code></span>
+<span class="codeline" id="line-115"><code>	s := f / (2 + f)</code></span>
+<span class="codeline" id="line-116"><code>	s2 := s * s</code></span>
+<span class="codeline" id="line-117"><code>	s4 := s2 * s2</code></span>
+<span class="codeline" id="line-118"><code>	t1 := s2 * (L1 + s4*(L3+s4*(L5+s4*L7)))</code></span>
+<span class="codeline" id="line-119"><code>	t2 := s4 * (L2 + s4*(L4+s4*L6))</code></span>
+<span class="codeline" id="line-120"><code>	R := t1 + t2</code></span>
+<span class="codeline" id="line-121"><code>	hfsq := 0.5 * f * f</code></span>
+<span class="codeline" id="line-122"><code>	return k*Ln2Hi - ((hfsq - (s*(hfsq+R) + k*Ln2Lo)) - f)</code></span>
+<span class="codeline" id="line-123"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

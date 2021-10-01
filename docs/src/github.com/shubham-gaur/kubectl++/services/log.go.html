@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: log.go in package github.com/shubham-gaur/kubectl++/services</title>
+<link href="../../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	log.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../../pkg/github.com/shubham-gaur/kubectl++/services.html">github.com/shubham-gaur/kubectl++/services</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>package services</code></span>
+<span class="codeline" id="line-2"><code></code></span>
+<span class="codeline" id="line-3"><code>import (</code></span>
+<span class="codeline" id="line-4"><code>	"os"</code></span>
+<span class="codeline" id="line-5"><code>	"os/exec"</code></span>
+<span class="codeline" id="line-6"><code>	"time"</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>	help "github.com/shubham-gaur/kubectl++/helper"</code></span>
+<span class="codeline" id="line-9"><code>	log "github.com/shubham-gaur/kubectl++/logger"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>func CollectLogsForPod() {</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>}</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>func CollectLogForContainer() {</code></span>
+<span class="codeline" id="line-17"><code>	ctIndex, pdIndex, nsIndex := GetTaggedContainers()</code></span>
+<span class="codeline" id="line-18"><code>	namespace := namespacesSt.namespaces[nsIndex]</code></span>
+<span class="codeline" id="line-19"><code>	pod := podSt.pods[pdIndex]</code></span>
+<span class="codeline" id="line-20"><code>	container := containerSt.containers[ctIndex]</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>	// open the out file for writing</code></span>
+<span class="codeline" id="line-23"><code>	outfile, err := os.Create("./" + container + ".log")</code></span>
+<span class="codeline" id="line-24"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-25"><code>		panic(err)</code></span>
+<span class="codeline" id="line-26"><code>	}</code></span>
+<span class="codeline" id="line-27"><code>	defer outfile.Close()</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>	log.Info.Printf("🤔 For how long I should collect logs ??? Please be generous time in seconds 😅")</code></span>
+<span class="codeline" id="line-30"><code>	var timeout int</code></span>
+<span class="codeline" id="line-31"><code>	help.TakeIntInput(&amp;timeout, 3600)</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	var cmd *exec.Cmd</code></span>
+<span class="codeline" id="line-34"><code>	log.Info.Printf("🤔 Collecting log of " + container + " for " + pod + " pod in " + namespace + " namespace")</code></span>
+<span class="codeline" id="line-35"><code>	log.Info.Printf("😓 Executing command: timeout 3 kubectl -n " + namespace + " logs -f " + pod + " -c " + container + " &gt; " + container + ".log")</code></span>
+<span class="codeline" id="line-36"><code>	cmd = exec.Command("kubectl", "logs", "-f", pod, "-n", namespace, "-c", container)</code></span>
+<span class="codeline" id="line-37"><code>	cmd.Stdin = os.Stdin</code></span>
+<span class="codeline" id="line-38"><code>	cmd.Stdout = outfile</code></span>
+<span class="codeline" id="line-39"><code>	cmd.Stderr = os.Stderr</code></span>
+<span class="codeline" id="line-40"><code>	done := make(chan error, 1)</code></span>
+<span class="codeline" id="line-41"><code>	err = cmd.Start()</code></span>
+<span class="codeline" id="line-42"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-43"><code>		log.Warning.Printf("😖 Could not execute properly ", err)</code></span>
+<span class="codeline" id="line-44"><code>	}</code></span>
+<span class="codeline" id="line-45"><code>	go func() {</code></span>
+<span class="codeline" id="line-46"><code>		done &lt;- cmd.Wait()</code></span>
+<span class="codeline" id="line-47"><code>	}()</code></span>
+<span class="codeline" id="line-48"><code>	go func() {</code></span>
+<span class="codeline" id="line-49"><code>		for {</code></span>
+<span class="codeline" id="line-50"><code>			select {</code></span>
+<span class="codeline" id="line-51"><code>			case &lt;-time.After(time.Duration(timeout) * time.Second):</code></span>
+<span class="codeline" id="line-52"><code>				if err := cmd.Process.Kill(); err != nil {</code></span>
+<span class="codeline" id="line-53"><code>					log.Critical.Printf("😢 failed to kill process: ", err)</code></span>
+<span class="codeline" id="line-54"><code>				}</code></span>
+<span class="codeline" id="line-55"><code>				log.Info.Printf("I get tired after fetching logs for %v seconds 😰", timeout)</code></span>
+<span class="codeline" id="line-56"><code>				log.Warning.Printf("Limited support for logging 😢")</code></span>
+<span class="codeline" id="line-57"><code>				return</code></span>
+<span class="codeline" id="line-58"><code>			case err := &lt;-done:</code></span>
+<span class="codeline" id="line-59"><code>				if err != nil {</code></span>
+<span class="codeline" id="line-60"><code>					log.Critical.Printf("process finished with error ", err)</code></span>
+<span class="codeline" id="line-61"><code>				}</code></span>
+<span class="codeline" id="line-62"><code>				log.Info.Printf("[✔️ ] Command executed successfully 😄 ")</code></span>
+<span class="codeline" id="line-63"><code>			}</code></span>
+<span class="codeline" id="line-64"><code>		}</code></span>
+<span class="codeline" id="line-65"><code>	}()</code></span>
+<span class="codeline" id="line-66"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

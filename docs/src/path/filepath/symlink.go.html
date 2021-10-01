@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: symlink.go in package path/filepath</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	symlink.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/path/filepath.html">path/filepath</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2012 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package filepath</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"errors"</code></span>
+<span class="codeline" id="line-9"><code>	"io/fs"</code></span>
+<span class="codeline" id="line-10"><code>	"os"</code></span>
+<span class="codeline" id="line-11"><code>	"runtime"</code></span>
+<span class="codeline" id="line-12"><code>	"syscall"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>func walkSymlinks(path string) (string, error) {</code></span>
+<span class="codeline" id="line-16"><code>	volLen := volumeNameLen(path)</code></span>
+<span class="codeline" id="line-17"><code>	pathSeparator := string(os.PathSeparator)</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>	if volLen &lt; len(path) &amp;&amp; os.IsPathSeparator(path[volLen]) {</code></span>
+<span class="codeline" id="line-20"><code>		volLen++</code></span>
+<span class="codeline" id="line-21"><code>	}</code></span>
+<span class="codeline" id="line-22"><code>	vol := path[:volLen]</code></span>
+<span class="codeline" id="line-23"><code>	dest := vol</code></span>
+<span class="codeline" id="line-24"><code>	linksWalked := 0</code></span>
+<span class="codeline" id="line-25"><code>	for start, end := volLen, volLen; start &lt; len(path); start = end {</code></span>
+<span class="codeline" id="line-26"><code>		for start &lt; len(path) &amp;&amp; os.IsPathSeparator(path[start]) {</code></span>
+<span class="codeline" id="line-27"><code>			start++</code></span>
+<span class="codeline" id="line-28"><code>		}</code></span>
+<span class="codeline" id="line-29"><code>		end = start</code></span>
+<span class="codeline" id="line-30"><code>		for end &lt; len(path) &amp;&amp; !os.IsPathSeparator(path[end]) {</code></span>
+<span class="codeline" id="line-31"><code>			end++</code></span>
+<span class="codeline" id="line-32"><code>		}</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>		// On Windows, "." can be a symlink.</code></span>
+<span class="codeline" id="line-35"><code>		// We look it up, and use the value if it is absolute.</code></span>
+<span class="codeline" id="line-36"><code>		// If not, we just return ".".</code></span>
+<span class="codeline" id="line-37"><code>		isWindowsDot := runtime.GOOS == "windows" &amp;&amp; path[volumeNameLen(path):] == "."</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>		// The next path component is in path[start:end].</code></span>
+<span class="codeline" id="line-40"><code>		if end == start {</code></span>
+<span class="codeline" id="line-41"><code>			// No more path components.</code></span>
+<span class="codeline" id="line-42"><code>			break</code></span>
+<span class="codeline" id="line-43"><code>		} else if path[start:end] == "." &amp;&amp; !isWindowsDot {</code></span>
+<span class="codeline" id="line-44"><code>			// Ignore path component ".".</code></span>
+<span class="codeline" id="line-45"><code>			continue</code></span>
+<span class="codeline" id="line-46"><code>		} else if path[start:end] == ".." {</code></span>
+<span class="codeline" id="line-47"><code>			// Back up to previous component if possible.</code></span>
+<span class="codeline" id="line-48"><code>			// Note that volLen includes any leading slash.</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>			// Set r to the index of the last slash in dest,</code></span>
+<span class="codeline" id="line-51"><code>			// after the volume.</code></span>
+<span class="codeline" id="line-52"><code>			var r int</code></span>
+<span class="codeline" id="line-53"><code>			for r = len(dest) - 1; r &gt;= volLen; r-- {</code></span>
+<span class="codeline" id="line-54"><code>				if os.IsPathSeparator(dest[r]) {</code></span>
+<span class="codeline" id="line-55"><code>					break</code></span>
+<span class="codeline" id="line-56"><code>				}</code></span>
+<span class="codeline" id="line-57"><code>			}</code></span>
+<span class="codeline" id="line-58"><code>			if r &lt; volLen || dest[r+1:] == ".." {</code></span>
+<span class="codeline" id="line-59"><code>				// Either path has no slashes</code></span>
+<span class="codeline" id="line-60"><code>				// (it's empty or just "C:")</code></span>
+<span class="codeline" id="line-61"><code>				// or it ends in a ".." we had to keep.</code></span>
+<span class="codeline" id="line-62"><code>				// Either way, keep this "..".</code></span>
+<span class="codeline" id="line-63"><code>				if len(dest) &gt; volLen {</code></span>
+<span class="codeline" id="line-64"><code>					dest += pathSeparator</code></span>
+<span class="codeline" id="line-65"><code>				}</code></span>
+<span class="codeline" id="line-66"><code>				dest += ".."</code></span>
+<span class="codeline" id="line-67"><code>			} else {</code></span>
+<span class="codeline" id="line-68"><code>				// Discard everything since the last slash.</code></span>
+<span class="codeline" id="line-69"><code>				dest = dest[:r]</code></span>
+<span class="codeline" id="line-70"><code>			}</code></span>
+<span class="codeline" id="line-71"><code>			continue</code></span>
+<span class="codeline" id="line-72"><code>		}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>		// Ordinary path component. Add it to result.</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>		if len(dest) &gt; volumeNameLen(dest) &amp;&amp; !os.IsPathSeparator(dest[len(dest)-1]) {</code></span>
+<span class="codeline" id="line-77"><code>			dest += pathSeparator</code></span>
+<span class="codeline" id="line-78"><code>		}</code></span>
+<span class="codeline" id="line-79"><code></code></span>
+<span class="codeline" id="line-80"><code>		dest += path[start:end]</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>		// Resolve symlink.</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>		fi, err := os.Lstat(dest)</code></span>
+<span class="codeline" id="line-85"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-86"><code>			return "", err</code></span>
+<span class="codeline" id="line-87"><code>		}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>		if fi.Mode()&amp;fs.ModeSymlink == 0 {</code></span>
+<span class="codeline" id="line-90"><code>			if !fi.Mode().IsDir() &amp;&amp; end &lt; len(path) {</code></span>
+<span class="codeline" id="line-91"><code>				return "", syscall.ENOTDIR</code></span>
+<span class="codeline" id="line-92"><code>			}</code></span>
+<span class="codeline" id="line-93"><code>			continue</code></span>
+<span class="codeline" id="line-94"><code>		}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>		// Found symlink.</code></span>
+<span class="codeline" id="line-97"><code></code></span>
+<span class="codeline" id="line-98"><code>		linksWalked++</code></span>
+<span class="codeline" id="line-99"><code>		if linksWalked &gt; 255 {</code></span>
+<span class="codeline" id="line-100"><code>			return "", errors.New("EvalSymlinks: too many links")</code></span>
+<span class="codeline" id="line-101"><code>		}</code></span>
+<span class="codeline" id="line-102"><code></code></span>
+<span class="codeline" id="line-103"><code>		link, err := os.Readlink(dest)</code></span>
+<span class="codeline" id="line-104"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-105"><code>			return "", err</code></span>
+<span class="codeline" id="line-106"><code>		}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>		if isWindowsDot &amp;&amp; !IsAbs(link) {</code></span>
+<span class="codeline" id="line-109"><code>			// On Windows, if "." is a relative symlink,</code></span>
+<span class="codeline" id="line-110"><code>			// just return ".".</code></span>
+<span class="codeline" id="line-111"><code>			break</code></span>
+<span class="codeline" id="line-112"><code>		}</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>		path = link + path[end:]</code></span>
+<span class="codeline" id="line-115"><code></code></span>
+<span class="codeline" id="line-116"><code>		v := volumeNameLen(link)</code></span>
+<span class="codeline" id="line-117"><code>		if v &gt; 0 {</code></span>
+<span class="codeline" id="line-118"><code>			// Symlink to drive name is an absolute path.</code></span>
+<span class="codeline" id="line-119"><code>			if v &lt; len(link) &amp;&amp; os.IsPathSeparator(link[v]) {</code></span>
+<span class="codeline" id="line-120"><code>				v++</code></span>
+<span class="codeline" id="line-121"><code>			}</code></span>
+<span class="codeline" id="line-122"><code>			vol = link[:v]</code></span>
+<span class="codeline" id="line-123"><code>			dest = vol</code></span>
+<span class="codeline" id="line-124"><code>			end = len(vol)</code></span>
+<span class="codeline" id="line-125"><code>		} else if len(link) &gt; 0 &amp;&amp; os.IsPathSeparator(link[0]) {</code></span>
+<span class="codeline" id="line-126"><code>			// Symlink to absolute path.</code></span>
+<span class="codeline" id="line-127"><code>			dest = link[:1]</code></span>
+<span class="codeline" id="line-128"><code>			end = 1</code></span>
+<span class="codeline" id="line-129"><code>		} else {</code></span>
+<span class="codeline" id="line-130"><code>			// Symlink to relative path; replace last</code></span>
+<span class="codeline" id="line-131"><code>			// path component in dest.</code></span>
+<span class="codeline" id="line-132"><code>			var r int</code></span>
+<span class="codeline" id="line-133"><code>			for r = len(dest) - 1; r &gt;= volLen; r-- {</code></span>
+<span class="codeline" id="line-134"><code>				if os.IsPathSeparator(dest[r]) {</code></span>
+<span class="codeline" id="line-135"><code>					break</code></span>
+<span class="codeline" id="line-136"><code>				}</code></span>
+<span class="codeline" id="line-137"><code>			}</code></span>
+<span class="codeline" id="line-138"><code>			if r &lt; volLen {</code></span>
+<span class="codeline" id="line-139"><code>				dest = vol</code></span>
+<span class="codeline" id="line-140"><code>			} else {</code></span>
+<span class="codeline" id="line-141"><code>				dest = dest[:r]</code></span>
+<span class="codeline" id="line-142"><code>			}</code></span>
+<span class="codeline" id="line-143"><code>			end = 0</code></span>
+<span class="codeline" id="line-144"><code>		}</code></span>
+<span class="codeline" id="line-145"><code>	}</code></span>
+<span class="codeline" id="line-146"><code>	return Clean(dest), nil</code></span>
+<span class="codeline" id="line-147"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

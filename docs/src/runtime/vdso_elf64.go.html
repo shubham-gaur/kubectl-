@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: vdso_elf64.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	vdso_elf64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build linux</code></span>
+<span class="codeline" id="line-6"><code>// +build amd64 arm64 mips64 mips64le ppc64 ppc64le</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>package runtime</code></span>
+<span class="codeline" id="line-9"><code></code></span>
+<span class="codeline" id="line-10"><code>// ELF64 structure definitions for use by the vDSO loader</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>type elfSym struct {</code></span>
+<span class="codeline" id="line-13"><code>	st_name  uint32</code></span>
+<span class="codeline" id="line-14"><code>	st_info  byte</code></span>
+<span class="codeline" id="line-15"><code>	st_other byte</code></span>
+<span class="codeline" id="line-16"><code>	st_shndx uint16</code></span>
+<span class="codeline" id="line-17"><code>	st_value uint64</code></span>
+<span class="codeline" id="line-18"><code>	st_size  uint64</code></span>
+<span class="codeline" id="line-19"><code>}</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>type elfVerdef struct {</code></span>
+<span class="codeline" id="line-22"><code>	vd_version uint16 /* Version revision */</code></span>
+<span class="codeline" id="line-23"><code>	vd_flags   uint16 /* Version information */</code></span>
+<span class="codeline" id="line-24"><code>	vd_ndx     uint16 /* Version Index */</code></span>
+<span class="codeline" id="line-25"><code>	vd_cnt     uint16 /* Number of associated aux entries */</code></span>
+<span class="codeline" id="line-26"><code>	vd_hash    uint32 /* Version name hash value */</code></span>
+<span class="codeline" id="line-27"><code>	vd_aux     uint32 /* Offset in bytes to verdaux array */</code></span>
+<span class="codeline" id="line-28"><code>	vd_next    uint32 /* Offset in bytes to next verdef entry */</code></span>
+<span class="codeline" id="line-29"><code>}</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>type elfEhdr struct {</code></span>
+<span class="codeline" id="line-32"><code>	e_ident     [_EI_NIDENT]byte /* Magic number and other info */</code></span>
+<span class="codeline" id="line-33"><code>	e_type      uint16           /* Object file type */</code></span>
+<span class="codeline" id="line-34"><code>	e_machine   uint16           /* Architecture */</code></span>
+<span class="codeline" id="line-35"><code>	e_version   uint32           /* Object file version */</code></span>
+<span class="codeline" id="line-36"><code>	e_entry     uint64           /* Entry point virtual address */</code></span>
+<span class="codeline" id="line-37"><code>	e_phoff     uint64           /* Program header table file offset */</code></span>
+<span class="codeline" id="line-38"><code>	e_shoff     uint64           /* Section header table file offset */</code></span>
+<span class="codeline" id="line-39"><code>	e_flags     uint32           /* Processor-specific flags */</code></span>
+<span class="codeline" id="line-40"><code>	e_ehsize    uint16           /* ELF header size in bytes */</code></span>
+<span class="codeline" id="line-41"><code>	e_phentsize uint16           /* Program header table entry size */</code></span>
+<span class="codeline" id="line-42"><code>	e_phnum     uint16           /* Program header table entry count */</code></span>
+<span class="codeline" id="line-43"><code>	e_shentsize uint16           /* Section header table entry size */</code></span>
+<span class="codeline" id="line-44"><code>	e_shnum     uint16           /* Section header table entry count */</code></span>
+<span class="codeline" id="line-45"><code>	e_shstrndx  uint16           /* Section header string table index */</code></span>
+<span class="codeline" id="line-46"><code>}</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>type elfPhdr struct {</code></span>
+<span class="codeline" id="line-49"><code>	p_type   uint32 /* Segment type */</code></span>
+<span class="codeline" id="line-50"><code>	p_flags  uint32 /* Segment flags */</code></span>
+<span class="codeline" id="line-51"><code>	p_offset uint64 /* Segment file offset */</code></span>
+<span class="codeline" id="line-52"><code>	p_vaddr  uint64 /* Segment virtual address */</code></span>
+<span class="codeline" id="line-53"><code>	p_paddr  uint64 /* Segment physical address */</code></span>
+<span class="codeline" id="line-54"><code>	p_filesz uint64 /* Segment size in file */</code></span>
+<span class="codeline" id="line-55"><code>	p_memsz  uint64 /* Segment size in memory */</code></span>
+<span class="codeline" id="line-56"><code>	p_align  uint64 /* Segment alignment */</code></span>
+<span class="codeline" id="line-57"><code>}</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>type elfShdr struct {</code></span>
+<span class="codeline" id="line-60"><code>	sh_name      uint32 /* Section name (string tbl index) */</code></span>
+<span class="codeline" id="line-61"><code>	sh_type      uint32 /* Section type */</code></span>
+<span class="codeline" id="line-62"><code>	sh_flags     uint64 /* Section flags */</code></span>
+<span class="codeline" id="line-63"><code>	sh_addr      uint64 /* Section virtual addr at execution */</code></span>
+<span class="codeline" id="line-64"><code>	sh_offset    uint64 /* Section file offset */</code></span>
+<span class="codeline" id="line-65"><code>	sh_size      uint64 /* Section size in bytes */</code></span>
+<span class="codeline" id="line-66"><code>	sh_link      uint32 /* Link to another section */</code></span>
+<span class="codeline" id="line-67"><code>	sh_info      uint32 /* Additional section information */</code></span>
+<span class="codeline" id="line-68"><code>	sh_addralign uint64 /* Section alignment */</code></span>
+<span class="codeline" id="line-69"><code>	sh_entsize   uint64 /* Entry size if section holds table */</code></span>
+<span class="codeline" id="line-70"><code>}</code></span>
+<span class="codeline" id="line-71"><code></code></span>
+<span class="codeline" id="line-72"><code>type elfDyn struct {</code></span>
+<span class="codeline" id="line-73"><code>	d_tag int64  /* Dynamic entry type */</code></span>
+<span class="codeline" id="line-74"><code>	d_val uint64 /* Integer value */</code></span>
+<span class="codeline" id="line-75"><code>}</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>type elfVerdaux struct {</code></span>
+<span class="codeline" id="line-78"><code>	vda_name uint32 /* Version or dependency names */</code></span>
+<span class="codeline" id="line-79"><code>	vda_next uint32 /* Offset in bytes to next verdaux entry */</code></span>
+<span class="codeline" id="line-80"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

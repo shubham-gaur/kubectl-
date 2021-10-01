@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: fd_mutex.go in package internal/poll</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	fd_mutex.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/poll.html">internal/poll</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2013 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package poll</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "sync/atomic"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// fdMutex is a specialized synchronization primitive that manages</code></span>
+<span class="codeline" id="line-10"><code>// lifetime of an fd and serializes access to Read, Write and Close</code></span>
+<span class="codeline" id="line-11"><code>// methods on FD.</code></span>
+<span class="codeline" id="line-12"><code>type fdMutex struct {</code></span>
+<span class="codeline" id="line-13"><code>	state uint64</code></span>
+<span class="codeline" id="line-14"><code>	rsema uint32</code></span>
+<span class="codeline" id="line-15"><code>	wsema uint32</code></span>
+<span class="codeline" id="line-16"><code>}</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>// fdMutex.state is organized as follows:</code></span>
+<span class="codeline" id="line-19"><code>// 1 bit - whether FD is closed, if set all subsequent lock operations will fail.</code></span>
+<span class="codeline" id="line-20"><code>// 1 bit - lock for read operations.</code></span>
+<span class="codeline" id="line-21"><code>// 1 bit - lock for write operations.</code></span>
+<span class="codeline" id="line-22"><code>// 20 bits - total number of references (read+write+misc).</code></span>
+<span class="codeline" id="line-23"><code>// 20 bits - number of outstanding read waiters.</code></span>
+<span class="codeline" id="line-24"><code>// 20 bits - number of outstanding write waiters.</code></span>
+<span class="codeline" id="line-25"><code>const (</code></span>
+<span class="codeline" id="line-26"><code>	mutexClosed  = 1 &lt;&lt; 0</code></span>
+<span class="codeline" id="line-27"><code>	mutexRLock   = 1 &lt;&lt; 1</code></span>
+<span class="codeline" id="line-28"><code>	mutexWLock   = 1 &lt;&lt; 2</code></span>
+<span class="codeline" id="line-29"><code>	mutexRef     = 1 &lt;&lt; 3</code></span>
+<span class="codeline" id="line-30"><code>	mutexRefMask = (1&lt;&lt;20 - 1) &lt;&lt; 3</code></span>
+<span class="codeline" id="line-31"><code>	mutexRWait   = 1 &lt;&lt; 23</code></span>
+<span class="codeline" id="line-32"><code>	mutexRMask   = (1&lt;&lt;20 - 1) &lt;&lt; 23</code></span>
+<span class="codeline" id="line-33"><code>	mutexWWait   = 1 &lt;&lt; 43</code></span>
+<span class="codeline" id="line-34"><code>	mutexWMask   = (1&lt;&lt;20 - 1) &lt;&lt; 43</code></span>
+<span class="codeline" id="line-35"><code>)</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>const overflowMsg = "too many concurrent operations on a single file or socket (max 1048575)"</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>// Read operations must do rwlock(true)/rwunlock(true).</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>// Write operations must do rwlock(false)/rwunlock(false).</code></span>
+<span class="codeline" id="line-42"><code>//</code></span>
+<span class="codeline" id="line-43"><code>// Misc operations must do incref/decref.</code></span>
+<span class="codeline" id="line-44"><code>// Misc operations include functions like setsockopt and setDeadline.</code></span>
+<span class="codeline" id="line-45"><code>// They need to use incref/decref to ensure that they operate on the</code></span>
+<span class="codeline" id="line-46"><code>// correct fd in presence of a concurrent close call (otherwise fd can</code></span>
+<span class="codeline" id="line-47"><code>// be closed under their feet).</code></span>
+<span class="codeline" id="line-48"><code>//</code></span>
+<span class="codeline" id="line-49"><code>// Close operations must do increfAndClose/decref.</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>// incref adds a reference to mu.</code></span>
+<span class="codeline" id="line-52"><code>// It reports whether mu is available for reading or writing.</code></span>
+<span class="codeline" id="line-53"><code>func (mu *fdMutex) incref() bool {</code></span>
+<span class="codeline" id="line-54"><code>	for {</code></span>
+<span class="codeline" id="line-55"><code>		old := atomic.LoadUint64(&amp;mu.state)</code></span>
+<span class="codeline" id="line-56"><code>		if old&amp;mutexClosed != 0 {</code></span>
+<span class="codeline" id="line-57"><code>			return false</code></span>
+<span class="codeline" id="line-58"><code>		}</code></span>
+<span class="codeline" id="line-59"><code>		new := old + mutexRef</code></span>
+<span class="codeline" id="line-60"><code>		if new&amp;mutexRefMask == 0 {</code></span>
+<span class="codeline" id="line-61"><code>			panic(overflowMsg)</code></span>
+<span class="codeline" id="line-62"><code>		}</code></span>
+<span class="codeline" id="line-63"><code>		if atomic.CompareAndSwapUint64(&amp;mu.state, old, new) {</code></span>
+<span class="codeline" id="line-64"><code>			return true</code></span>
+<span class="codeline" id="line-65"><code>		}</code></span>
+<span class="codeline" id="line-66"><code>	}</code></span>
+<span class="codeline" id="line-67"><code>}</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>// increfAndClose sets the state of mu to closed.</code></span>
+<span class="codeline" id="line-70"><code>// It returns false if the file was already closed.</code></span>
+<span class="codeline" id="line-71"><code>func (mu *fdMutex) increfAndClose() bool {</code></span>
+<span class="codeline" id="line-72"><code>	for {</code></span>
+<span class="codeline" id="line-73"><code>		old := atomic.LoadUint64(&amp;mu.state)</code></span>
+<span class="codeline" id="line-74"><code>		if old&amp;mutexClosed != 0 {</code></span>
+<span class="codeline" id="line-75"><code>			return false</code></span>
+<span class="codeline" id="line-76"><code>		}</code></span>
+<span class="codeline" id="line-77"><code>		// Mark as closed and acquire a reference.</code></span>
+<span class="codeline" id="line-78"><code>		new := (old | mutexClosed) + mutexRef</code></span>
+<span class="codeline" id="line-79"><code>		if new&amp;mutexRefMask == 0 {</code></span>
+<span class="codeline" id="line-80"><code>			panic(overflowMsg)</code></span>
+<span class="codeline" id="line-81"><code>		}</code></span>
+<span class="codeline" id="line-82"><code>		// Remove all read and write waiters.</code></span>
+<span class="codeline" id="line-83"><code>		new &amp;^= mutexRMask | mutexWMask</code></span>
+<span class="codeline" id="line-84"><code>		if atomic.CompareAndSwapUint64(&amp;mu.state, old, new) {</code></span>
+<span class="codeline" id="line-85"><code>			// Wake all read and write waiters,</code></span>
+<span class="codeline" id="line-86"><code>			// they will observe closed flag after wakeup.</code></span>
+<span class="codeline" id="line-87"><code>			for old&amp;mutexRMask != 0 {</code></span>
+<span class="codeline" id="line-88"><code>				old -= mutexRWait</code></span>
+<span class="codeline" id="line-89"><code>				runtime_Semrelease(&amp;mu.rsema)</code></span>
+<span class="codeline" id="line-90"><code>			}</code></span>
+<span class="codeline" id="line-91"><code>			for old&amp;mutexWMask != 0 {</code></span>
+<span class="codeline" id="line-92"><code>				old -= mutexWWait</code></span>
+<span class="codeline" id="line-93"><code>				runtime_Semrelease(&amp;mu.wsema)</code></span>
+<span class="codeline" id="line-94"><code>			}</code></span>
+<span class="codeline" id="line-95"><code>			return true</code></span>
+<span class="codeline" id="line-96"><code>		}</code></span>
+<span class="codeline" id="line-97"><code>	}</code></span>
+<span class="codeline" id="line-98"><code>}</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>// decref removes a reference from mu.</code></span>
+<span class="codeline" id="line-101"><code>// It reports whether there is no remaining reference.</code></span>
+<span class="codeline" id="line-102"><code>func (mu *fdMutex) decref() bool {</code></span>
+<span class="codeline" id="line-103"><code>	for {</code></span>
+<span class="codeline" id="line-104"><code>		old := atomic.LoadUint64(&amp;mu.state)</code></span>
+<span class="codeline" id="line-105"><code>		if old&amp;mutexRefMask == 0 {</code></span>
+<span class="codeline" id="line-106"><code>			panic("inconsistent poll.fdMutex")</code></span>
+<span class="codeline" id="line-107"><code>		}</code></span>
+<span class="codeline" id="line-108"><code>		new := old - mutexRef</code></span>
+<span class="codeline" id="line-109"><code>		if atomic.CompareAndSwapUint64(&amp;mu.state, old, new) {</code></span>
+<span class="codeline" id="line-110"><code>			return new&amp;(mutexClosed|mutexRefMask) == mutexClosed</code></span>
+<span class="codeline" id="line-111"><code>		}</code></span>
+<span class="codeline" id="line-112"><code>	}</code></span>
+<span class="codeline" id="line-113"><code>}</code></span>
+<span class="codeline" id="line-114"><code></code></span>
+<span class="codeline" id="line-115"><code>// lock adds a reference to mu and locks mu.</code></span>
+<span class="codeline" id="line-116"><code>// It reports whether mu is available for reading or writing.</code></span>
+<span class="codeline" id="line-117"><code>func (mu *fdMutex) rwlock(read bool) bool {</code></span>
+<span class="codeline" id="line-118"><code>	var mutexBit, mutexWait, mutexMask uint64</code></span>
+<span class="codeline" id="line-119"><code>	var mutexSema *uint32</code></span>
+<span class="codeline" id="line-120"><code>	if read {</code></span>
+<span class="codeline" id="line-121"><code>		mutexBit = mutexRLock</code></span>
+<span class="codeline" id="line-122"><code>		mutexWait = mutexRWait</code></span>
+<span class="codeline" id="line-123"><code>		mutexMask = mutexRMask</code></span>
+<span class="codeline" id="line-124"><code>		mutexSema = &amp;mu.rsema</code></span>
+<span class="codeline" id="line-125"><code>	} else {</code></span>
+<span class="codeline" id="line-126"><code>		mutexBit = mutexWLock</code></span>
+<span class="codeline" id="line-127"><code>		mutexWait = mutexWWait</code></span>
+<span class="codeline" id="line-128"><code>		mutexMask = mutexWMask</code></span>
+<span class="codeline" id="line-129"><code>		mutexSema = &amp;mu.wsema</code></span>
+<span class="codeline" id="line-130"><code>	}</code></span>
+<span class="codeline" id="line-131"><code>	for {</code></span>
+<span class="codeline" id="line-132"><code>		old := atomic.LoadUint64(&amp;mu.state)</code></span>
+<span class="codeline" id="line-133"><code>		if old&amp;mutexClosed != 0 {</code></span>
+<span class="codeline" id="line-134"><code>			return false</code></span>
+<span class="codeline" id="line-135"><code>		}</code></span>
+<span class="codeline" id="line-136"><code>		var new uint64</code></span>
+<span class="codeline" id="line-137"><code>		if old&amp;mutexBit == 0 {</code></span>
+<span class="codeline" id="line-138"><code>			// Lock is free, acquire it.</code></span>
+<span class="codeline" id="line-139"><code>			new = (old | mutexBit) + mutexRef</code></span>
+<span class="codeline" id="line-140"><code>			if new&amp;mutexRefMask == 0 {</code></span>
+<span class="codeline" id="line-141"><code>				panic(overflowMsg)</code></span>
+<span class="codeline" id="line-142"><code>			}</code></span>
+<span class="codeline" id="line-143"><code>		} else {</code></span>
+<span class="codeline" id="line-144"><code>			// Wait for lock.</code></span>
+<span class="codeline" id="line-145"><code>			new = old + mutexWait</code></span>
+<span class="codeline" id="line-146"><code>			if new&amp;mutexMask == 0 {</code></span>
+<span class="codeline" id="line-147"><code>				panic(overflowMsg)</code></span>
+<span class="codeline" id="line-148"><code>			}</code></span>
+<span class="codeline" id="line-149"><code>		}</code></span>
+<span class="codeline" id="line-150"><code>		if atomic.CompareAndSwapUint64(&amp;mu.state, old, new) {</code></span>
+<span class="codeline" id="line-151"><code>			if old&amp;mutexBit == 0 {</code></span>
+<span class="codeline" id="line-152"><code>				return true</code></span>
+<span class="codeline" id="line-153"><code>			}</code></span>
+<span class="codeline" id="line-154"><code>			runtime_Semacquire(mutexSema)</code></span>
+<span class="codeline" id="line-155"><code>			// The signaller has subtracted mutexWait.</code></span>
+<span class="codeline" id="line-156"><code>		}</code></span>
+<span class="codeline" id="line-157"><code>	}</code></span>
+<span class="codeline" id="line-158"><code>}</code></span>
+<span class="codeline" id="line-159"><code></code></span>
+<span class="codeline" id="line-160"><code>// unlock removes a reference from mu and unlocks mu.</code></span>
+<span class="codeline" id="line-161"><code>// It reports whether there is no remaining reference.</code></span>
+<span class="codeline" id="line-162"><code>func (mu *fdMutex) rwunlock(read bool) bool {</code></span>
+<span class="codeline" id="line-163"><code>	var mutexBit, mutexWait, mutexMask uint64</code></span>
+<span class="codeline" id="line-164"><code>	var mutexSema *uint32</code></span>
+<span class="codeline" id="line-165"><code>	if read {</code></span>
+<span class="codeline" id="line-166"><code>		mutexBit = mutexRLock</code></span>
+<span class="codeline" id="line-167"><code>		mutexWait = mutexRWait</code></span>
+<span class="codeline" id="line-168"><code>		mutexMask = mutexRMask</code></span>
+<span class="codeline" id="line-169"><code>		mutexSema = &amp;mu.rsema</code></span>
+<span class="codeline" id="line-170"><code>	} else {</code></span>
+<span class="codeline" id="line-171"><code>		mutexBit = mutexWLock</code></span>
+<span class="codeline" id="line-172"><code>		mutexWait = mutexWWait</code></span>
+<span class="codeline" id="line-173"><code>		mutexMask = mutexWMask</code></span>
+<span class="codeline" id="line-174"><code>		mutexSema = &amp;mu.wsema</code></span>
+<span class="codeline" id="line-175"><code>	}</code></span>
+<span class="codeline" id="line-176"><code>	for {</code></span>
+<span class="codeline" id="line-177"><code>		old := atomic.LoadUint64(&amp;mu.state)</code></span>
+<span class="codeline" id="line-178"><code>		if old&amp;mutexBit == 0 || old&amp;mutexRefMask == 0 {</code></span>
+<span class="codeline" id="line-179"><code>			panic("inconsistent poll.fdMutex")</code></span>
+<span class="codeline" id="line-180"><code>		}</code></span>
+<span class="codeline" id="line-181"><code>		// Drop lock, drop reference and wake read waiter if present.</code></span>
+<span class="codeline" id="line-182"><code>		new := (old &amp;^ mutexBit) - mutexRef</code></span>
+<span class="codeline" id="line-183"><code>		if old&amp;mutexMask != 0 {</code></span>
+<span class="codeline" id="line-184"><code>			new -= mutexWait</code></span>
+<span class="codeline" id="line-185"><code>		}</code></span>
+<span class="codeline" id="line-186"><code>		if atomic.CompareAndSwapUint64(&amp;mu.state, old, new) {</code></span>
+<span class="codeline" id="line-187"><code>			if old&amp;mutexMask != 0 {</code></span>
+<span class="codeline" id="line-188"><code>				runtime_Semrelease(mutexSema)</code></span>
+<span class="codeline" id="line-189"><code>			}</code></span>
+<span class="codeline" id="line-190"><code>			return new&amp;(mutexClosed|mutexRefMask) == mutexClosed</code></span>
+<span class="codeline" id="line-191"><code>		}</code></span>
+<span class="codeline" id="line-192"><code>	}</code></span>
+<span class="codeline" id="line-193"><code>}</code></span>
+<span class="codeline" id="line-194"><code></code></span>
+<span class="codeline" id="line-195"><code>// Implemented in runtime package.</code></span>
+<span class="codeline" id="line-196"><code>func runtime_Semacquire(sema *uint32)</code></span>
+<span class="codeline" id="line-197"><code>func runtime_Semrelease(sema *uint32)</code></span>
+<span class="codeline" id="line-198"><code></code></span>
+<span class="codeline" id="line-199"><code>// incref adds a reference to fd.</code></span>
+<span class="codeline" id="line-200"><code>// It returns an error when fd cannot be used.</code></span>
+<span class="codeline" id="line-201"><code>func (fd *FD) incref() error {</code></span>
+<span class="codeline" id="line-202"><code>	if !fd.fdmu.incref() {</code></span>
+<span class="codeline" id="line-203"><code>		return errClosing(fd.isFile)</code></span>
+<span class="codeline" id="line-204"><code>	}</code></span>
+<span class="codeline" id="line-205"><code>	return nil</code></span>
+<span class="codeline" id="line-206"><code>}</code></span>
+<span class="codeline" id="line-207"><code></code></span>
+<span class="codeline" id="line-208"><code>// decref removes a reference from fd.</code></span>
+<span class="codeline" id="line-209"><code>// It also closes fd when the state of fd is set to closed and there</code></span>
+<span class="codeline" id="line-210"><code>// is no remaining reference.</code></span>
+<span class="codeline" id="line-211"><code>func (fd *FD) decref() error {</code></span>
+<span class="codeline" id="line-212"><code>	if fd.fdmu.decref() {</code></span>
+<span class="codeline" id="line-213"><code>		return fd.destroy()</code></span>
+<span class="codeline" id="line-214"><code>	}</code></span>
+<span class="codeline" id="line-215"><code>	return nil</code></span>
+<span class="codeline" id="line-216"><code>}</code></span>
+<span class="codeline" id="line-217"><code></code></span>
+<span class="codeline" id="line-218"><code>// readLock adds a reference to fd and locks fd for reading.</code></span>
+<span class="codeline" id="line-219"><code>// It returns an error when fd cannot be used for reading.</code></span>
+<span class="codeline" id="line-220"><code>func (fd *FD) readLock() error {</code></span>
+<span class="codeline" id="line-221"><code>	if !fd.fdmu.rwlock(true) {</code></span>
+<span class="codeline" id="line-222"><code>		return errClosing(fd.isFile)</code></span>
+<span class="codeline" id="line-223"><code>	}</code></span>
+<span class="codeline" id="line-224"><code>	return nil</code></span>
+<span class="codeline" id="line-225"><code>}</code></span>
+<span class="codeline" id="line-226"><code></code></span>
+<span class="codeline" id="line-227"><code>// readUnlock removes a reference from fd and unlocks fd for reading.</code></span>
+<span class="codeline" id="line-228"><code>// It also closes fd when the state of fd is set to closed and there</code></span>
+<span class="codeline" id="line-229"><code>// is no remaining reference.</code></span>
+<span class="codeline" id="line-230"><code>func (fd *FD) readUnlock() {</code></span>
+<span class="codeline" id="line-231"><code>	if fd.fdmu.rwunlock(true) {</code></span>
+<span class="codeline" id="line-232"><code>		fd.destroy()</code></span>
+<span class="codeline" id="line-233"><code>	}</code></span>
+<span class="codeline" id="line-234"><code>}</code></span>
+<span class="codeline" id="line-235"><code></code></span>
+<span class="codeline" id="line-236"><code>// writeLock adds a reference to fd and locks fd for writing.</code></span>
+<span class="codeline" id="line-237"><code>// It returns an error when fd cannot be used for writing.</code></span>
+<span class="codeline" id="line-238"><code>func (fd *FD) writeLock() error {</code></span>
+<span class="codeline" id="line-239"><code>	if !fd.fdmu.rwlock(false) {</code></span>
+<span class="codeline" id="line-240"><code>		return errClosing(fd.isFile)</code></span>
+<span class="codeline" id="line-241"><code>	}</code></span>
+<span class="codeline" id="line-242"><code>	return nil</code></span>
+<span class="codeline" id="line-243"><code>}</code></span>
+<span class="codeline" id="line-244"><code></code></span>
+<span class="codeline" id="line-245"><code>// writeUnlock removes a reference from fd and unlocks fd for writing.</code></span>
+<span class="codeline" id="line-246"><code>// It also closes fd when the state of fd is set to closed and there</code></span>
+<span class="codeline" id="line-247"><code>// is no remaining reference.</code></span>
+<span class="codeline" id="line-248"><code>func (fd *FD) writeUnlock() {</code></span>
+<span class="codeline" id="line-249"><code>	if fd.fdmu.rwunlock(false) {</code></span>
+<span class="codeline" id="line-250"><code>		fd.destroy()</code></span>
+<span class="codeline" id="line-251"><code>	}</code></span>
+<span class="codeline" id="line-252"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

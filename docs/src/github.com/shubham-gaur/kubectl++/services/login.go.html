@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: login.go in package github.com/shubham-gaur/kubectl++/services</title>
+<link href="../../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	login.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../../pkg/github.com/shubham-gaur/kubectl++/services.html">github.com/shubham-gaur/kubectl++/services</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>package services</code></span>
+<span class="codeline" id="line-2"><code></code></span>
+<span class="codeline" id="line-3"><code>import (</code></span>
+<span class="codeline" id="line-4"><code>	help "github.com/shubham-gaur/kubectl++/helper"</code></span>
+<span class="codeline" id="line-5"><code>	log "github.com/shubham-gaur/kubectl++/logger"</code></span>
+<span class="codeline" id="line-6"><code>)</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>func Login(args ...int) {</code></span>
+<span class="codeline" id="line-9"><code>	var ctIndex, pdIndex, nsIndex int</code></span>
+<span class="codeline" id="line-10"><code>	if len(args) &gt; 0 {</code></span>
+<span class="codeline" id="line-11"><code>		ctIndex = args[0]</code></span>
+<span class="codeline" id="line-12"><code>		pdIndex = args[1]</code></span>
+<span class="codeline" id="line-13"><code>		nsIndex = args[2]</code></span>
+<span class="codeline" id="line-14"><code>	} else {</code></span>
+<span class="codeline" id="line-15"><code>		ctIndex, pdIndex, nsIndex = GetTaggedContainers()</code></span>
+<span class="codeline" id="line-16"><code>	}</code></span>
+<span class="codeline" id="line-17"><code>	namespace := namespacesSt.namespaces[nsIndex]</code></span>
+<span class="codeline" id="line-18"><code>	pod := podSt.pods[pdIndex]</code></span>
+<span class="codeline" id="line-19"><code>	container := containerSt.containers[ctIndex]</code></span>
+<span class="codeline" id="line-20"><code>	log.Info.Printf("🤔 %v namespace provided; will login inside %v container in %v pod", namespace, container, pod)</code></span>
+<span class="codeline" id="line-21"><code>	log.Info.Printf("😓 Executing command: kubectl -n %v exec -it %v -c %v --bash", namespace, pod, container)</code></span>
+<span class="codeline" id="line-22"><code>	kargs := []string{"-n", namespace, "exec", "-it", pod, "-c", container, "--", "bash"}</code></span>
+<span class="codeline" id="line-23"><code>	help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-24"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

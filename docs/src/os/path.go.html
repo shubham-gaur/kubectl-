@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: path.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	path.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package os</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"syscall"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// MkdirAll creates a directory named path,</code></span>
+<span class="codeline" id="line-12"><code>// along with any necessary parents, and returns nil,</code></span>
+<span class="codeline" id="line-13"><code>// or else returns an error.</code></span>
+<span class="codeline" id="line-14"><code>// The permission bits perm (before umask) are used for all</code></span>
+<span class="codeline" id="line-15"><code>// directories that MkdirAll creates.</code></span>
+<span class="codeline" id="line-16"><code>// If path is already a directory, MkdirAll does nothing</code></span>
+<span class="codeline" id="line-17"><code>// and returns nil.</code></span>
+<span class="codeline" id="line-18"><code>func MkdirAll(path string, perm FileMode) error {</code></span>
+<span class="codeline" id="line-19"><code>	// Fast path: if we can tell whether path is a directory or file, stop with success or error.</code></span>
+<span class="codeline" id="line-20"><code>	dir, err := Stat(path)</code></span>
+<span class="codeline" id="line-21"><code>	if err == nil {</code></span>
+<span class="codeline" id="line-22"><code>		if dir.IsDir() {</code></span>
+<span class="codeline" id="line-23"><code>			return nil</code></span>
+<span class="codeline" id="line-24"><code>		}</code></span>
+<span class="codeline" id="line-25"><code>		return &amp;PathError{Op: "mkdir", Path: path, Err: syscall.ENOTDIR}</code></span>
+<span class="codeline" id="line-26"><code>	}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>	// Slow path: make sure parent exists and then call Mkdir for path.</code></span>
+<span class="codeline" id="line-29"><code>	i := len(path)</code></span>
+<span class="codeline" id="line-30"><code>	for i &gt; 0 &amp;&amp; IsPathSeparator(path[i-1]) { // Skip trailing path separator.</code></span>
+<span class="codeline" id="line-31"><code>		i--</code></span>
+<span class="codeline" id="line-32"><code>	}</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>	j := i</code></span>
+<span class="codeline" id="line-35"><code>	for j &gt; 0 &amp;&amp; !IsPathSeparator(path[j-1]) { // Scan backward over element.</code></span>
+<span class="codeline" id="line-36"><code>		j--</code></span>
+<span class="codeline" id="line-37"><code>	}</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>	if j &gt; 1 {</code></span>
+<span class="codeline" id="line-40"><code>		// Create parent.</code></span>
+<span class="codeline" id="line-41"><code>		err = MkdirAll(fixRootDirectory(path[:j-1]), perm)</code></span>
+<span class="codeline" id="line-42"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-43"><code>			return err</code></span>
+<span class="codeline" id="line-44"><code>		}</code></span>
+<span class="codeline" id="line-45"><code>	}</code></span>
+<span class="codeline" id="line-46"><code></code></span>
+<span class="codeline" id="line-47"><code>	// Parent now exists; invoke Mkdir and use its result.</code></span>
+<span class="codeline" id="line-48"><code>	err = Mkdir(path, perm)</code></span>
+<span class="codeline" id="line-49"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-50"><code>		// Handle arguments like "foo/." by</code></span>
+<span class="codeline" id="line-51"><code>		// double-checking that directory doesn't exist.</code></span>
+<span class="codeline" id="line-52"><code>		dir, err1 := Lstat(path)</code></span>
+<span class="codeline" id="line-53"><code>		if err1 == nil &amp;&amp; dir.IsDir() {</code></span>
+<span class="codeline" id="line-54"><code>			return nil</code></span>
+<span class="codeline" id="line-55"><code>		}</code></span>
+<span class="codeline" id="line-56"><code>		return err</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code>	return nil</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>// RemoveAll removes path and any children it contains.</code></span>
+<span class="codeline" id="line-62"><code>// It removes everything it can but returns the first error</code></span>
+<span class="codeline" id="line-63"><code>// it encounters. If the path does not exist, RemoveAll</code></span>
+<span class="codeline" id="line-64"><code>// returns nil (no error).</code></span>
+<span class="codeline" id="line-65"><code>// If there is an error, it will be of type *PathError.</code></span>
+<span class="codeline" id="line-66"><code>func RemoveAll(path string) error {</code></span>
+<span class="codeline" id="line-67"><code>	return removeAll(path)</code></span>
+<span class="codeline" id="line-68"><code>}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>// endsWithDot reports whether the final component of path is ".".</code></span>
+<span class="codeline" id="line-71"><code>func endsWithDot(path string) bool {</code></span>
+<span class="codeline" id="line-72"><code>	if path == "." {</code></span>
+<span class="codeline" id="line-73"><code>		return true</code></span>
+<span class="codeline" id="line-74"><code>	}</code></span>
+<span class="codeline" id="line-75"><code>	if len(path) &gt;= 2 &amp;&amp; path[len(path)-1] == '.' &amp;&amp; IsPathSeparator(path[len(path)-2]) {</code></span>
+<span class="codeline" id="line-76"><code>		return true</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>	return false</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>
