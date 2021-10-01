@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: cond.go in package sync</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	cond.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/sync.html">sync</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package sync</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"sync/atomic"</code></span>
+<span class="codeline" id="line-9"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// Cond implements a condition variable, a rendezvous point</code></span>
+<span class="codeline" id="line-13"><code>// for goroutines waiting for or announcing the occurrence</code></span>
+<span class="codeline" id="line-14"><code>// of an event.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>// Each Cond has an associated Locker L (often a *Mutex or *RWMutex),</code></span>
+<span class="codeline" id="line-17"><code>// which must be held when changing the condition and</code></span>
+<span class="codeline" id="line-18"><code>// when calling the Wait method.</code></span>
+<span class="codeline" id="line-19"><code>//</code></span>
+<span class="codeline" id="line-20"><code>// A Cond must not be copied after first use.</code></span>
+<span class="codeline" id="line-21"><code>type Cond struct {</code></span>
+<span class="codeline" id="line-22"><code>	noCopy noCopy</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>	// L is held while observing or changing the condition</code></span>
+<span class="codeline" id="line-25"><code>	L Locker</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>	notify  notifyList</code></span>
+<span class="codeline" id="line-28"><code>	checker copyChecker</code></span>
+<span class="codeline" id="line-29"><code>}</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>// NewCond returns a new Cond with Locker l.</code></span>
+<span class="codeline" id="line-32"><code>func NewCond(l Locker) *Cond {</code></span>
+<span class="codeline" id="line-33"><code>	return &amp;Cond{L: l}</code></span>
+<span class="codeline" id="line-34"><code>}</code></span>
+<span class="codeline" id="line-35"><code></code></span>
+<span class="codeline" id="line-36"><code>// Wait atomically unlocks c.L and suspends execution</code></span>
+<span class="codeline" id="line-37"><code>// of the calling goroutine. After later resuming execution,</code></span>
+<span class="codeline" id="line-38"><code>// Wait locks c.L before returning. Unlike in other systems,</code></span>
+<span class="codeline" id="line-39"><code>// Wait cannot return unless awoken by Broadcast or Signal.</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>// Because c.L is not locked when Wait first resumes, the caller</code></span>
+<span class="codeline" id="line-42"><code>// typically cannot assume that the condition is true when</code></span>
+<span class="codeline" id="line-43"><code>// Wait returns. Instead, the caller should Wait in a loop:</code></span>
+<span class="codeline" id="line-44"><code>//</code></span>
+<span class="codeline" id="line-45"><code>//    c.L.Lock()</code></span>
+<span class="codeline" id="line-46"><code>//    for !condition() {</code></span>
+<span class="codeline" id="line-47"><code>//        c.Wait()</code></span>
+<span class="codeline" id="line-48"><code>//    }</code></span>
+<span class="codeline" id="line-49"><code>//    ... make use of condition ...</code></span>
+<span class="codeline" id="line-50"><code>//    c.L.Unlock()</code></span>
+<span class="codeline" id="line-51"><code>//</code></span>
+<span class="codeline" id="line-52"><code>func (c *Cond) Wait() {</code></span>
+<span class="codeline" id="line-53"><code>	c.checker.check()</code></span>
+<span class="codeline" id="line-54"><code>	t := runtime_notifyListAdd(&amp;c.notify)</code></span>
+<span class="codeline" id="line-55"><code>	c.L.Unlock()</code></span>
+<span class="codeline" id="line-56"><code>	runtime_notifyListWait(&amp;c.notify, t)</code></span>
+<span class="codeline" id="line-57"><code>	c.L.Lock()</code></span>
+<span class="codeline" id="line-58"><code>}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>// Signal wakes one goroutine waiting on c, if there is any.</code></span>
+<span class="codeline" id="line-61"><code>//</code></span>
+<span class="codeline" id="line-62"><code>// It is allowed but not required for the caller to hold c.L</code></span>
+<span class="codeline" id="line-63"><code>// during the call.</code></span>
+<span class="codeline" id="line-64"><code>func (c *Cond) Signal() {</code></span>
+<span class="codeline" id="line-65"><code>	c.checker.check()</code></span>
+<span class="codeline" id="line-66"><code>	runtime_notifyListNotifyOne(&amp;c.notify)</code></span>
+<span class="codeline" id="line-67"><code>}</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>// Broadcast wakes all goroutines waiting on c.</code></span>
+<span class="codeline" id="line-70"><code>//</code></span>
+<span class="codeline" id="line-71"><code>// It is allowed but not required for the caller to hold c.L</code></span>
+<span class="codeline" id="line-72"><code>// during the call.</code></span>
+<span class="codeline" id="line-73"><code>func (c *Cond) Broadcast() {</code></span>
+<span class="codeline" id="line-74"><code>	c.checker.check()</code></span>
+<span class="codeline" id="line-75"><code>	runtime_notifyListNotifyAll(&amp;c.notify)</code></span>
+<span class="codeline" id="line-76"><code>}</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>// copyChecker holds back pointer to itself to detect object copying.</code></span>
+<span class="codeline" id="line-79"><code>type copyChecker uintptr</code></span>
+<span class="codeline" id="line-80"><code></code></span>
+<span class="codeline" id="line-81"><code>func (c *copyChecker) check() {</code></span>
+<span class="codeline" id="line-82"><code>	if uintptr(*c) != uintptr(unsafe.Pointer(c)) &amp;&amp;</code></span>
+<span class="codeline" id="line-83"><code>		!atomic.CompareAndSwapUintptr((*uintptr)(c), 0, uintptr(unsafe.Pointer(c))) &amp;&amp;</code></span>
+<span class="codeline" id="line-84"><code>		uintptr(*c) != uintptr(unsafe.Pointer(c)) {</code></span>
+<span class="codeline" id="line-85"><code>		panic("sync.Cond is copied")</code></span>
+<span class="codeline" id="line-86"><code>	}</code></span>
+<span class="codeline" id="line-87"><code>}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>// noCopy may be embedded into structs which must not be copied</code></span>
+<span class="codeline" id="line-90"><code>// after the first use.</code></span>
+<span class="codeline" id="line-91"><code>//</code></span>
+<span class="codeline" id="line-92"><code>// See https://golang.org/issues/8005#issuecomment-190753527</code></span>
+<span class="codeline" id="line-93"><code>// for details.</code></span>
+<span class="codeline" id="line-94"><code>type noCopy struct{}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>// Lock is a no-op used by -copylocks checker from `go vet`.</code></span>
+<span class="codeline" id="line-97"><code>func (*noCopy) Lock()   {}</code></span>
+<span class="codeline" id="line-98"><code>func (*noCopy) Unlock() {}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

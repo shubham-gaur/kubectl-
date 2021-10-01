@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: unsafe.go in package unsafe</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	unsafe.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/unsafe.html">unsafe</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>/*</code></span>
+<span class="codeline" id="line-6"><code>	Package unsafe contains operations that step around the type safety of Go programs.</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>	Packages that import unsafe may be non-portable and are not protected by the</code></span>
+<span class="codeline" id="line-9"><code>	Go 1 compatibility guidelines.</code></span>
+<span class="codeline" id="line-10"><code>*/</code></span></div><span class="codeline" id="line-11"><code>package unsafe</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// ArbitraryType is here for the purposes of documentation only and is not actually</code></span>
+<span class="codeline" id="line-14"><code>// part of the unsafe package. It represents the type of an arbitrary Go expression.</code></span>
+<span class="codeline" id="line-15"><code>type ArbitraryType int</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// Pointer represents a pointer to an arbitrary type. There are four special operations</code></span>
+<span class="codeline" id="line-18"><code>// available for type Pointer that are not available for other types:</code></span>
+<span class="codeline" id="line-19"><code>//	- A pointer value of any type can be converted to a Pointer.</code></span>
+<span class="codeline" id="line-20"><code>//	- A Pointer can be converted to a pointer value of any type.</code></span>
+<span class="codeline" id="line-21"><code>//	- A uintptr can be converted to a Pointer.</code></span>
+<span class="codeline" id="line-22"><code>//	- A Pointer can be converted to a uintptr.</code></span>
+<span class="codeline" id="line-23"><code>// Pointer therefore allows a program to defeat the type system and read and write</code></span>
+<span class="codeline" id="line-24"><code>// arbitrary memory. It should be used with extreme care.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// The following patterns involving Pointer are valid.</code></span>
+<span class="codeline" id="line-27"><code>// Code not using these patterns is likely to be invalid today</code></span>
+<span class="codeline" id="line-28"><code>// or to become invalid in the future.</code></span>
+<span class="codeline" id="line-29"><code>// Even the valid patterns below come with important caveats.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// Running "go vet" can help find uses of Pointer that do not conform to these patterns,</code></span>
+<span class="codeline" id="line-32"><code>// but silence from "go vet" is not a guarantee that the code is valid.</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>// (1) Conversion of a *T1 to Pointer to *T2.</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>// Provided that T2 is no larger than T1 and that the two share an equivalent</code></span>
+<span class="codeline" id="line-37"><code>// memory layout, this conversion allows reinterpreting data of one type as</code></span>
+<span class="codeline" id="line-38"><code>// data of another type. An example is the implementation of</code></span>
+<span class="codeline" id="line-39"><code>// math.Float64bits:</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>//	func Float64bits(f float64) uint64 {</code></span>
+<span class="codeline" id="line-42"><code>//		return *(*uint64)(unsafe.Pointer(&amp;f))</code></span>
+<span class="codeline" id="line-43"><code>//	}</code></span>
+<span class="codeline" id="line-44"><code>//</code></span>
+<span class="codeline" id="line-45"><code>// (2) Conversion of a Pointer to a uintptr (but not back to Pointer).</code></span>
+<span class="codeline" id="line-46"><code>//</code></span>
+<span class="codeline" id="line-47"><code>// Converting a Pointer to a uintptr produces the memory address of the value</code></span>
+<span class="codeline" id="line-48"><code>// pointed at, as an integer. The usual use for such a uintptr is to print it.</code></span>
+<span class="codeline" id="line-49"><code>//</code></span>
+<span class="codeline" id="line-50"><code>// Conversion of a uintptr back to Pointer is not valid in general.</code></span>
+<span class="codeline" id="line-51"><code>//</code></span>
+<span class="codeline" id="line-52"><code>// A uintptr is an integer, not a reference.</code></span>
+<span class="codeline" id="line-53"><code>// Converting a Pointer to a uintptr creates an integer value</code></span>
+<span class="codeline" id="line-54"><code>// with no pointer semantics.</code></span>
+<span class="codeline" id="line-55"><code>// Even if a uintptr holds the address of some object,</code></span>
+<span class="codeline" id="line-56"><code>// the garbage collector will not update that uintptr's value</code></span>
+<span class="codeline" id="line-57"><code>// if the object moves, nor will that uintptr keep the object</code></span>
+<span class="codeline" id="line-58"><code>// from being reclaimed.</code></span>
+<span class="codeline" id="line-59"><code>//</code></span>
+<span class="codeline" id="line-60"><code>// The remaining patterns enumerate the only valid conversions</code></span>
+<span class="codeline" id="line-61"><code>// from uintptr to Pointer.</code></span>
+<span class="codeline" id="line-62"><code>//</code></span>
+<span class="codeline" id="line-63"><code>// (3) Conversion of a Pointer to a uintptr and back, with arithmetic.</code></span>
+<span class="codeline" id="line-64"><code>//</code></span>
+<span class="codeline" id="line-65"><code>// If p points into an allocated object, it can be advanced through the object</code></span>
+<span class="codeline" id="line-66"><code>// by conversion to uintptr, addition of an offset, and conversion back to Pointer.</code></span>
+<span class="codeline" id="line-67"><code>//</code></span>
+<span class="codeline" id="line-68"><code>//	p = unsafe.Pointer(uintptr(p) + offset)</code></span>
+<span class="codeline" id="line-69"><code>//</code></span>
+<span class="codeline" id="line-70"><code>// The most common use of this pattern is to access fields in a struct</code></span>
+<span class="codeline" id="line-71"><code>// or elements of an array:</code></span>
+<span class="codeline" id="line-72"><code>//</code></span>
+<span class="codeline" id="line-73"><code>//	// equivalent to f := unsafe.Pointer(&amp;s.f)</code></span>
+<span class="codeline" id="line-74"><code>//	f := unsafe.Pointer(uintptr(unsafe.Pointer(&amp;s)) + unsafe.Offsetof(s.f))</code></span>
+<span class="codeline" id="line-75"><code>//</code></span>
+<span class="codeline" id="line-76"><code>//	// equivalent to e := unsafe.Pointer(&amp;x[i])</code></span>
+<span class="codeline" id="line-77"><code>//	e := unsafe.Pointer(uintptr(unsafe.Pointer(&amp;x[0])) + i*unsafe.Sizeof(x[0]))</code></span>
+<span class="codeline" id="line-78"><code>//</code></span>
+<span class="codeline" id="line-79"><code>// It is valid both to add and to subtract offsets from a pointer in this way.</code></span>
+<span class="codeline" id="line-80"><code>// It is also valid to use &amp;^ to round pointers, usually for alignment.</code></span>
+<span class="codeline" id="line-81"><code>// In all cases, the result must continue to point into the original allocated object.</code></span>
+<span class="codeline" id="line-82"><code>//</code></span>
+<span class="codeline" id="line-83"><code>// Unlike in C, it is not valid to advance a pointer just beyond the end of</code></span>
+<span class="codeline" id="line-84"><code>// its original allocation:</code></span>
+<span class="codeline" id="line-85"><code>//</code></span>
+<span class="codeline" id="line-86"><code>//	// INVALID: end points outside allocated space.</code></span>
+<span class="codeline" id="line-87"><code>//	var s thing</code></span>
+<span class="codeline" id="line-88"><code>//	end = unsafe.Pointer(uintptr(unsafe.Pointer(&amp;s)) + unsafe.Sizeof(s))</code></span>
+<span class="codeline" id="line-89"><code>//</code></span>
+<span class="codeline" id="line-90"><code>//	// INVALID: end points outside allocated space.</code></span>
+<span class="codeline" id="line-91"><code>//	b := make([]byte, n)</code></span>
+<span class="codeline" id="line-92"><code>//	end = unsafe.Pointer(uintptr(unsafe.Pointer(&amp;b[0])) + uintptr(n))</code></span>
+<span class="codeline" id="line-93"><code>//</code></span>
+<span class="codeline" id="line-94"><code>// Note that both conversions must appear in the same expression, with only</code></span>
+<span class="codeline" id="line-95"><code>// the intervening arithmetic between them:</code></span>
+<span class="codeline" id="line-96"><code>//</code></span>
+<span class="codeline" id="line-97"><code>//	// INVALID: uintptr cannot be stored in variable</code></span>
+<span class="codeline" id="line-98"><code>//	// before conversion back to Pointer.</code></span>
+<span class="codeline" id="line-99"><code>//	u := uintptr(p)</code></span>
+<span class="codeline" id="line-100"><code>//	p = unsafe.Pointer(u + offset)</code></span>
+<span class="codeline" id="line-101"><code>//</code></span>
+<span class="codeline" id="line-102"><code>// Note that the pointer must point into an allocated object, so it may not be nil.</code></span>
+<span class="codeline" id="line-103"><code>//</code></span>
+<span class="codeline" id="line-104"><code>//	// INVALID: conversion of nil pointer</code></span>
+<span class="codeline" id="line-105"><code>//	u := unsafe.Pointer(nil)</code></span>
+<span class="codeline" id="line-106"><code>//	p := unsafe.Pointer(uintptr(u) + offset)</code></span>
+<span class="codeline" id="line-107"><code>//</code></span>
+<span class="codeline" id="line-108"><code>// (4) Conversion of a Pointer to a uintptr when calling syscall.Syscall.</code></span>
+<span class="codeline" id="line-109"><code>//</code></span>
+<span class="codeline" id="line-110"><code>// The Syscall functions in package syscall pass their uintptr arguments directly</code></span>
+<span class="codeline" id="line-111"><code>// to the operating system, which then may, depending on the details of the call,</code></span>
+<span class="codeline" id="line-112"><code>// reinterpret some of them as pointers.</code></span>
+<span class="codeline" id="line-113"><code>// That is, the system call implementation is implicitly converting certain arguments</code></span>
+<span class="codeline" id="line-114"><code>// back from uintptr to pointer.</code></span>
+<span class="codeline" id="line-115"><code>//</code></span>
+<span class="codeline" id="line-116"><code>// If a pointer argument must be converted to uintptr for use as an argument,</code></span>
+<span class="codeline" id="line-117"><code>// that conversion must appear in the call expression itself:</code></span>
+<span class="codeline" id="line-118"><code>//</code></span>
+<span class="codeline" id="line-119"><code>//	syscall.Syscall(SYS_READ, uintptr(fd), uintptr(unsafe.Pointer(p)), uintptr(n))</code></span>
+<span class="codeline" id="line-120"><code>//</code></span>
+<span class="codeline" id="line-121"><code>// The compiler handles a Pointer converted to a uintptr in the argument list of</code></span>
+<span class="codeline" id="line-122"><code>// a call to a function implemented in assembly by arranging that the referenced</code></span>
+<span class="codeline" id="line-123"><code>// allocated object, if any, is retained and not moved until the call completes,</code></span>
+<span class="codeline" id="line-124"><code>// even though from the types alone it would appear that the object is no longer</code></span>
+<span class="codeline" id="line-125"><code>// needed during the call.</code></span>
+<span class="codeline" id="line-126"><code>//</code></span>
+<span class="codeline" id="line-127"><code>// For the compiler to recognize this pattern,</code></span>
+<span class="codeline" id="line-128"><code>// the conversion must appear in the argument list:</code></span>
+<span class="codeline" id="line-129"><code>//</code></span>
+<span class="codeline" id="line-130"><code>//	// INVALID: uintptr cannot be stored in variable</code></span>
+<span class="codeline" id="line-131"><code>//	// before implicit conversion back to Pointer during system call.</code></span>
+<span class="codeline" id="line-132"><code>//	u := uintptr(unsafe.Pointer(p))</code></span>
+<span class="codeline" id="line-133"><code>//	syscall.Syscall(SYS_READ, uintptr(fd), u, uintptr(n))</code></span>
+<span class="codeline" id="line-134"><code>//</code></span>
+<span class="codeline" id="line-135"><code>// (5) Conversion of the result of reflect.Value.Pointer or reflect.Value.UnsafeAddr</code></span>
+<span class="codeline" id="line-136"><code>// from uintptr to Pointer.</code></span>
+<span class="codeline" id="line-137"><code>//</code></span>
+<span class="codeline" id="line-138"><code>// Package reflect's Value methods named Pointer and UnsafeAddr return type uintptr</code></span>
+<span class="codeline" id="line-139"><code>// instead of unsafe.Pointer to keep callers from changing the result to an arbitrary</code></span>
+<span class="codeline" id="line-140"><code>// type without first importing "unsafe". However, this means that the result is</code></span>
+<span class="codeline" id="line-141"><code>// fragile and must be converted to Pointer immediately after making the call,</code></span>
+<span class="codeline" id="line-142"><code>// in the same expression:</code></span>
+<span class="codeline" id="line-143"><code>//</code></span>
+<span class="codeline" id="line-144"><code>//	p := (*int)(unsafe.Pointer(reflect.ValueOf(new(int)).Pointer()))</code></span>
+<span class="codeline" id="line-145"><code>//</code></span>
+<span class="codeline" id="line-146"><code>// As in the cases above, it is invalid to store the result before the conversion:</code></span>
+<span class="codeline" id="line-147"><code>//</code></span>
+<span class="codeline" id="line-148"><code>//	// INVALID: uintptr cannot be stored in variable</code></span>
+<span class="codeline" id="line-149"><code>//	// before conversion back to Pointer.</code></span>
+<span class="codeline" id="line-150"><code>//	u := reflect.ValueOf(new(int)).Pointer()</code></span>
+<span class="codeline" id="line-151"><code>//	p := (*int)(unsafe.Pointer(u))</code></span>
+<span class="codeline" id="line-152"><code>//</code></span>
+<span class="codeline" id="line-153"><code>// (6) Conversion of a reflect.SliceHeader or reflect.StringHeader Data field to or from Pointer.</code></span>
+<span class="codeline" id="line-154"><code>//</code></span>
+<span class="codeline" id="line-155"><code>// As in the previous case, the reflect data structures SliceHeader and StringHeader</code></span>
+<span class="codeline" id="line-156"><code>// declare the field Data as a uintptr to keep callers from changing the result to</code></span>
+<span class="codeline" id="line-157"><code>// an arbitrary type without first importing "unsafe". However, this means that</code></span>
+<span class="codeline" id="line-158"><code>// SliceHeader and StringHeader are only valid when interpreting the content</code></span>
+<span class="codeline" id="line-159"><code>// of an actual slice or string value.</code></span>
+<span class="codeline" id="line-160"><code>//</code></span>
+<span class="codeline" id="line-161"><code>//	var s string</code></span>
+<span class="codeline" id="line-162"><code>//	hdr := (*reflect.StringHeader)(unsafe.Pointer(&amp;s)) // case 1</code></span>
+<span class="codeline" id="line-163"><code>//	hdr.Data = uintptr(unsafe.Pointer(p))              // case 6 (this case)</code></span>
+<span class="codeline" id="line-164"><code>//	hdr.Len = n</code></span>
+<span class="codeline" id="line-165"><code>//</code></span>
+<span class="codeline" id="line-166"><code>// In this usage hdr.Data is really an alternate way to refer to the underlying</code></span>
+<span class="codeline" id="line-167"><code>// pointer in the string header, not a uintptr variable itself.</code></span>
+<span class="codeline" id="line-168"><code>//</code></span>
+<span class="codeline" id="line-169"><code>// In general, reflect.SliceHeader and reflect.StringHeader should be used</code></span>
+<span class="codeline" id="line-170"><code>// only as *reflect.SliceHeader and *reflect.StringHeader pointing at actual</code></span>
+<span class="codeline" id="line-171"><code>// slices or strings, never as plain structs.</code></span>
+<span class="codeline" id="line-172"><code>// A program should not declare or allocate variables of these struct types.</code></span>
+<span class="codeline" id="line-173"><code>//</code></span>
+<span class="codeline" id="line-174"><code>//	// INVALID: a directly-declared header will not hold Data as a reference.</code></span>
+<span class="codeline" id="line-175"><code>//	var hdr reflect.StringHeader</code></span>
+<span class="codeline" id="line-176"><code>//	hdr.Data = uintptr(unsafe.Pointer(p))</code></span>
+<span class="codeline" id="line-177"><code>//	hdr.Len = n</code></span>
+<span class="codeline" id="line-178"><code>//	s := *(*string)(unsafe.Pointer(&amp;hdr)) // p possibly already lost</code></span>
+<span class="codeline" id="line-179"><code>//</code></span>
+<span class="codeline" id="line-180"><code>type Pointer *ArbitraryType</code></span>
+<span class="codeline" id="line-181"><code></code></span>
+<span class="codeline" id="line-182"><code>// Sizeof takes an expression x of any type and returns the size in bytes</code></span>
+<span class="codeline" id="line-183"><code>// of a hypothetical variable v as if v was declared via var v = x.</code></span>
+<span class="codeline" id="line-184"><code>// The size does not include any memory possibly referenced by x.</code></span>
+<span class="codeline" id="line-185"><code>// For instance, if x is a slice, Sizeof returns the size of the slice</code></span>
+<span class="codeline" id="line-186"><code>// descriptor, not the size of the memory referenced by the slice.</code></span>
+<span class="codeline" id="line-187"><code>// The return value of Sizeof is a Go constant.</code></span>
+<span class="codeline" id="line-188"><code>func Sizeof(x ArbitraryType) uintptr</code></span>
+<span class="codeline" id="line-189"><code></code></span>
+<span class="codeline" id="line-190"><code>// Offsetof returns the offset within the struct of the field represented by x,</code></span>
+<span class="codeline" id="line-191"><code>// which must be of the form structValue.field. In other words, it returns the</code></span>
+<span class="codeline" id="line-192"><code>// number of bytes between the start of the struct and the start of the field.</code></span>
+<span class="codeline" id="line-193"><code>// The return value of Offsetof is a Go constant.</code></span>
+<span class="codeline" id="line-194"><code>func Offsetof(x ArbitraryType) uintptr</code></span>
+<span class="codeline" id="line-195"><code></code></span>
+<span class="codeline" id="line-196"><code>// Alignof takes an expression x of any type and returns the required alignment</code></span>
+<span class="codeline" id="line-197"><code>// of a hypothetical variable v as if v was declared via var v = x.</code></span>
+<span class="codeline" id="line-198"><code>// It is the largest value m such that the address of v is always zero mod m.</code></span>
+<span class="codeline" id="line-199"><code>// It is the same as the value returned by reflect.TypeOf(x).Align().</code></span>
+<span class="codeline" id="line-200"><code>// As a special case, if a variable s is of struct type and f is a field</code></span>
+<span class="codeline" id="line-201"><code>// within that struct, then Alignof(s.f) will return the required alignment</code></span>
+<span class="codeline" id="line-202"><code>// of a field of that type within a struct. This case is the same as the</code></span>
+<span class="codeline" id="line-203"><code>// value returned by reflect.TypeOf(s.f).FieldAlign().</code></span>
+<span class="codeline" id="line-204"><code>// The return value of Alignof is a Go constant.</code></span>
+<span class="codeline" id="line-205"><code>func Alignof(x ArbitraryType) uintptr</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: multi.go in package io</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	multi.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/io.html">io</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package io</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>type eofReader struct{}</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>func (eofReader) Read([]byte) (int, error) {</code></span>
+<span class="codeline" id="line-10"><code>	return 0, EOF</code></span>
+<span class="codeline" id="line-11"><code>}</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>type multiReader struct {</code></span>
+<span class="codeline" id="line-14"><code>	readers []Reader</code></span>
+<span class="codeline" id="line-15"><code>}</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>func (mr *multiReader) Read(p []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-18"><code>	for len(mr.readers) &gt; 0 {</code></span>
+<span class="codeline" id="line-19"><code>		// Optimization to flatten nested multiReaders (Issue 13558).</code></span>
+<span class="codeline" id="line-20"><code>		if len(mr.readers) == 1 {</code></span>
+<span class="codeline" id="line-21"><code>			if r, ok := mr.readers[0].(*multiReader); ok {</code></span>
+<span class="codeline" id="line-22"><code>				mr.readers = r.readers</code></span>
+<span class="codeline" id="line-23"><code>				continue</code></span>
+<span class="codeline" id="line-24"><code>			}</code></span>
+<span class="codeline" id="line-25"><code>		}</code></span>
+<span class="codeline" id="line-26"><code>		n, err = mr.readers[0].Read(p)</code></span>
+<span class="codeline" id="line-27"><code>		if err == EOF {</code></span>
+<span class="codeline" id="line-28"><code>			// Use eofReader instead of nil to avoid nil panic</code></span>
+<span class="codeline" id="line-29"><code>			// after performing flatten (Issue 18232).</code></span>
+<span class="codeline" id="line-30"><code>			mr.readers[0] = eofReader{} // permit earlier GC</code></span>
+<span class="codeline" id="line-31"><code>			mr.readers = mr.readers[1:]</code></span>
+<span class="codeline" id="line-32"><code>		}</code></span>
+<span class="codeline" id="line-33"><code>		if n &gt; 0 || err != EOF {</code></span>
+<span class="codeline" id="line-34"><code>			if err == EOF &amp;&amp; len(mr.readers) &gt; 0 {</code></span>
+<span class="codeline" id="line-35"><code>				// Don't return EOF yet. More readers remain.</code></span>
+<span class="codeline" id="line-36"><code>				err = nil</code></span>
+<span class="codeline" id="line-37"><code>			}</code></span>
+<span class="codeline" id="line-38"><code>			return</code></span>
+<span class="codeline" id="line-39"><code>		}</code></span>
+<span class="codeline" id="line-40"><code>	}</code></span>
+<span class="codeline" id="line-41"><code>	return 0, EOF</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>// MultiReader returns a Reader that's the logical concatenation of</code></span>
+<span class="codeline" id="line-45"><code>// the provided input readers. They're read sequentially. Once all</code></span>
+<span class="codeline" id="line-46"><code>// inputs have returned EOF, Read will return EOF.  If any of the readers</code></span>
+<span class="codeline" id="line-47"><code>// return a non-nil, non-EOF error, Read will return that error.</code></span>
+<span class="codeline" id="line-48"><code>func MultiReader(readers ...Reader) Reader {</code></span>
+<span class="codeline" id="line-49"><code>	r := make([]Reader, len(readers))</code></span>
+<span class="codeline" id="line-50"><code>	copy(r, readers)</code></span>
+<span class="codeline" id="line-51"><code>	return &amp;multiReader{r}</code></span>
+<span class="codeline" id="line-52"><code>}</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>type multiWriter struct {</code></span>
+<span class="codeline" id="line-55"><code>	writers []Writer</code></span>
+<span class="codeline" id="line-56"><code>}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>func (t *multiWriter) Write(p []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-59"><code>	for _, w := range t.writers {</code></span>
+<span class="codeline" id="line-60"><code>		n, err = w.Write(p)</code></span>
+<span class="codeline" id="line-61"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-62"><code>			return</code></span>
+<span class="codeline" id="line-63"><code>		}</code></span>
+<span class="codeline" id="line-64"><code>		if n != len(p) {</code></span>
+<span class="codeline" id="line-65"><code>			err = ErrShortWrite</code></span>
+<span class="codeline" id="line-66"><code>			return</code></span>
+<span class="codeline" id="line-67"><code>		}</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code>	return len(p), nil</code></span>
+<span class="codeline" id="line-70"><code>}</code></span>
+<span class="codeline" id="line-71"><code></code></span>
+<span class="codeline" id="line-72"><code>var _ StringWriter = (*multiWriter)(nil)</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>func (t *multiWriter) WriteString(s string) (n int, err error) {</code></span>
+<span class="codeline" id="line-75"><code>	var p []byte // lazily initialized if/when needed</code></span>
+<span class="codeline" id="line-76"><code>	for _, w := range t.writers {</code></span>
+<span class="codeline" id="line-77"><code>		if sw, ok := w.(StringWriter); ok {</code></span>
+<span class="codeline" id="line-78"><code>			n, err = sw.WriteString(s)</code></span>
+<span class="codeline" id="line-79"><code>		} else {</code></span>
+<span class="codeline" id="line-80"><code>			if p == nil {</code></span>
+<span class="codeline" id="line-81"><code>				p = []byte(s)</code></span>
+<span class="codeline" id="line-82"><code>			}</code></span>
+<span class="codeline" id="line-83"><code>			n, err = w.Write(p)</code></span>
+<span class="codeline" id="line-84"><code>		}</code></span>
+<span class="codeline" id="line-85"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-86"><code>			return</code></span>
+<span class="codeline" id="line-87"><code>		}</code></span>
+<span class="codeline" id="line-88"><code>		if n != len(s) {</code></span>
+<span class="codeline" id="line-89"><code>			err = ErrShortWrite</code></span>
+<span class="codeline" id="line-90"><code>			return</code></span>
+<span class="codeline" id="line-91"><code>		}</code></span>
+<span class="codeline" id="line-92"><code>	}</code></span>
+<span class="codeline" id="line-93"><code>	return len(s), nil</code></span>
+<span class="codeline" id="line-94"><code>}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>// MultiWriter creates a writer that duplicates its writes to all the</code></span>
+<span class="codeline" id="line-97"><code>// provided writers, similar to the Unix tee(1) command.</code></span>
+<span class="codeline" id="line-98"><code>//</code></span>
+<span class="codeline" id="line-99"><code>// Each write is written to each listed writer, one at a time.</code></span>
+<span class="codeline" id="line-100"><code>// If a listed writer returns an error, that overall write operation</code></span>
+<span class="codeline" id="line-101"><code>// stops and returns the error; it does not continue down the list.</code></span>
+<span class="codeline" id="line-102"><code>func MultiWriter(writers ...Writer) Writer {</code></span>
+<span class="codeline" id="line-103"><code>	allWriters := make([]Writer, 0, len(writers))</code></span>
+<span class="codeline" id="line-104"><code>	for _, w := range writers {</code></span>
+<span class="codeline" id="line-105"><code>		if mw, ok := w.(*multiWriter); ok {</code></span>
+<span class="codeline" id="line-106"><code>			allWriters = append(allWriters, mw.writers...)</code></span>
+<span class="codeline" id="line-107"><code>		} else {</code></span>
+<span class="codeline" id="line-108"><code>			allWriters = append(allWriters, w)</code></span>
+<span class="codeline" id="line-109"><code>		}</code></span>
+<span class="codeline" id="line-110"><code>	}</code></span>
+<span class="codeline" id="line-111"><code>	return &amp;multiWriter{allWriters}</code></span>
+<span class="codeline" id="line-112"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: fold.go in package encoding/json</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	fold.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/encoding/json.html">encoding/json</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2013 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package json</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"bytes"</code></span>
+<span class="codeline" id="line-9"><code>	"unicode/utf8"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>const (</code></span>
+<span class="codeline" id="line-13"><code>	caseMask     = ^byte(0x20) // Mask to ignore case in ASCII.</code></span>
+<span class="codeline" id="line-14"><code>	kelvin       = '\u212a'</code></span>
+<span class="codeline" id="line-15"><code>	smallLongEss = '\u017f'</code></span>
+<span class="codeline" id="line-16"><code>)</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>// foldFunc returns one of four different case folding equivalence</code></span>
+<span class="codeline" id="line-19"><code>// functions, from most general (and slow) to fastest:</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// 1) bytes.EqualFold, if the key s contains any non-ASCII UTF-8</code></span>
+<span class="codeline" id="line-22"><code>// 2) equalFoldRight, if s contains special folding ASCII ('k', 'K', 's', 'S')</code></span>
+<span class="codeline" id="line-23"><code>// 3) asciiEqualFold, no special, but includes non-letters (including _)</code></span>
+<span class="codeline" id="line-24"><code>// 4) simpleLetterEqualFold, no specials, no non-letters.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// The letters S and K are special because they map to 3 runes, not just 2:</code></span>
+<span class="codeline" id="line-27"><code>//  * S maps to s and to U+017F 'ſ' Latin small letter long s</code></span>
+<span class="codeline" id="line-28"><code>//  * k maps to K and to U+212A 'K' Kelvin sign</code></span>
+<span class="codeline" id="line-29"><code>// See https://play.golang.org/p/tTxjOc0OGo</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// The returned function is specialized for matching against s and</code></span>
+<span class="codeline" id="line-32"><code>// should only be given s. It's not curried for performance reasons.</code></span>
+<span class="codeline" id="line-33"><code>func foldFunc(s []byte) func(s, t []byte) bool {</code></span>
+<span class="codeline" id="line-34"><code>	nonLetter := false</code></span>
+<span class="codeline" id="line-35"><code>	special := false // special letter</code></span>
+<span class="codeline" id="line-36"><code>	for _, b := range s {</code></span>
+<span class="codeline" id="line-37"><code>		if b &gt;= utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-38"><code>			return bytes.EqualFold</code></span>
+<span class="codeline" id="line-39"><code>		}</code></span>
+<span class="codeline" id="line-40"><code>		upper := b &amp; caseMask</code></span>
+<span class="codeline" id="line-41"><code>		if upper &lt; 'A' || upper &gt; 'Z' {</code></span>
+<span class="codeline" id="line-42"><code>			nonLetter = true</code></span>
+<span class="codeline" id="line-43"><code>		} else if upper == 'K' || upper == 'S' {</code></span>
+<span class="codeline" id="line-44"><code>			// See above for why these letters are special.</code></span>
+<span class="codeline" id="line-45"><code>			special = true</code></span>
+<span class="codeline" id="line-46"><code>		}</code></span>
+<span class="codeline" id="line-47"><code>	}</code></span>
+<span class="codeline" id="line-48"><code>	if special {</code></span>
+<span class="codeline" id="line-49"><code>		return equalFoldRight</code></span>
+<span class="codeline" id="line-50"><code>	}</code></span>
+<span class="codeline" id="line-51"><code>	if nonLetter {</code></span>
+<span class="codeline" id="line-52"><code>		return asciiEqualFold</code></span>
+<span class="codeline" id="line-53"><code>	}</code></span>
+<span class="codeline" id="line-54"><code>	return simpleLetterEqualFold</code></span>
+<span class="codeline" id="line-55"><code>}</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>// equalFoldRight is a specialization of bytes.EqualFold when s is</code></span>
+<span class="codeline" id="line-58"><code>// known to be all ASCII (including punctuation), but contains an 's',</code></span>
+<span class="codeline" id="line-59"><code>// 'S', 'k', or 'K', requiring a Unicode fold on the bytes in t.</code></span>
+<span class="codeline" id="line-60"><code>// See comments on foldFunc.</code></span>
+<span class="codeline" id="line-61"><code>func equalFoldRight(s, t []byte) bool {</code></span>
+<span class="codeline" id="line-62"><code>	for _, sb := range s {</code></span>
+<span class="codeline" id="line-63"><code>		if len(t) == 0 {</code></span>
+<span class="codeline" id="line-64"><code>			return false</code></span>
+<span class="codeline" id="line-65"><code>		}</code></span>
+<span class="codeline" id="line-66"><code>		tb := t[0]</code></span>
+<span class="codeline" id="line-67"><code>		if tb &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-68"><code>			if sb != tb {</code></span>
+<span class="codeline" id="line-69"><code>				sbUpper := sb &amp; caseMask</code></span>
+<span class="codeline" id="line-70"><code>				if 'A' &lt;= sbUpper &amp;&amp; sbUpper &lt;= 'Z' {</code></span>
+<span class="codeline" id="line-71"><code>					if sbUpper != tb&amp;caseMask {</code></span>
+<span class="codeline" id="line-72"><code>						return false</code></span>
+<span class="codeline" id="line-73"><code>					}</code></span>
+<span class="codeline" id="line-74"><code>				} else {</code></span>
+<span class="codeline" id="line-75"><code>					return false</code></span>
+<span class="codeline" id="line-76"><code>				}</code></span>
+<span class="codeline" id="line-77"><code>			}</code></span>
+<span class="codeline" id="line-78"><code>			t = t[1:]</code></span>
+<span class="codeline" id="line-79"><code>			continue</code></span>
+<span class="codeline" id="line-80"><code>		}</code></span>
+<span class="codeline" id="line-81"><code>		// sb is ASCII and t is not. t must be either kelvin</code></span>
+<span class="codeline" id="line-82"><code>		// sign or long s; sb must be s, S, k, or K.</code></span>
+<span class="codeline" id="line-83"><code>		tr, size := utf8.DecodeRune(t)</code></span>
+<span class="codeline" id="line-84"><code>		switch sb {</code></span>
+<span class="codeline" id="line-85"><code>		case 's', 'S':</code></span>
+<span class="codeline" id="line-86"><code>			if tr != smallLongEss {</code></span>
+<span class="codeline" id="line-87"><code>				return false</code></span>
+<span class="codeline" id="line-88"><code>			}</code></span>
+<span class="codeline" id="line-89"><code>		case 'k', 'K':</code></span>
+<span class="codeline" id="line-90"><code>			if tr != kelvin {</code></span>
+<span class="codeline" id="line-91"><code>				return false</code></span>
+<span class="codeline" id="line-92"><code>			}</code></span>
+<span class="codeline" id="line-93"><code>		default:</code></span>
+<span class="codeline" id="line-94"><code>			return false</code></span>
+<span class="codeline" id="line-95"><code>		}</code></span>
+<span class="codeline" id="line-96"><code>		t = t[size:]</code></span>
+<span class="codeline" id="line-97"><code></code></span>
+<span class="codeline" id="line-98"><code>	}</code></span>
+<span class="codeline" id="line-99"><code>	if len(t) &gt; 0 {</code></span>
+<span class="codeline" id="line-100"><code>		return false</code></span>
+<span class="codeline" id="line-101"><code>	}</code></span>
+<span class="codeline" id="line-102"><code>	return true</code></span>
+<span class="codeline" id="line-103"><code>}</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>// asciiEqualFold is a specialization of bytes.EqualFold for use when</code></span>
+<span class="codeline" id="line-106"><code>// s is all ASCII (but may contain non-letters) and contains no</code></span>
+<span class="codeline" id="line-107"><code>// special-folding letters.</code></span>
+<span class="codeline" id="line-108"><code>// See comments on foldFunc.</code></span>
+<span class="codeline" id="line-109"><code>func asciiEqualFold(s, t []byte) bool {</code></span>
+<span class="codeline" id="line-110"><code>	if len(s) != len(t) {</code></span>
+<span class="codeline" id="line-111"><code>		return false</code></span>
+<span class="codeline" id="line-112"><code>	}</code></span>
+<span class="codeline" id="line-113"><code>	for i, sb := range s {</code></span>
+<span class="codeline" id="line-114"><code>		tb := t[i]</code></span>
+<span class="codeline" id="line-115"><code>		if sb == tb {</code></span>
+<span class="codeline" id="line-116"><code>			continue</code></span>
+<span class="codeline" id="line-117"><code>		}</code></span>
+<span class="codeline" id="line-118"><code>		if ('a' &lt;= sb &amp;&amp; sb &lt;= 'z') || ('A' &lt;= sb &amp;&amp; sb &lt;= 'Z') {</code></span>
+<span class="codeline" id="line-119"><code>			if sb&amp;caseMask != tb&amp;caseMask {</code></span>
+<span class="codeline" id="line-120"><code>				return false</code></span>
+<span class="codeline" id="line-121"><code>			}</code></span>
+<span class="codeline" id="line-122"><code>		} else {</code></span>
+<span class="codeline" id="line-123"><code>			return false</code></span>
+<span class="codeline" id="line-124"><code>		}</code></span>
+<span class="codeline" id="line-125"><code>	}</code></span>
+<span class="codeline" id="line-126"><code>	return true</code></span>
+<span class="codeline" id="line-127"><code>}</code></span>
+<span class="codeline" id="line-128"><code></code></span>
+<span class="codeline" id="line-129"><code>// simpleLetterEqualFold is a specialization of bytes.EqualFold for</code></span>
+<span class="codeline" id="line-130"><code>// use when s is all ASCII letters (no underscores, etc) and also</code></span>
+<span class="codeline" id="line-131"><code>// doesn't contain 'k', 'K', 's', or 'S'.</code></span>
+<span class="codeline" id="line-132"><code>// See comments on foldFunc.</code></span>
+<span class="codeline" id="line-133"><code>func simpleLetterEqualFold(s, t []byte) bool {</code></span>
+<span class="codeline" id="line-134"><code>	if len(s) != len(t) {</code></span>
+<span class="codeline" id="line-135"><code>		return false</code></span>
+<span class="codeline" id="line-136"><code>	}</code></span>
+<span class="codeline" id="line-137"><code>	for i, b := range s {</code></span>
+<span class="codeline" id="line-138"><code>		if b&amp;caseMask != t[i]&amp;caseMask {</code></span>
+<span class="codeline" id="line-139"><code>			return false</code></span>
+<span class="codeline" id="line-140"><code>		}</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>	return true</code></span>
+<span class="codeline" id="line-143"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

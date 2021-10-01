@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sinh.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sinh.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>/*</code></span>
+<span class="codeline" id="line-8"><code>	Floating-point hyperbolic sine and cosine.</code></span>
+<span class="codeline" id="line-9"><code></code></span>
+<span class="codeline" id="line-10"><code>	The exponential func is called for arguments</code></span>
+<span class="codeline" id="line-11"><code>	greater in magnitude than 0.5.</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>	A series is used for arguments smaller in magnitude than 0.5.</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>	Cosh(x) is computed from the exponential func for</code></span>
+<span class="codeline" id="line-16"><code>	all arguments.</code></span>
+<span class="codeline" id="line-17"><code>*/</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>// Sinh returns the hyperbolic sine of x.</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-22"><code>//	Sinh(±0) = ±0</code></span>
+<span class="codeline" id="line-23"><code>//	Sinh(±Inf) = ±Inf</code></span>
+<span class="codeline" id="line-24"><code>//	Sinh(NaN) = NaN</code></span>
+<span class="codeline" id="line-25"><code>func Sinh(x float64) float64</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>func sinh(x float64) float64 {</code></span>
+<span class="codeline" id="line-28"><code>	// The coefficients are #2029 from Hart &amp; Cheney. (20.36D)</code></span>
+<span class="codeline" id="line-29"><code>	const (</code></span>
+<span class="codeline" id="line-30"><code>		P0 = -0.6307673640497716991184787251e+6</code></span>
+<span class="codeline" id="line-31"><code>		P1 = -0.8991272022039509355398013511e+5</code></span>
+<span class="codeline" id="line-32"><code>		P2 = -0.2894211355989563807284660366e+4</code></span>
+<span class="codeline" id="line-33"><code>		P3 = -0.2630563213397497062819489e+2</code></span>
+<span class="codeline" id="line-34"><code>		Q0 = -0.6307673640497716991212077277e+6</code></span>
+<span class="codeline" id="line-35"><code>		Q1 = 0.1521517378790019070696485176e+5</code></span>
+<span class="codeline" id="line-36"><code>		Q2 = -0.173678953558233699533450911e+3</code></span>
+<span class="codeline" id="line-37"><code>	)</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>	sign := false</code></span>
+<span class="codeline" id="line-40"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-41"><code>		x = -x</code></span>
+<span class="codeline" id="line-42"><code>		sign = true</code></span>
+<span class="codeline" id="line-43"><code>	}</code></span>
+<span class="codeline" id="line-44"><code></code></span>
+<span class="codeline" id="line-45"><code>	var temp float64</code></span>
+<span class="codeline" id="line-46"><code>	switch {</code></span>
+<span class="codeline" id="line-47"><code>	case x &gt; 21:</code></span>
+<span class="codeline" id="line-48"><code>		temp = Exp(x) * 0.5</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>	case x &gt; 0.5:</code></span>
+<span class="codeline" id="line-51"><code>		ex := Exp(x)</code></span>
+<span class="codeline" id="line-52"><code>		temp = (ex - 1/ex) * 0.5</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>	default:</code></span>
+<span class="codeline" id="line-55"><code>		sq := x * x</code></span>
+<span class="codeline" id="line-56"><code>		temp = (((P3*sq+P2)*sq+P1)*sq + P0) * x</code></span>
+<span class="codeline" id="line-57"><code>		temp = temp / (((sq+Q2)*sq+Q1)*sq + Q0)</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>	if sign {</code></span>
+<span class="codeline" id="line-61"><code>		temp = -temp</code></span>
+<span class="codeline" id="line-62"><code>	}</code></span>
+<span class="codeline" id="line-63"><code>	return temp</code></span>
+<span class="codeline" id="line-64"><code>}</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>// Cosh returns the hyperbolic cosine of x.</code></span>
+<span class="codeline" id="line-67"><code>//</code></span>
+<span class="codeline" id="line-68"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-69"><code>//	Cosh(±0) = 1</code></span>
+<span class="codeline" id="line-70"><code>//	Cosh(±Inf) = +Inf</code></span>
+<span class="codeline" id="line-71"><code>//	Cosh(NaN) = NaN</code></span>
+<span class="codeline" id="line-72"><code>func Cosh(x float64) float64</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>func cosh(x float64) float64 {</code></span>
+<span class="codeline" id="line-75"><code>	x = Abs(x)</code></span>
+<span class="codeline" id="line-76"><code>	if x &gt; 21 {</code></span>
+<span class="codeline" id="line-77"><code>		return Exp(x) * 0.5</code></span>
+<span class="codeline" id="line-78"><code>	}</code></span>
+<span class="codeline" id="line-79"><code>	ex := Exp(x)</code></span>
+<span class="codeline" id="line-80"><code>	return (ex + 1/ex) * 0.5</code></span>
+<span class="codeline" id="line-81"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

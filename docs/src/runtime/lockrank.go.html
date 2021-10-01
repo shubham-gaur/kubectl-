@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: lockrank.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	lockrank.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2020 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// This file records the static ranks of the locks in the runtime. If a lock</code></span>
+<span class="codeline" id="line-6"><code>// is not given a rank, then it is assumed to be a leaf lock, which means no other</code></span>
+<span class="codeline" id="line-7"><code>// lock can be acquired while it is held. Therefore, leaf locks do not need to be</code></span>
+<span class="codeline" id="line-8"><code>// given an explicit rank. We list all of the architecture-independent leaf locks</code></span>
+<span class="codeline" id="line-9"><code>// for documentation purposes, but don't list any of the architecture-dependent</code></span>
+<span class="codeline" id="line-10"><code>// locks (which are all leaf locks). debugLock is ignored for ranking, since it is used</code></span>
+<span class="codeline" id="line-11"><code>// when printing out lock ranking errors.</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>// lockInit(l *mutex, rank int) is used to set the rank of lock before it is used.</code></span>
+<span class="codeline" id="line-14"><code>// If there is no clear place to initialize a lock, then the rank of a lock can be</code></span>
+<span class="codeline" id="line-15"><code>// specified during the lock call itself via lockWithrank(l *mutex, rank int).</code></span>
+<span class="codeline" id="line-16"><code>//</code></span>
+<span class="codeline" id="line-17"><code>// Besides the static lock ranking (which is a total ordering of the locks), we</code></span>
+<span class="codeline" id="line-18"><code>// also represent and enforce the actual partial order among the locks in the</code></span>
+<span class="codeline" id="line-19"><code>// arcs[] array below. That is, if it is possible that lock B can be acquired when</code></span>
+<span class="codeline" id="line-20"><code>// lock A is the previous acquired lock that is still held, then there should be</code></span>
+<span class="codeline" id="line-21"><code>// an entry for A in arcs[B][]. We will currently fail not only if the total order</code></span>
+<span class="codeline" id="line-22"><code>// (the lock ranking) is violated, but also if there is a missing entry in the</code></span>
+<span class="codeline" id="line-23"><code>// partial order.</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>package runtime</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>type lockRank int</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>// Constants representing the lock rank of the architecture-independent locks in</code></span>
+<span class="codeline" id="line-30"><code>// the runtime. Locks with lower rank must be taken before locks with higher</code></span>
+<span class="codeline" id="line-31"><code>// rank.</code></span>
+<span class="codeline" id="line-32"><code>const (</code></span>
+<span class="codeline" id="line-33"><code>	lockRankDummy lockRank = iota</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>	// Locks held above sched</code></span>
+<span class="codeline" id="line-36"><code>	lockRankSysmon</code></span>
+<span class="codeline" id="line-37"><code>	lockRankScavenge</code></span>
+<span class="codeline" id="line-38"><code>	lockRankForcegc</code></span>
+<span class="codeline" id="line-39"><code>	lockRankSweepWaiters</code></span>
+<span class="codeline" id="line-40"><code>	lockRankAssistQueue</code></span>
+<span class="codeline" id="line-41"><code>	lockRankCpuprof</code></span>
+<span class="codeline" id="line-42"><code>	lockRankSweep</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	lockRankPollDesc</code></span>
+<span class="codeline" id="line-45"><code>	lockRankSched</code></span>
+<span class="codeline" id="line-46"><code>	lockRankDeadlock</code></span>
+<span class="codeline" id="line-47"><code>	lockRankPanic</code></span>
+<span class="codeline" id="line-48"><code>	lockRankAllg</code></span>
+<span class="codeline" id="line-49"><code>	lockRankAllp</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>	lockRankTimers // Multiple timers locked simultaneously in destroy()</code></span>
+<span class="codeline" id="line-52"><code>	lockRankItab</code></span>
+<span class="codeline" id="line-53"><code>	lockRankReflectOffs</code></span>
+<span class="codeline" id="line-54"><code>	lockRankHchan // Multiple hchans acquired in lock order in syncadjustsudogs()</code></span>
+<span class="codeline" id="line-55"><code>	lockRankFin</code></span>
+<span class="codeline" id="line-56"><code>	lockRankNotifyList</code></span>
+<span class="codeline" id="line-57"><code>	lockRankTraceBuf</code></span>
+<span class="codeline" id="line-58"><code>	lockRankTraceStrings</code></span>
+<span class="codeline" id="line-59"><code>	lockRankMspanSpecial</code></span>
+<span class="codeline" id="line-60"><code>	lockRankProf</code></span>
+<span class="codeline" id="line-61"><code>	lockRankGcBitsArenas</code></span>
+<span class="codeline" id="line-62"><code>	lockRankRoot</code></span>
+<span class="codeline" id="line-63"><code>	lockRankTrace</code></span>
+<span class="codeline" id="line-64"><code>	lockRankTraceStackTab</code></span>
+<span class="codeline" id="line-65"><code>	lockRankNetpollInit</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>	lockRankRwmutexW</code></span>
+<span class="codeline" id="line-68"><code>	lockRankRwmutexR</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>	lockRankSpanSetSpine</code></span>
+<span class="codeline" id="line-71"><code>	lockRankGscan</code></span>
+<span class="codeline" id="line-72"><code>	lockRankStackpool</code></span>
+<span class="codeline" id="line-73"><code>	lockRankStackLarge</code></span>
+<span class="codeline" id="line-74"><code>	lockRankDefer</code></span>
+<span class="codeline" id="line-75"><code>	lockRankSudog</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>	// Memory-related non-leaf locks</code></span>
+<span class="codeline" id="line-78"><code>	lockRankWbufSpans</code></span>
+<span class="codeline" id="line-79"><code>	lockRankMheap</code></span>
+<span class="codeline" id="line-80"><code>	lockRankMheapSpecial</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>	// Memory-related leaf locks</code></span>
+<span class="codeline" id="line-83"><code>	lockRankGlobalAlloc</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>	// Other leaf locks</code></span>
+<span class="codeline" id="line-86"><code>	lockRankGFree</code></span>
+<span class="codeline" id="line-87"><code>	// Generally, hchan must be acquired before gscan. But in one specific</code></span>
+<span class="codeline" id="line-88"><code>	// case (in syncadjustsudogs from markroot after the g has been suspended</code></span>
+<span class="codeline" id="line-89"><code>	// by suspendG), we allow gscan to be acquired, and then an hchan lock. To</code></span>
+<span class="codeline" id="line-90"><code>	// allow this case, we get this lockRankHchanLeaf rank in</code></span>
+<span class="codeline" id="line-91"><code>	// syncadjustsudogs(), rather than lockRankHchan. By using this special</code></span>
+<span class="codeline" id="line-92"><code>	// rank, we don't allow any further locks to be acquired other than more</code></span>
+<span class="codeline" id="line-93"><code>	// hchan locks.</code></span>
+<span class="codeline" id="line-94"><code>	lockRankHchanLeaf</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>	// Leaf locks with no dependencies, so these constants are not actually used anywhere.</code></span>
+<span class="codeline" id="line-97"><code>	// There are other architecture-dependent leaf locks as well.</code></span>
+<span class="codeline" id="line-98"><code>	lockRankNewmHandoff</code></span>
+<span class="codeline" id="line-99"><code>	lockRankDebugPtrmask</code></span>
+<span class="codeline" id="line-100"><code>	lockRankFaketimeState</code></span>
+<span class="codeline" id="line-101"><code>	lockRankTicks</code></span>
+<span class="codeline" id="line-102"><code>	lockRankRaceFini</code></span>
+<span class="codeline" id="line-103"><code>	lockRankPollCache</code></span>
+<span class="codeline" id="line-104"><code>	lockRankDebug</code></span>
+<span class="codeline" id="line-105"><code>)</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>// lockRankLeafRank is the rank of lock that does not have a declared rank, and hence is</code></span>
+<span class="codeline" id="line-108"><code>// a leaf lock.</code></span>
+<span class="codeline" id="line-109"><code>const lockRankLeafRank lockRank = 1000</code></span>
+<span class="codeline" id="line-110"><code></code></span>
+<span class="codeline" id="line-111"><code>// lockNames gives the names associated with each of the above ranks</code></span>
+<span class="codeline" id="line-112"><code>var lockNames = []string{</code></span>
+<span class="codeline" id="line-113"><code>	lockRankDummy: "",</code></span>
+<span class="codeline" id="line-114"><code></code></span>
+<span class="codeline" id="line-115"><code>	lockRankSysmon:       "sysmon",</code></span>
+<span class="codeline" id="line-116"><code>	lockRankScavenge:     "scavenge",</code></span>
+<span class="codeline" id="line-117"><code>	lockRankForcegc:      "forcegc",</code></span>
+<span class="codeline" id="line-118"><code>	lockRankSweepWaiters: "sweepWaiters",</code></span>
+<span class="codeline" id="line-119"><code>	lockRankAssistQueue:  "assistQueue",</code></span>
+<span class="codeline" id="line-120"><code>	lockRankCpuprof:      "cpuprof",</code></span>
+<span class="codeline" id="line-121"><code>	lockRankSweep:        "sweep",</code></span>
+<span class="codeline" id="line-122"><code></code></span>
+<span class="codeline" id="line-123"><code>	lockRankPollDesc: "pollDesc",</code></span>
+<span class="codeline" id="line-124"><code>	lockRankSched:    "sched",</code></span>
+<span class="codeline" id="line-125"><code>	lockRankDeadlock: "deadlock",</code></span>
+<span class="codeline" id="line-126"><code>	lockRankPanic:    "panic",</code></span>
+<span class="codeline" id="line-127"><code>	lockRankAllg:     "allg",</code></span>
+<span class="codeline" id="line-128"><code>	lockRankAllp:     "allp",</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	lockRankTimers:      "timers",</code></span>
+<span class="codeline" id="line-131"><code>	lockRankItab:        "itab",</code></span>
+<span class="codeline" id="line-132"><code>	lockRankReflectOffs: "reflectOffs",</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>	lockRankHchan:         "hchan",</code></span>
+<span class="codeline" id="line-135"><code>	lockRankFin:           "fin",</code></span>
+<span class="codeline" id="line-136"><code>	lockRankNotifyList:    "notifyList",</code></span>
+<span class="codeline" id="line-137"><code>	lockRankTraceBuf:      "traceBuf",</code></span>
+<span class="codeline" id="line-138"><code>	lockRankTraceStrings:  "traceStrings",</code></span>
+<span class="codeline" id="line-139"><code>	lockRankMspanSpecial:  "mspanSpecial",</code></span>
+<span class="codeline" id="line-140"><code>	lockRankProf:          "prof",</code></span>
+<span class="codeline" id="line-141"><code>	lockRankGcBitsArenas:  "gcBitsArenas",</code></span>
+<span class="codeline" id="line-142"><code>	lockRankRoot:          "root",</code></span>
+<span class="codeline" id="line-143"><code>	lockRankTrace:         "trace",</code></span>
+<span class="codeline" id="line-144"><code>	lockRankTraceStackTab: "traceStackTab",</code></span>
+<span class="codeline" id="line-145"><code>	lockRankNetpollInit:   "netpollInit",</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>	lockRankRwmutexW: "rwmutexW",</code></span>
+<span class="codeline" id="line-148"><code>	lockRankRwmutexR: "rwmutexR",</code></span>
+<span class="codeline" id="line-149"><code></code></span>
+<span class="codeline" id="line-150"><code>	lockRankSpanSetSpine: "spanSetSpine",</code></span>
+<span class="codeline" id="line-151"><code>	lockRankGscan:        "gscan",</code></span>
+<span class="codeline" id="line-152"><code>	lockRankStackpool:    "stackpool",</code></span>
+<span class="codeline" id="line-153"><code>	lockRankStackLarge:   "stackLarge",</code></span>
+<span class="codeline" id="line-154"><code>	lockRankDefer:        "defer",</code></span>
+<span class="codeline" id="line-155"><code>	lockRankSudog:        "sudog",</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>	lockRankWbufSpans:    "wbufSpans",</code></span>
+<span class="codeline" id="line-158"><code>	lockRankMheap:        "mheap",</code></span>
+<span class="codeline" id="line-159"><code>	lockRankMheapSpecial: "mheapSpecial",</code></span>
+<span class="codeline" id="line-160"><code></code></span>
+<span class="codeline" id="line-161"><code>	lockRankGlobalAlloc: "globalAlloc.mutex",</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>	lockRankGFree:     "gFree",</code></span>
+<span class="codeline" id="line-164"><code>	lockRankHchanLeaf: "hchanLeaf",</code></span>
+<span class="codeline" id="line-165"><code></code></span>
+<span class="codeline" id="line-166"><code>	lockRankNewmHandoff:   "newmHandoff.lock",</code></span>
+<span class="codeline" id="line-167"><code>	lockRankDebugPtrmask:  "debugPtrmask.lock",</code></span>
+<span class="codeline" id="line-168"><code>	lockRankFaketimeState: "faketimeState.lock",</code></span>
+<span class="codeline" id="line-169"><code>	lockRankTicks:         "ticks.lock",</code></span>
+<span class="codeline" id="line-170"><code>	lockRankRaceFini:      "raceFiniLock",</code></span>
+<span class="codeline" id="line-171"><code>	lockRankPollCache:     "pollCache.lock",</code></span>
+<span class="codeline" id="line-172"><code>	lockRankDebug:         "debugLock",</code></span>
+<span class="codeline" id="line-173"><code>}</code></span>
+<span class="codeline" id="line-174"><code></code></span>
+<span class="codeline" id="line-175"><code>func (rank lockRank) String() string {</code></span>
+<span class="codeline" id="line-176"><code>	if rank == 0 {</code></span>
+<span class="codeline" id="line-177"><code>		return "UNKNOWN"</code></span>
+<span class="codeline" id="line-178"><code>	}</code></span>
+<span class="codeline" id="line-179"><code>	if rank == lockRankLeafRank {</code></span>
+<span class="codeline" id="line-180"><code>		return "LEAF"</code></span>
+<span class="codeline" id="line-181"><code>	}</code></span>
+<span class="codeline" id="line-182"><code>	return lockNames[rank]</code></span>
+<span class="codeline" id="line-183"><code>}</code></span>
+<span class="codeline" id="line-184"><code></code></span>
+<span class="codeline" id="line-185"><code>// lockPartialOrder is a partial order among the various lock types, listing the</code></span>
+<span class="codeline" id="line-186"><code>// immediate ordering that has actually been observed in the runtime. Each entry</code></span>
+<span class="codeline" id="line-187"><code>// (which corresponds to a particular lock rank) specifies the list of locks</code></span>
+<span class="codeline" id="line-188"><code>// that can already be held immediately "above" it.</code></span>
+<span class="codeline" id="line-189"><code>//</code></span>
+<span class="codeline" id="line-190"><code>// So, for example, the lockRankSched entry shows that all the locks preceding</code></span>
+<span class="codeline" id="line-191"><code>// it in rank can actually be held. The allp lock shows that only the sysmon or</code></span>
+<span class="codeline" id="line-192"><code>// sched lock can be held immediately above it when it is acquired.</code></span>
+<span class="codeline" id="line-193"><code>var lockPartialOrder [][]lockRank = [][]lockRank{</code></span>
+<span class="codeline" id="line-194"><code>	lockRankDummy:         {},</code></span>
+<span class="codeline" id="line-195"><code>	lockRankSysmon:        {},</code></span>
+<span class="codeline" id="line-196"><code>	lockRankScavenge:      {lockRankSysmon},</code></span>
+<span class="codeline" id="line-197"><code>	lockRankForcegc:       {lockRankSysmon},</code></span>
+<span class="codeline" id="line-198"><code>	lockRankSweepWaiters:  {},</code></span>
+<span class="codeline" id="line-199"><code>	lockRankAssistQueue:   {},</code></span>
+<span class="codeline" id="line-200"><code>	lockRankCpuprof:       {},</code></span>
+<span class="codeline" id="line-201"><code>	lockRankSweep:         {},</code></span>
+<span class="codeline" id="line-202"><code>	lockRankPollDesc:      {},</code></span>
+<span class="codeline" id="line-203"><code>	lockRankSched:         {lockRankSysmon, lockRankScavenge, lockRankForcegc, lockRankSweepWaiters, lockRankAssistQueue, lockRankCpuprof, lockRankSweep, lockRankPollDesc},</code></span>
+<span class="codeline" id="line-204"><code>	lockRankDeadlock:      {lockRankDeadlock},</code></span>
+<span class="codeline" id="line-205"><code>	lockRankPanic:         {lockRankDeadlock},</code></span>
+<span class="codeline" id="line-206"><code>	lockRankAllg:          {lockRankSysmon, lockRankSched, lockRankPanic},</code></span>
+<span class="codeline" id="line-207"><code>	lockRankAllp:          {lockRankSysmon, lockRankSched},</code></span>
+<span class="codeline" id="line-208"><code>	lockRankTimers:        {lockRankSysmon, lockRankScavenge, lockRankSched, lockRankAllp, lockRankPollDesc, lockRankTimers},</code></span>
+<span class="codeline" id="line-209"><code>	lockRankItab:          {},</code></span>
+<span class="codeline" id="line-210"><code>	lockRankReflectOffs:   {lockRankItab},</code></span>
+<span class="codeline" id="line-211"><code>	lockRankHchan:         {lockRankScavenge, lockRankSweep, lockRankHchan},</code></span>
+<span class="codeline" id="line-212"><code>	lockRankFin:           {lockRankSysmon, lockRankScavenge, lockRankSched, lockRankAllg, lockRankTimers, lockRankHchan},</code></span>
+<span class="codeline" id="line-213"><code>	lockRankNotifyList:    {},</code></span>
+<span class="codeline" id="line-214"><code>	lockRankTraceBuf:      {lockRankSysmon, lockRankScavenge},</code></span>
+<span class="codeline" id="line-215"><code>	lockRankTraceStrings:  {lockRankTraceBuf},</code></span>
+<span class="codeline" id="line-216"><code>	lockRankMspanSpecial:  {lockRankSysmon, lockRankScavenge, lockRankAssistQueue, lockRankCpuprof, lockRankSweep, lockRankSched, lockRankAllg, lockRankAllp, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankHchan, lockRankNotifyList, lockRankTraceBuf, lockRankTraceStrings},</code></span>
+<span class="codeline" id="line-217"><code>	lockRankProf:          {lockRankSysmon, lockRankScavenge, lockRankAssistQueue, lockRankCpuprof, lockRankSweep, lockRankSched, lockRankAllg, lockRankAllp, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankNotifyList, lockRankTraceBuf, lockRankTraceStrings, lockRankHchan},</code></span>
+<span class="codeline" id="line-218"><code>	lockRankGcBitsArenas:  {lockRankSysmon, lockRankScavenge, lockRankAssistQueue, lockRankCpuprof, lockRankSched, lockRankAllg, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankNotifyList, lockRankTraceBuf, lockRankTraceStrings, lockRankHchan},</code></span>
+<span class="codeline" id="line-219"><code>	lockRankRoot:          {},</code></span>
+<span class="codeline" id="line-220"><code>	lockRankTrace:         {lockRankSysmon, lockRankScavenge, lockRankForcegc, lockRankAssistQueue, lockRankSched, lockRankHchan, lockRankTraceBuf, lockRankTraceStrings, lockRankRoot, lockRankSweep},</code></span>
+<span class="codeline" id="line-221"><code>	lockRankTraceStackTab: {lockRankScavenge, lockRankSweepWaiters, lockRankAssistQueue, lockRankSweep, lockRankSched, lockRankAllg, lockRankTimers, lockRankHchan, lockRankFin, lockRankNotifyList, lockRankTraceBuf, lockRankTraceStrings, lockRankRoot, lockRankTrace},</code></span>
+<span class="codeline" id="line-222"><code>	lockRankNetpollInit:   {lockRankTimers},</code></span>
+<span class="codeline" id="line-223"><code></code></span>
+<span class="codeline" id="line-224"><code>	lockRankRwmutexW: {},</code></span>
+<span class="codeline" id="line-225"><code>	lockRankRwmutexR: {lockRankSysmon, lockRankRwmutexW},</code></span>
+<span class="codeline" id="line-226"><code></code></span>
+<span class="codeline" id="line-227"><code>	lockRankSpanSetSpine: {lockRankSysmon, lockRankScavenge, lockRankForcegc, lockRankAssistQueue, lockRankCpuprof, lockRankSweep, lockRankPollDesc, lockRankSched, lockRankAllg, lockRankAllp, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankNotifyList, lockRankTraceBuf, lockRankTraceStrings, lockRankHchan},</code></span>
+<span class="codeline" id="line-228"><code>	lockRankGscan:        {lockRankSysmon, lockRankScavenge, lockRankForcegc, lockRankSweepWaiters, lockRankAssistQueue, lockRankCpuprof, lockRankSweep, lockRankSched, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankHchan, lockRankFin, lockRankTraceBuf, lockRankTraceStrings, lockRankRoot, lockRankNotifyList, lockRankProf, lockRankGcBitsArenas, lockRankTrace, lockRankTraceStackTab, lockRankNetpollInit, lockRankSpanSetSpine},</code></span>
+<span class="codeline" id="line-229"><code>	lockRankStackpool:    {lockRankSysmon, lockRankScavenge, lockRankSweepWaiters, lockRankAssistQueue, lockRankCpuprof, lockRankSweep, lockRankSched, lockRankPollDesc, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankHchan, lockRankFin, lockRankNotifyList, lockRankTraceBuf, lockRankTraceStrings, lockRankProf, lockRankGcBitsArenas, lockRankRoot, lockRankTrace, lockRankTraceStackTab, lockRankNetpollInit, lockRankRwmutexR, lockRankSpanSetSpine, lockRankGscan},</code></span>
+<span class="codeline" id="line-230"><code>	lockRankStackLarge:   {lockRankSysmon, lockRankAssistQueue, lockRankSched, lockRankItab, lockRankHchan, lockRankProf, lockRankGcBitsArenas, lockRankRoot, lockRankSpanSetSpine, lockRankGscan},</code></span>
+<span class="codeline" id="line-231"><code>	lockRankDefer:        {},</code></span>
+<span class="codeline" id="line-232"><code>	lockRankSudog:        {lockRankNotifyList, lockRankHchan},</code></span>
+<span class="codeline" id="line-233"><code>	lockRankWbufSpans:    {lockRankSysmon, lockRankScavenge, lockRankSweepWaiters, lockRankAssistQueue, lockRankSweep, lockRankSched, lockRankAllg, lockRankPollDesc, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankHchan, lockRankFin, lockRankNotifyList, lockRankTraceStrings, lockRankMspanSpecial, lockRankProf, lockRankRoot, lockRankGscan, lockRankDefer, lockRankSudog},</code></span>
+<span class="codeline" id="line-234"><code>	lockRankMheap:        {lockRankSysmon, lockRankScavenge, lockRankSweepWaiters, lockRankAssistQueue, lockRankCpuprof, lockRankSweep, lockRankSched, lockRankAllg, lockRankAllp, lockRankFin, lockRankPollDesc, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankNotifyList, lockRankTraceBuf, lockRankTraceStrings, lockRankHchan, lockRankMspanSpecial, lockRankProf, lockRankGcBitsArenas, lockRankRoot, lockRankGscan, lockRankStackpool, lockRankStackLarge, lockRankDefer, lockRankSudog, lockRankWbufSpans, lockRankSpanSetSpine},</code></span>
+<span class="codeline" id="line-235"><code>	lockRankMheapSpecial: {lockRankSysmon, lockRankScavenge, lockRankAssistQueue, lockRankCpuprof, lockRankSweep, lockRankSched, lockRankAllg, lockRankAllp, lockRankTimers, lockRankItab, lockRankReflectOffs, lockRankNotifyList, lockRankTraceBuf, lockRankTraceStrings, lockRankHchan},</code></span>
+<span class="codeline" id="line-236"><code>	lockRankGlobalAlloc:  {lockRankProf, lockRankSpanSetSpine, lockRankMheap, lockRankMheapSpecial},</code></span>
+<span class="codeline" id="line-237"><code></code></span>
+<span class="codeline" id="line-238"><code>	lockRankGFree:     {lockRankSched},</code></span>
+<span class="codeline" id="line-239"><code>	lockRankHchanLeaf: {lockRankGscan, lockRankHchanLeaf},</code></span>
+<span class="codeline" id="line-240"><code></code></span>
+<span class="codeline" id="line-241"><code>	lockRankNewmHandoff:   {},</code></span>
+<span class="codeline" id="line-242"><code>	lockRankDebugPtrmask:  {},</code></span>
+<span class="codeline" id="line-243"><code>	lockRankFaketimeState: {},</code></span>
+<span class="codeline" id="line-244"><code>	lockRankTicks:         {},</code></span>
+<span class="codeline" id="line-245"><code>	lockRankRaceFini:      {},</code></span>
+<span class="codeline" id="line-246"><code>	lockRankPollCache:     {},</code></span>
+<span class="codeline" id="line-247"><code>	lockRankDebug:         {},</code></span>
+<span class="codeline" id="line-248"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: errors.go in package fmt</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	errors.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/fmt.html">fmt</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package fmt</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "errors"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// Errorf formats according to a format specifier and returns the string as a</code></span>
+<span class="codeline" id="line-10"><code>// value that satisfies error.</code></span>
+<span class="codeline" id="line-11"><code>//</code></span>
+<span class="codeline" id="line-12"><code>// If the format specifier includes a %w verb with an error operand,</code></span>
+<span class="codeline" id="line-13"><code>// the returned error will implement an Unwrap method returning the operand. It is</code></span>
+<span class="codeline" id="line-14"><code>// invalid to include more than one %w verb or to supply it with an operand</code></span>
+<span class="codeline" id="line-15"><code>// that does not implement the error interface. The %w verb is otherwise</code></span>
+<span class="codeline" id="line-16"><code>// a synonym for %v.</code></span>
+<span class="codeline" id="line-17"><code>func Errorf(format string, a ...interface{}) error {</code></span>
+<span class="codeline" id="line-18"><code>	p := newPrinter()</code></span>
+<span class="codeline" id="line-19"><code>	p.wrapErrs = true</code></span>
+<span class="codeline" id="line-20"><code>	p.doPrintf(format, a)</code></span>
+<span class="codeline" id="line-21"><code>	s := string(p.buf)</code></span>
+<span class="codeline" id="line-22"><code>	var err error</code></span>
+<span class="codeline" id="line-23"><code>	if p.wrappedErr == nil {</code></span>
+<span class="codeline" id="line-24"><code>		err = errors.New(s)</code></span>
+<span class="codeline" id="line-25"><code>	} else {</code></span>
+<span class="codeline" id="line-26"><code>		err = &amp;wrapError{s, p.wrappedErr}</code></span>
+<span class="codeline" id="line-27"><code>	}</code></span>
+<span class="codeline" id="line-28"><code>	p.free()</code></span>
+<span class="codeline" id="line-29"><code>	return err</code></span>
+<span class="codeline" id="line-30"><code>}</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>type wrapError struct {</code></span>
+<span class="codeline" id="line-33"><code>	msg string</code></span>
+<span class="codeline" id="line-34"><code>	err error</code></span>
+<span class="codeline" id="line-35"><code>}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>func (e *wrapError) Error() string {</code></span>
+<span class="codeline" id="line-38"><code>	return e.msg</code></span>
+<span class="codeline" id="line-39"><code>}</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>func (e *wrapError) Unwrap() error {</code></span>
+<span class="codeline" id="line-42"><code>	return e.err</code></span>
+<span class="codeline" id="line-43"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

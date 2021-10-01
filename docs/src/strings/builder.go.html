@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: builder.go in package strings</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	builder.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/strings.html">strings</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package strings</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"unicode/utf8"</code></span>
+<span class="codeline" id="line-9"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// A Builder is used to efficiently build a string using Write methods.</code></span>
+<span class="codeline" id="line-13"><code>// It minimizes memory copying. The zero value is ready to use.</code></span>
+<span class="codeline" id="line-14"><code>// Do not copy a non-zero Builder.</code></span>
+<span class="codeline" id="line-15"><code>type Builder struct {</code></span>
+<span class="codeline" id="line-16"><code>	addr *Builder // of receiver, to detect copies by value</code></span>
+<span class="codeline" id="line-17"><code>	buf  []byte</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// noescape hides a pointer from escape analysis.  noescape is</code></span>
+<span class="codeline" id="line-21"><code>// the identity function but escape analysis doesn't think the</code></span>
+<span class="codeline" id="line-22"><code>// output depends on the input. noescape is inlined and currently</code></span>
+<span class="codeline" id="line-23"><code>// compiles down to zero instructions.</code></span>
+<span class="codeline" id="line-24"><code>// USE CAREFULLY!</code></span>
+<span class="codeline" id="line-25"><code>// This was copied from the runtime; see issues 23382 and 7921.</code></span>
+<span class="codeline" id="line-26"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-27"><code>//go:nocheckptr</code></span>
+<span class="codeline" id="line-28"><code>func noescape(p unsafe.Pointer) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-29"><code>	x := uintptr(p)</code></span>
+<span class="codeline" id="line-30"><code>	return unsafe.Pointer(x ^ 0)</code></span>
+<span class="codeline" id="line-31"><code>}</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>func (b *Builder) copyCheck() {</code></span>
+<span class="codeline" id="line-34"><code>	if b.addr == nil {</code></span>
+<span class="codeline" id="line-35"><code>		// This hack works around a failing of Go's escape analysis</code></span>
+<span class="codeline" id="line-36"><code>		// that was causing b to escape and be heap allocated.</code></span>
+<span class="codeline" id="line-37"><code>		// See issue 23382.</code></span>
+<span class="codeline" id="line-38"><code>		// TODO: once issue 7921 is fixed, this should be reverted to</code></span>
+<span class="codeline" id="line-39"><code>		// just "b.addr = b".</code></span>
+<span class="codeline" id="line-40"><code>		b.addr = (*Builder)(noescape(unsafe.Pointer(b)))</code></span>
+<span class="codeline" id="line-41"><code>	} else if b.addr != b {</code></span>
+<span class="codeline" id="line-42"><code>		panic("strings: illegal use of non-zero Builder copied by value")</code></span>
+<span class="codeline" id="line-43"><code>	}</code></span>
+<span class="codeline" id="line-44"><code>}</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>// String returns the accumulated string.</code></span>
+<span class="codeline" id="line-47"><code>func (b *Builder) String() string {</code></span>
+<span class="codeline" id="line-48"><code>	return *(*string)(unsafe.Pointer(&amp;b.buf))</code></span>
+<span class="codeline" id="line-49"><code>}</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>// Len returns the number of accumulated bytes; b.Len() == len(b.String()).</code></span>
+<span class="codeline" id="line-52"><code>func (b *Builder) Len() int { return len(b.buf) }</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>// Cap returns the capacity of the builder's underlying byte slice. It is the</code></span>
+<span class="codeline" id="line-55"><code>// total space allocated for the string being built and includes any bytes</code></span>
+<span class="codeline" id="line-56"><code>// already written.</code></span>
+<span class="codeline" id="line-57"><code>func (b *Builder) Cap() int { return cap(b.buf) }</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>// Reset resets the Builder to be empty.</code></span>
+<span class="codeline" id="line-60"><code>func (b *Builder) Reset() {</code></span>
+<span class="codeline" id="line-61"><code>	b.addr = nil</code></span>
+<span class="codeline" id="line-62"><code>	b.buf = nil</code></span>
+<span class="codeline" id="line-63"><code>}</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>// grow copies the buffer to a new, larger buffer so that there are at least n</code></span>
+<span class="codeline" id="line-66"><code>// bytes of capacity beyond len(b.buf).</code></span>
+<span class="codeline" id="line-67"><code>func (b *Builder) grow(n int) {</code></span>
+<span class="codeline" id="line-68"><code>	buf := make([]byte, len(b.buf), 2*cap(b.buf)+n)</code></span>
+<span class="codeline" id="line-69"><code>	copy(buf, b.buf)</code></span>
+<span class="codeline" id="line-70"><code>	b.buf = buf</code></span>
+<span class="codeline" id="line-71"><code>}</code></span>
+<span class="codeline" id="line-72"><code></code></span>
+<span class="codeline" id="line-73"><code>// Grow grows b's capacity, if necessary, to guarantee space for</code></span>
+<span class="codeline" id="line-74"><code>// another n bytes. After Grow(n), at least n bytes can be written to b</code></span>
+<span class="codeline" id="line-75"><code>// without another allocation. If n is negative, Grow panics.</code></span>
+<span class="codeline" id="line-76"><code>func (b *Builder) Grow(n int) {</code></span>
+<span class="codeline" id="line-77"><code>	b.copyCheck()</code></span>
+<span class="codeline" id="line-78"><code>	if n &lt; 0 {</code></span>
+<span class="codeline" id="line-79"><code>		panic("strings.Builder.Grow: negative count")</code></span>
+<span class="codeline" id="line-80"><code>	}</code></span>
+<span class="codeline" id="line-81"><code>	if cap(b.buf)-len(b.buf) &lt; n {</code></span>
+<span class="codeline" id="line-82"><code>		b.grow(n)</code></span>
+<span class="codeline" id="line-83"><code>	}</code></span>
+<span class="codeline" id="line-84"><code>}</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>// Write appends the contents of p to b's buffer.</code></span>
+<span class="codeline" id="line-87"><code>// Write always returns len(p), nil.</code></span>
+<span class="codeline" id="line-88"><code>func (b *Builder) Write(p []byte) (int, error) {</code></span>
+<span class="codeline" id="line-89"><code>	b.copyCheck()</code></span>
+<span class="codeline" id="line-90"><code>	b.buf = append(b.buf, p...)</code></span>
+<span class="codeline" id="line-91"><code>	return len(p), nil</code></span>
+<span class="codeline" id="line-92"><code>}</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>// WriteByte appends the byte c to b's buffer.</code></span>
+<span class="codeline" id="line-95"><code>// The returned error is always nil.</code></span>
+<span class="codeline" id="line-96"><code>func (b *Builder) WriteByte(c byte) error {</code></span>
+<span class="codeline" id="line-97"><code>	b.copyCheck()</code></span>
+<span class="codeline" id="line-98"><code>	b.buf = append(b.buf, c)</code></span>
+<span class="codeline" id="line-99"><code>	return nil</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>// WriteRune appends the UTF-8 encoding of Unicode code point r to b's buffer.</code></span>
+<span class="codeline" id="line-103"><code>// It returns the length of r and a nil error.</code></span>
+<span class="codeline" id="line-104"><code>func (b *Builder) WriteRune(r rune) (int, error) {</code></span>
+<span class="codeline" id="line-105"><code>	b.copyCheck()</code></span>
+<span class="codeline" id="line-106"><code>	if r &lt; utf8.RuneSelf {</code></span>
+<span class="codeline" id="line-107"><code>		b.buf = append(b.buf, byte(r))</code></span>
+<span class="codeline" id="line-108"><code>		return 1, nil</code></span>
+<span class="codeline" id="line-109"><code>	}</code></span>
+<span class="codeline" id="line-110"><code>	l := len(b.buf)</code></span>
+<span class="codeline" id="line-111"><code>	if cap(b.buf)-l &lt; utf8.UTFMax {</code></span>
+<span class="codeline" id="line-112"><code>		b.grow(utf8.UTFMax)</code></span>
+<span class="codeline" id="line-113"><code>	}</code></span>
+<span class="codeline" id="line-114"><code>	n := utf8.EncodeRune(b.buf[l:l+utf8.UTFMax], r)</code></span>
+<span class="codeline" id="line-115"><code>	b.buf = b.buf[:l+n]</code></span>
+<span class="codeline" id="line-116"><code>	return n, nil</code></span>
+<span class="codeline" id="line-117"><code>}</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>// WriteString appends the contents of s to b's buffer.</code></span>
+<span class="codeline" id="line-120"><code>// It returns the length of s and a nil error.</code></span>
+<span class="codeline" id="line-121"><code>func (b *Builder) WriteString(s string) (int, error) {</code></span>
+<span class="codeline" id="line-122"><code>	b.copyCheck()</code></span>
+<span class="codeline" id="line-123"><code>	b.buf = append(b.buf, s...)</code></span>
+<span class="codeline" id="line-124"><code>	return len(s), nil</code></span>
+<span class="codeline" id="line-125"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

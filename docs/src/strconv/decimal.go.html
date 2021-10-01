@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: decimal.go in package strconv</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	decimal.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/strconv.html">strconv</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Multiprecision decimal numbers.</code></span>
+<span class="codeline" id="line-6"><code>// For floating-point formatting only; not general purpose.</code></span>
+<span class="codeline" id="line-7"><code>// Only operations are assign and (binary) left/right shift.</code></span>
+<span class="codeline" id="line-8"><code>// Can do binary floating point in multiprecision decimal precisely</code></span>
+<span class="codeline" id="line-9"><code>// because 2 divides 10; cannot do decimal floating point</code></span>
+<span class="codeline" id="line-10"><code>// in multiprecision binary precisely.</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>package strconv</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>type decimal struct {</code></span>
+<span class="codeline" id="line-15"><code>	d     [800]byte // digits, big-endian representation</code></span>
+<span class="codeline" id="line-16"><code>	nd    int       // number of digits used</code></span>
+<span class="codeline" id="line-17"><code>	dp    int       // decimal point</code></span>
+<span class="codeline" id="line-18"><code>	neg   bool      // negative flag</code></span>
+<span class="codeline" id="line-19"><code>	trunc bool      // discarded nonzero digits beyond d[:nd]</code></span>
+<span class="codeline" id="line-20"><code>}</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>func (a *decimal) String() string {</code></span>
+<span class="codeline" id="line-23"><code>	n := 10 + a.nd</code></span>
+<span class="codeline" id="line-24"><code>	if a.dp &gt; 0 {</code></span>
+<span class="codeline" id="line-25"><code>		n += a.dp</code></span>
+<span class="codeline" id="line-26"><code>	}</code></span>
+<span class="codeline" id="line-27"><code>	if a.dp &lt; 0 {</code></span>
+<span class="codeline" id="line-28"><code>		n += -a.dp</code></span>
+<span class="codeline" id="line-29"><code>	}</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>	buf := make([]byte, n)</code></span>
+<span class="codeline" id="line-32"><code>	w := 0</code></span>
+<span class="codeline" id="line-33"><code>	switch {</code></span>
+<span class="codeline" id="line-34"><code>	case a.nd == 0:</code></span>
+<span class="codeline" id="line-35"><code>		return "0"</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>	case a.dp &lt;= 0:</code></span>
+<span class="codeline" id="line-38"><code>		// zeros fill space between decimal point and digits</code></span>
+<span class="codeline" id="line-39"><code>		buf[w] = '0'</code></span>
+<span class="codeline" id="line-40"><code>		w++</code></span>
+<span class="codeline" id="line-41"><code>		buf[w] = '.'</code></span>
+<span class="codeline" id="line-42"><code>		w++</code></span>
+<span class="codeline" id="line-43"><code>		w += digitZero(buf[w : w+-a.dp])</code></span>
+<span class="codeline" id="line-44"><code>		w += copy(buf[w:], a.d[0:a.nd])</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>	case a.dp &lt; a.nd:</code></span>
+<span class="codeline" id="line-47"><code>		// decimal point in middle of digits</code></span>
+<span class="codeline" id="line-48"><code>		w += copy(buf[w:], a.d[0:a.dp])</code></span>
+<span class="codeline" id="line-49"><code>		buf[w] = '.'</code></span>
+<span class="codeline" id="line-50"><code>		w++</code></span>
+<span class="codeline" id="line-51"><code>		w += copy(buf[w:], a.d[a.dp:a.nd])</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>	default:</code></span>
+<span class="codeline" id="line-54"><code>		// zeros fill space between digits and decimal point</code></span>
+<span class="codeline" id="line-55"><code>		w += copy(buf[w:], a.d[0:a.nd])</code></span>
+<span class="codeline" id="line-56"><code>		w += digitZero(buf[w : w+a.dp-a.nd])</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code>	return string(buf[0:w])</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>func digitZero(dst []byte) int {</code></span>
+<span class="codeline" id="line-62"><code>	for i := range dst {</code></span>
+<span class="codeline" id="line-63"><code>		dst[i] = '0'</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code>	return len(dst)</code></span>
+<span class="codeline" id="line-66"><code>}</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>// trim trailing zeros from number.</code></span>
+<span class="codeline" id="line-69"><code>// (They are meaningless; the decimal point is tracked</code></span>
+<span class="codeline" id="line-70"><code>// independent of the number of digits.)</code></span>
+<span class="codeline" id="line-71"><code>func trim(a *decimal) {</code></span>
+<span class="codeline" id="line-72"><code>	for a.nd &gt; 0 &amp;&amp; a.d[a.nd-1] == '0' {</code></span>
+<span class="codeline" id="line-73"><code>		a.nd--</code></span>
+<span class="codeline" id="line-74"><code>	}</code></span>
+<span class="codeline" id="line-75"><code>	if a.nd == 0 {</code></span>
+<span class="codeline" id="line-76"><code>		a.dp = 0</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>}</code></span>
+<span class="codeline" id="line-79"><code></code></span>
+<span class="codeline" id="line-80"><code>// Assign v to a.</code></span>
+<span class="codeline" id="line-81"><code>func (a *decimal) Assign(v uint64) {</code></span>
+<span class="codeline" id="line-82"><code>	var buf [24]byte</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>	// Write reversed decimal in buf.</code></span>
+<span class="codeline" id="line-85"><code>	n := 0</code></span>
+<span class="codeline" id="line-86"><code>	for v &gt; 0 {</code></span>
+<span class="codeline" id="line-87"><code>		v1 := v / 10</code></span>
+<span class="codeline" id="line-88"><code>		v -= 10 * v1</code></span>
+<span class="codeline" id="line-89"><code>		buf[n] = byte(v + '0')</code></span>
+<span class="codeline" id="line-90"><code>		n++</code></span>
+<span class="codeline" id="line-91"><code>		v = v1</code></span>
+<span class="codeline" id="line-92"><code>	}</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>	// Reverse again to produce forward decimal in a.d.</code></span>
+<span class="codeline" id="line-95"><code>	a.nd = 0</code></span>
+<span class="codeline" id="line-96"><code>	for n--; n &gt;= 0; n-- {</code></span>
+<span class="codeline" id="line-97"><code>		a.d[a.nd] = buf[n]</code></span>
+<span class="codeline" id="line-98"><code>		a.nd++</code></span>
+<span class="codeline" id="line-99"><code>	}</code></span>
+<span class="codeline" id="line-100"><code>	a.dp = a.nd</code></span>
+<span class="codeline" id="line-101"><code>	trim(a)</code></span>
+<span class="codeline" id="line-102"><code>}</code></span>
+<span class="codeline" id="line-103"><code></code></span>
+<span class="codeline" id="line-104"><code>// Maximum shift that we can do in one pass without overflow.</code></span>
+<span class="codeline" id="line-105"><code>// A uint has 32 or 64 bits, and we have to be able to accommodate 9&lt;&lt;k.</code></span>
+<span class="codeline" id="line-106"><code>const uintSize = 32 &lt;&lt; (^uint(0) &gt;&gt; 63)</code></span>
+<span class="codeline" id="line-107"><code>const maxShift = uintSize - 4</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>// Binary shift right (/ 2) by k bits.  k &lt;= maxShift to avoid overflow.</code></span>
+<span class="codeline" id="line-110"><code>func rightShift(a *decimal, k uint) {</code></span>
+<span class="codeline" id="line-111"><code>	r := 0 // read pointer</code></span>
+<span class="codeline" id="line-112"><code>	w := 0 // write pointer</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>	// Pick up enough leading digits to cover first shift.</code></span>
+<span class="codeline" id="line-115"><code>	var n uint</code></span>
+<span class="codeline" id="line-116"><code>	for ; n&gt;&gt;k == 0; r++ {</code></span>
+<span class="codeline" id="line-117"><code>		if r &gt;= a.nd {</code></span>
+<span class="codeline" id="line-118"><code>			if n == 0 {</code></span>
+<span class="codeline" id="line-119"><code>				// a == 0; shouldn't get here, but handle anyway.</code></span>
+<span class="codeline" id="line-120"><code>				a.nd = 0</code></span>
+<span class="codeline" id="line-121"><code>				return</code></span>
+<span class="codeline" id="line-122"><code>			}</code></span>
+<span class="codeline" id="line-123"><code>			for n&gt;&gt;k == 0 {</code></span>
+<span class="codeline" id="line-124"><code>				n = n * 10</code></span>
+<span class="codeline" id="line-125"><code>				r++</code></span>
+<span class="codeline" id="line-126"><code>			}</code></span>
+<span class="codeline" id="line-127"><code>			break</code></span>
+<span class="codeline" id="line-128"><code>		}</code></span>
+<span class="codeline" id="line-129"><code>		c := uint(a.d[r])</code></span>
+<span class="codeline" id="line-130"><code>		n = n*10 + c - '0'</code></span>
+<span class="codeline" id="line-131"><code>	}</code></span>
+<span class="codeline" id="line-132"><code>	a.dp -= r - 1</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>	var mask uint = (1 &lt;&lt; k) - 1</code></span>
+<span class="codeline" id="line-135"><code></code></span>
+<span class="codeline" id="line-136"><code>	// Pick up a digit, put down a digit.</code></span>
+<span class="codeline" id="line-137"><code>	for ; r &lt; a.nd; r++ {</code></span>
+<span class="codeline" id="line-138"><code>		c := uint(a.d[r])</code></span>
+<span class="codeline" id="line-139"><code>		dig := n &gt;&gt; k</code></span>
+<span class="codeline" id="line-140"><code>		n &amp;= mask</code></span>
+<span class="codeline" id="line-141"><code>		a.d[w] = byte(dig + '0')</code></span>
+<span class="codeline" id="line-142"><code>		w++</code></span>
+<span class="codeline" id="line-143"><code>		n = n*10 + c - '0'</code></span>
+<span class="codeline" id="line-144"><code>	}</code></span>
+<span class="codeline" id="line-145"><code></code></span>
+<span class="codeline" id="line-146"><code>	// Put down extra digits.</code></span>
+<span class="codeline" id="line-147"><code>	for n &gt; 0 {</code></span>
+<span class="codeline" id="line-148"><code>		dig := n &gt;&gt; k</code></span>
+<span class="codeline" id="line-149"><code>		n &amp;= mask</code></span>
+<span class="codeline" id="line-150"><code>		if w &lt; len(a.d) {</code></span>
+<span class="codeline" id="line-151"><code>			a.d[w] = byte(dig + '0')</code></span>
+<span class="codeline" id="line-152"><code>			w++</code></span>
+<span class="codeline" id="line-153"><code>		} else if dig &gt; 0 {</code></span>
+<span class="codeline" id="line-154"><code>			a.trunc = true</code></span>
+<span class="codeline" id="line-155"><code>		}</code></span>
+<span class="codeline" id="line-156"><code>		n = n * 10</code></span>
+<span class="codeline" id="line-157"><code>	}</code></span>
+<span class="codeline" id="line-158"><code></code></span>
+<span class="codeline" id="line-159"><code>	a.nd = w</code></span>
+<span class="codeline" id="line-160"><code>	trim(a)</code></span>
+<span class="codeline" id="line-161"><code>}</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>// Cheat sheet for left shift: table indexed by shift count giving</code></span>
+<span class="codeline" id="line-164"><code>// number of new digits that will be introduced by that shift.</code></span>
+<span class="codeline" id="line-165"><code>//</code></span>
+<span class="codeline" id="line-166"><code>// For example, leftcheats[4] = {2, "625"}.  That means that</code></span>
+<span class="codeline" id="line-167"><code>// if we are shifting by 4 (multiplying by 16), it will add 2 digits</code></span>
+<span class="codeline" id="line-168"><code>// when the string prefix is "625" through "999", and one fewer digit</code></span>
+<span class="codeline" id="line-169"><code>// if the string prefix is "000" through "624".</code></span>
+<span class="codeline" id="line-170"><code>//</code></span>
+<span class="codeline" id="line-171"><code>// Credit for this trick goes to Ken.</code></span>
+<span class="codeline" id="line-172"><code></code></span>
+<span class="codeline" id="line-173"><code>type leftCheat struct {</code></span>
+<span class="codeline" id="line-174"><code>	delta  int    // number of new digits</code></span>
+<span class="codeline" id="line-175"><code>	cutoff string // minus one digit if original &lt; a.</code></span>
+<span class="codeline" id="line-176"><code>}</code></span>
+<span class="codeline" id="line-177"><code></code></span>
+<span class="codeline" id="line-178"><code>var leftcheats = []leftCheat{</code></span>
+<span class="codeline" id="line-179"><code>	// Leading digits of 1/2^i = 5^i.</code></span>
+<span class="codeline" id="line-180"><code>	// 5^23 is not an exact 64-bit floating point number,</code></span>
+<span class="codeline" id="line-181"><code>	// so have to use bc for the math.</code></span>
+<span class="codeline" id="line-182"><code>	// Go up to 60 to be large enough for 32bit and 64bit platforms.</code></span>
+<span class="codeline" id="line-183"><code>	/*</code></span>
+<span class="codeline" id="line-184"><code>		seq 60 | sed 's/^/5^/' | bc |</code></span>
+<span class="codeline" id="line-185"><code>		awk 'BEGIN{ print "\t{ 0, \"\" }," }</code></span>
+<span class="codeline" id="line-186"><code>		{</code></span>
+<span class="codeline" id="line-187"><code>			log2 = log(2)/log(10)</code></span>
+<span class="codeline" id="line-188"><code>			printf("\t{ %d, \"%s\" },\t// * %d\n",</code></span>
+<span class="codeline" id="line-189"><code>				int(log2*NR+1), $0, 2**NR)</code></span>
+<span class="codeline" id="line-190"><code>		}'</code></span>
+<span class="codeline" id="line-191"><code>	*/</code></span>
+<span class="codeline" id="line-192"><code>	{0, ""},</code></span>
+<span class="codeline" id="line-193"><code>	{1, "5"},                                           // * 2</code></span>
+<span class="codeline" id="line-194"><code>	{1, "25"},                                          // * 4</code></span>
+<span class="codeline" id="line-195"><code>	{1, "125"},                                         // * 8</code></span>
+<span class="codeline" id="line-196"><code>	{2, "625"},                                         // * 16</code></span>
+<span class="codeline" id="line-197"><code>	{2, "3125"},                                        // * 32</code></span>
+<span class="codeline" id="line-198"><code>	{2, "15625"},                                       // * 64</code></span>
+<span class="codeline" id="line-199"><code>	{3, "78125"},                                       // * 128</code></span>
+<span class="codeline" id="line-200"><code>	{3, "390625"},                                      // * 256</code></span>
+<span class="codeline" id="line-201"><code>	{3, "1953125"},                                     // * 512</code></span>
+<span class="codeline" id="line-202"><code>	{4, "9765625"},                                     // * 1024</code></span>
+<span class="codeline" id="line-203"><code>	{4, "48828125"},                                    // * 2048</code></span>
+<span class="codeline" id="line-204"><code>	{4, "244140625"},                                   // * 4096</code></span>
+<span class="codeline" id="line-205"><code>	{4, "1220703125"},                                  // * 8192</code></span>
+<span class="codeline" id="line-206"><code>	{5, "6103515625"},                                  // * 16384</code></span>
+<span class="codeline" id="line-207"><code>	{5, "30517578125"},                                 // * 32768</code></span>
+<span class="codeline" id="line-208"><code>	{5, "152587890625"},                                // * 65536</code></span>
+<span class="codeline" id="line-209"><code>	{6, "762939453125"},                                // * 131072</code></span>
+<span class="codeline" id="line-210"><code>	{6, "3814697265625"},                               // * 262144</code></span>
+<span class="codeline" id="line-211"><code>	{6, "19073486328125"},                              // * 524288</code></span>
+<span class="codeline" id="line-212"><code>	{7, "95367431640625"},                              // * 1048576</code></span>
+<span class="codeline" id="line-213"><code>	{7, "476837158203125"},                             // * 2097152</code></span>
+<span class="codeline" id="line-214"><code>	{7, "2384185791015625"},                            // * 4194304</code></span>
+<span class="codeline" id="line-215"><code>	{7, "11920928955078125"},                           // * 8388608</code></span>
+<span class="codeline" id="line-216"><code>	{8, "59604644775390625"},                           // * 16777216</code></span>
+<span class="codeline" id="line-217"><code>	{8, "298023223876953125"},                          // * 33554432</code></span>
+<span class="codeline" id="line-218"><code>	{8, "1490116119384765625"},                         // * 67108864</code></span>
+<span class="codeline" id="line-219"><code>	{9, "7450580596923828125"},                         // * 134217728</code></span>
+<span class="codeline" id="line-220"><code>	{9, "37252902984619140625"},                        // * 268435456</code></span>
+<span class="codeline" id="line-221"><code>	{9, "186264514923095703125"},                       // * 536870912</code></span>
+<span class="codeline" id="line-222"><code>	{10, "931322574615478515625"},                      // * 1073741824</code></span>
+<span class="codeline" id="line-223"><code>	{10, "4656612873077392578125"},                     // * 2147483648</code></span>
+<span class="codeline" id="line-224"><code>	{10, "23283064365386962890625"},                    // * 4294967296</code></span>
+<span class="codeline" id="line-225"><code>	{10, "116415321826934814453125"},                   // * 8589934592</code></span>
+<span class="codeline" id="line-226"><code>	{11, "582076609134674072265625"},                   // * 17179869184</code></span>
+<span class="codeline" id="line-227"><code>	{11, "2910383045673370361328125"},                  // * 34359738368</code></span>
+<span class="codeline" id="line-228"><code>	{11, "14551915228366851806640625"},                 // * 68719476736</code></span>
+<span class="codeline" id="line-229"><code>	{12, "72759576141834259033203125"},                 // * 137438953472</code></span>
+<span class="codeline" id="line-230"><code>	{12, "363797880709171295166015625"},                // * 274877906944</code></span>
+<span class="codeline" id="line-231"><code>	{12, "1818989403545856475830078125"},               // * 549755813888</code></span>
+<span class="codeline" id="line-232"><code>	{13, "9094947017729282379150390625"},               // * 1099511627776</code></span>
+<span class="codeline" id="line-233"><code>	{13, "45474735088646411895751953125"},              // * 2199023255552</code></span>
+<span class="codeline" id="line-234"><code>	{13, "227373675443232059478759765625"},             // * 4398046511104</code></span>
+<span class="codeline" id="line-235"><code>	{13, "1136868377216160297393798828125"},            // * 8796093022208</code></span>
+<span class="codeline" id="line-236"><code>	{14, "5684341886080801486968994140625"},            // * 17592186044416</code></span>
+<span class="codeline" id="line-237"><code>	{14, "28421709430404007434844970703125"},           // * 35184372088832</code></span>
+<span class="codeline" id="line-238"><code>	{14, "142108547152020037174224853515625"},          // * 70368744177664</code></span>
+<span class="codeline" id="line-239"><code>	{15, "710542735760100185871124267578125"},          // * 140737488355328</code></span>
+<span class="codeline" id="line-240"><code>	{15, "3552713678800500929355621337890625"},         // * 281474976710656</code></span>
+<span class="codeline" id="line-241"><code>	{15, "17763568394002504646778106689453125"},        // * 562949953421312</code></span>
+<span class="codeline" id="line-242"><code>	{16, "88817841970012523233890533447265625"},        // * 1125899906842624</code></span>
+<span class="codeline" id="line-243"><code>	{16, "444089209850062616169452667236328125"},       // * 2251799813685248</code></span>
+<span class="codeline" id="line-244"><code>	{16, "2220446049250313080847263336181640625"},      // * 4503599627370496</code></span>
+<span class="codeline" id="line-245"><code>	{16, "11102230246251565404236316680908203125"},     // * 9007199254740992</code></span>
+<span class="codeline" id="line-246"><code>	{17, "55511151231257827021181583404541015625"},     // * 18014398509481984</code></span>
+<span class="codeline" id="line-247"><code>	{17, "277555756156289135105907917022705078125"},    // * 36028797018963968</code></span>
+<span class="codeline" id="line-248"><code>	{17, "1387778780781445675529539585113525390625"},   // * 72057594037927936</code></span>
+<span class="codeline" id="line-249"><code>	{18, "6938893903907228377647697925567626953125"},   // * 144115188075855872</code></span>
+<span class="codeline" id="line-250"><code>	{18, "34694469519536141888238489627838134765625"},  // * 288230376151711744</code></span>
+<span class="codeline" id="line-251"><code>	{18, "173472347597680709441192448139190673828125"}, // * 576460752303423488</code></span>
+<span class="codeline" id="line-252"><code>	{19, "867361737988403547205962240695953369140625"}, // * 1152921504606846976</code></span>
+<span class="codeline" id="line-253"><code>}</code></span>
+<span class="codeline" id="line-254"><code></code></span>
+<span class="codeline" id="line-255"><code>// Is the leading prefix of b lexicographically less than s?</code></span>
+<span class="codeline" id="line-256"><code>func prefixIsLessThan(b []byte, s string) bool {</code></span>
+<span class="codeline" id="line-257"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-258"><code>		if i &gt;= len(b) {</code></span>
+<span class="codeline" id="line-259"><code>			return true</code></span>
+<span class="codeline" id="line-260"><code>		}</code></span>
+<span class="codeline" id="line-261"><code>		if b[i] != s[i] {</code></span>
+<span class="codeline" id="line-262"><code>			return b[i] &lt; s[i]</code></span>
+<span class="codeline" id="line-263"><code>		}</code></span>
+<span class="codeline" id="line-264"><code>	}</code></span>
+<span class="codeline" id="line-265"><code>	return false</code></span>
+<span class="codeline" id="line-266"><code>}</code></span>
+<span class="codeline" id="line-267"><code></code></span>
+<span class="codeline" id="line-268"><code>// Binary shift left (* 2) by k bits.  k &lt;= maxShift to avoid overflow.</code></span>
+<span class="codeline" id="line-269"><code>func leftShift(a *decimal, k uint) {</code></span>
+<span class="codeline" id="line-270"><code>	delta := leftcheats[k].delta</code></span>
+<span class="codeline" id="line-271"><code>	if prefixIsLessThan(a.d[0:a.nd], leftcheats[k].cutoff) {</code></span>
+<span class="codeline" id="line-272"><code>		delta--</code></span>
+<span class="codeline" id="line-273"><code>	}</code></span>
+<span class="codeline" id="line-274"><code></code></span>
+<span class="codeline" id="line-275"><code>	r := a.nd         // read index</code></span>
+<span class="codeline" id="line-276"><code>	w := a.nd + delta // write index</code></span>
+<span class="codeline" id="line-277"><code></code></span>
+<span class="codeline" id="line-278"><code>	// Pick up a digit, put down a digit.</code></span>
+<span class="codeline" id="line-279"><code>	var n uint</code></span>
+<span class="codeline" id="line-280"><code>	for r--; r &gt;= 0; r-- {</code></span>
+<span class="codeline" id="line-281"><code>		n += (uint(a.d[r]) - '0') &lt;&lt; k</code></span>
+<span class="codeline" id="line-282"><code>		quo := n / 10</code></span>
+<span class="codeline" id="line-283"><code>		rem := n - 10*quo</code></span>
+<span class="codeline" id="line-284"><code>		w--</code></span>
+<span class="codeline" id="line-285"><code>		if w &lt; len(a.d) {</code></span>
+<span class="codeline" id="line-286"><code>			a.d[w] = byte(rem + '0')</code></span>
+<span class="codeline" id="line-287"><code>		} else if rem != 0 {</code></span>
+<span class="codeline" id="line-288"><code>			a.trunc = true</code></span>
+<span class="codeline" id="line-289"><code>		}</code></span>
+<span class="codeline" id="line-290"><code>		n = quo</code></span>
+<span class="codeline" id="line-291"><code>	}</code></span>
+<span class="codeline" id="line-292"><code></code></span>
+<span class="codeline" id="line-293"><code>	// Put down extra digits.</code></span>
+<span class="codeline" id="line-294"><code>	for n &gt; 0 {</code></span>
+<span class="codeline" id="line-295"><code>		quo := n / 10</code></span>
+<span class="codeline" id="line-296"><code>		rem := n - 10*quo</code></span>
+<span class="codeline" id="line-297"><code>		w--</code></span>
+<span class="codeline" id="line-298"><code>		if w &lt; len(a.d) {</code></span>
+<span class="codeline" id="line-299"><code>			a.d[w] = byte(rem + '0')</code></span>
+<span class="codeline" id="line-300"><code>		} else if rem != 0 {</code></span>
+<span class="codeline" id="line-301"><code>			a.trunc = true</code></span>
+<span class="codeline" id="line-302"><code>		}</code></span>
+<span class="codeline" id="line-303"><code>		n = quo</code></span>
+<span class="codeline" id="line-304"><code>	}</code></span>
+<span class="codeline" id="line-305"><code></code></span>
+<span class="codeline" id="line-306"><code>	a.nd += delta</code></span>
+<span class="codeline" id="line-307"><code>	if a.nd &gt;= len(a.d) {</code></span>
+<span class="codeline" id="line-308"><code>		a.nd = len(a.d)</code></span>
+<span class="codeline" id="line-309"><code>	}</code></span>
+<span class="codeline" id="line-310"><code>	a.dp += delta</code></span>
+<span class="codeline" id="line-311"><code>	trim(a)</code></span>
+<span class="codeline" id="line-312"><code>}</code></span>
+<span class="codeline" id="line-313"><code></code></span>
+<span class="codeline" id="line-314"><code>// Binary shift left (k &gt; 0) or right (k &lt; 0).</code></span>
+<span class="codeline" id="line-315"><code>func (a *decimal) Shift(k int) {</code></span>
+<span class="codeline" id="line-316"><code>	switch {</code></span>
+<span class="codeline" id="line-317"><code>	case a.nd == 0:</code></span>
+<span class="codeline" id="line-318"><code>		// nothing to do: a == 0</code></span>
+<span class="codeline" id="line-319"><code>	case k &gt; 0:</code></span>
+<span class="codeline" id="line-320"><code>		for k &gt; maxShift {</code></span>
+<span class="codeline" id="line-321"><code>			leftShift(a, maxShift)</code></span>
+<span class="codeline" id="line-322"><code>			k -= maxShift</code></span>
+<span class="codeline" id="line-323"><code>		}</code></span>
+<span class="codeline" id="line-324"><code>		leftShift(a, uint(k))</code></span>
+<span class="codeline" id="line-325"><code>	case k &lt; 0:</code></span>
+<span class="codeline" id="line-326"><code>		for k &lt; -maxShift {</code></span>
+<span class="codeline" id="line-327"><code>			rightShift(a, maxShift)</code></span>
+<span class="codeline" id="line-328"><code>			k += maxShift</code></span>
+<span class="codeline" id="line-329"><code>		}</code></span>
+<span class="codeline" id="line-330"><code>		rightShift(a, uint(-k))</code></span>
+<span class="codeline" id="line-331"><code>	}</code></span>
+<span class="codeline" id="line-332"><code>}</code></span>
+<span class="codeline" id="line-333"><code></code></span>
+<span class="codeline" id="line-334"><code>// If we chop a at nd digits, should we round up?</code></span>
+<span class="codeline" id="line-335"><code>func shouldRoundUp(a *decimal, nd int) bool {</code></span>
+<span class="codeline" id="line-336"><code>	if nd &lt; 0 || nd &gt;= a.nd {</code></span>
+<span class="codeline" id="line-337"><code>		return false</code></span>
+<span class="codeline" id="line-338"><code>	}</code></span>
+<span class="codeline" id="line-339"><code>	if a.d[nd] == '5' &amp;&amp; nd+1 == a.nd { // exactly halfway - round to even</code></span>
+<span class="codeline" id="line-340"><code>		// if we truncated, a little higher than what's recorded - always round up</code></span>
+<span class="codeline" id="line-341"><code>		if a.trunc {</code></span>
+<span class="codeline" id="line-342"><code>			return true</code></span>
+<span class="codeline" id="line-343"><code>		}</code></span>
+<span class="codeline" id="line-344"><code>		return nd &gt; 0 &amp;&amp; (a.d[nd-1]-'0')%2 != 0</code></span>
+<span class="codeline" id="line-345"><code>	}</code></span>
+<span class="codeline" id="line-346"><code>	// not halfway - digit tells all</code></span>
+<span class="codeline" id="line-347"><code>	return a.d[nd] &gt;= '5'</code></span>
+<span class="codeline" id="line-348"><code>}</code></span>
+<span class="codeline" id="line-349"><code></code></span>
+<span class="codeline" id="line-350"><code>// Round a to nd digits (or fewer).</code></span>
+<span class="codeline" id="line-351"><code>// If nd is zero, it means we're rounding</code></span>
+<span class="codeline" id="line-352"><code>// just to the left of the digits, as in</code></span>
+<span class="codeline" id="line-353"><code>// 0.09 -&gt; 0.1.</code></span>
+<span class="codeline" id="line-354"><code>func (a *decimal) Round(nd int) {</code></span>
+<span class="codeline" id="line-355"><code>	if nd &lt; 0 || nd &gt;= a.nd {</code></span>
+<span class="codeline" id="line-356"><code>		return</code></span>
+<span class="codeline" id="line-357"><code>	}</code></span>
+<span class="codeline" id="line-358"><code>	if shouldRoundUp(a, nd) {</code></span>
+<span class="codeline" id="line-359"><code>		a.RoundUp(nd)</code></span>
+<span class="codeline" id="line-360"><code>	} else {</code></span>
+<span class="codeline" id="line-361"><code>		a.RoundDown(nd)</code></span>
+<span class="codeline" id="line-362"><code>	}</code></span>
+<span class="codeline" id="line-363"><code>}</code></span>
+<span class="codeline" id="line-364"><code></code></span>
+<span class="codeline" id="line-365"><code>// Round a down to nd digits (or fewer).</code></span>
+<span class="codeline" id="line-366"><code>func (a *decimal) RoundDown(nd int) {</code></span>
+<span class="codeline" id="line-367"><code>	if nd &lt; 0 || nd &gt;= a.nd {</code></span>
+<span class="codeline" id="line-368"><code>		return</code></span>
+<span class="codeline" id="line-369"><code>	}</code></span>
+<span class="codeline" id="line-370"><code>	a.nd = nd</code></span>
+<span class="codeline" id="line-371"><code>	trim(a)</code></span>
+<span class="codeline" id="line-372"><code>}</code></span>
+<span class="codeline" id="line-373"><code></code></span>
+<span class="codeline" id="line-374"><code>// Round a up to nd digits (or fewer).</code></span>
+<span class="codeline" id="line-375"><code>func (a *decimal) RoundUp(nd int) {</code></span>
+<span class="codeline" id="line-376"><code>	if nd &lt; 0 || nd &gt;= a.nd {</code></span>
+<span class="codeline" id="line-377"><code>		return</code></span>
+<span class="codeline" id="line-378"><code>	}</code></span>
+<span class="codeline" id="line-379"><code></code></span>
+<span class="codeline" id="line-380"><code>	// round up</code></span>
+<span class="codeline" id="line-381"><code>	for i := nd - 1; i &gt;= 0; i-- {</code></span>
+<span class="codeline" id="line-382"><code>		c := a.d[i]</code></span>
+<span class="codeline" id="line-383"><code>		if c &lt; '9' { // can stop after this digit</code></span>
+<span class="codeline" id="line-384"><code>			a.d[i]++</code></span>
+<span class="codeline" id="line-385"><code>			a.nd = i + 1</code></span>
+<span class="codeline" id="line-386"><code>			return</code></span>
+<span class="codeline" id="line-387"><code>		}</code></span>
+<span class="codeline" id="line-388"><code>	}</code></span>
+<span class="codeline" id="line-389"><code></code></span>
+<span class="codeline" id="line-390"><code>	// Number is all 9s.</code></span>
+<span class="codeline" id="line-391"><code>	// Change to single 1 with adjusted decimal point.</code></span>
+<span class="codeline" id="line-392"><code>	a.d[0] = '1'</code></span>
+<span class="codeline" id="line-393"><code>	a.nd = 1</code></span>
+<span class="codeline" id="line-394"><code>	a.dp++</code></span>
+<span class="codeline" id="line-395"><code>}</code></span>
+<span class="codeline" id="line-396"><code></code></span>
+<span class="codeline" id="line-397"><code>// Extract integer part, rounded appropriately.</code></span>
+<span class="codeline" id="line-398"><code>// No guarantees about overflow.</code></span>
+<span class="codeline" id="line-399"><code>func (a *decimal) RoundedInteger() uint64 {</code></span>
+<span class="codeline" id="line-400"><code>	if a.dp &gt; 20 {</code></span>
+<span class="codeline" id="line-401"><code>		return 0xFFFFFFFFFFFFFFFF</code></span>
+<span class="codeline" id="line-402"><code>	}</code></span>
+<span class="codeline" id="line-403"><code>	var i int</code></span>
+<span class="codeline" id="line-404"><code>	n := uint64(0)</code></span>
+<span class="codeline" id="line-405"><code>	for i = 0; i &lt; a.dp &amp;&amp; i &lt; a.nd; i++ {</code></span>
+<span class="codeline" id="line-406"><code>		n = n*10 + uint64(a.d[i]-'0')</code></span>
+<span class="codeline" id="line-407"><code>	}</code></span>
+<span class="codeline" id="line-408"><code>	for ; i &lt; a.dp; i++ {</code></span>
+<span class="codeline" id="line-409"><code>		n *= 10</code></span>
+<span class="codeline" id="line-410"><code>	}</code></span>
+<span class="codeline" id="line-411"><code>	if shouldRoundUp(a, a.dp) {</code></span>
+<span class="codeline" id="line-412"><code>		n++</code></span>
+<span class="codeline" id="line-413"><code>	}</code></span>
+<span class="codeline" id="line-414"><code>	return n</code></span>
+<span class="codeline" id="line-415"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: modf.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	modf.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Modf returns integer and fractional floating-point numbers</code></span>
+<span class="codeline" id="line-8"><code>// that sum to f. Both values have the same sign as f.</code></span>
+<span class="codeline" id="line-9"><code>//</code></span>
+<span class="codeline" id="line-10"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-11"><code>//	Modf(±Inf) = ±Inf, NaN</code></span>
+<span class="codeline" id="line-12"><code>//	Modf(NaN) = NaN, NaN</code></span>
+<span class="codeline" id="line-13"><code>func Modf(f float64) (int float64, frac float64)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>func modf(f float64) (int float64, frac float64) {</code></span>
+<span class="codeline" id="line-16"><code>	if f &lt; 1 {</code></span>
+<span class="codeline" id="line-17"><code>		switch {</code></span>
+<span class="codeline" id="line-18"><code>		case f &lt; 0:</code></span>
+<span class="codeline" id="line-19"><code>			int, frac = Modf(-f)</code></span>
+<span class="codeline" id="line-20"><code>			return -int, -frac</code></span>
+<span class="codeline" id="line-21"><code>		case f == 0:</code></span>
+<span class="codeline" id="line-22"><code>			return f, f // Return -0, -0 when f == -0</code></span>
+<span class="codeline" id="line-23"><code>		}</code></span>
+<span class="codeline" id="line-24"><code>		return 0, f</code></span>
+<span class="codeline" id="line-25"><code>	}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>	x := Float64bits(f)</code></span>
+<span class="codeline" id="line-28"><code>	e := uint(x&gt;&gt;shift)&amp;mask - bias</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>	// Keep the top 12+e bits, the integer part; clear the rest.</code></span>
+<span class="codeline" id="line-31"><code>	if e &lt; 64-12 {</code></span>
+<span class="codeline" id="line-32"><code>		x &amp;^= 1&lt;&lt;(64-12-e) - 1</code></span>
+<span class="codeline" id="line-33"><code>	}</code></span>
+<span class="codeline" id="line-34"><code>	int = Float64frombits(x)</code></span>
+<span class="codeline" id="line-35"><code>	frac = f - int</code></span>
+<span class="codeline" id="line-36"><code>	return</code></span>
+<span class="codeline" id="line-37"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

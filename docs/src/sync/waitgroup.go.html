@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: waitgroup.go in package sync</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	waitgroup.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/sync.html">sync</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package sync</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/race"</code></span>
+<span class="codeline" id="line-9"><code>	"sync/atomic"</code></span>
+<span class="codeline" id="line-10"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// A WaitGroup waits for a collection of goroutines to finish.</code></span>
+<span class="codeline" id="line-14"><code>// The main goroutine calls Add to set the number of</code></span>
+<span class="codeline" id="line-15"><code>// goroutines to wait for. Then each of the goroutines</code></span>
+<span class="codeline" id="line-16"><code>// runs and calls Done when finished. At the same time,</code></span>
+<span class="codeline" id="line-17"><code>// Wait can be used to block until all goroutines have finished.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// A WaitGroup must not be copied after first use.</code></span>
+<span class="codeline" id="line-20"><code>type WaitGroup struct {</code></span>
+<span class="codeline" id="line-21"><code>	noCopy noCopy</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>	// 64-bit value: high 32 bits are counter, low 32 bits are waiter count.</code></span>
+<span class="codeline" id="line-24"><code>	// 64-bit atomic operations require 64-bit alignment, but 32-bit</code></span>
+<span class="codeline" id="line-25"><code>	// compilers do not ensure it. So we allocate 12 bytes and then use</code></span>
+<span class="codeline" id="line-26"><code>	// the aligned 8 bytes in them as state, and the other 4 as storage</code></span>
+<span class="codeline" id="line-27"><code>	// for the sema.</code></span>
+<span class="codeline" id="line-28"><code>	state1 [3]uint32</code></span>
+<span class="codeline" id="line-29"><code>}</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>// state returns pointers to the state and sema fields stored within wg.state1.</code></span>
+<span class="codeline" id="line-32"><code>func (wg *WaitGroup) state() (statep *uint64, semap *uint32) {</code></span>
+<span class="codeline" id="line-33"><code>	if uintptr(unsafe.Pointer(&amp;wg.state1))%8 == 0 {</code></span>
+<span class="codeline" id="line-34"><code>		return (*uint64)(unsafe.Pointer(&amp;wg.state1)), &amp;wg.state1[2]</code></span>
+<span class="codeline" id="line-35"><code>	} else {</code></span>
+<span class="codeline" id="line-36"><code>		return (*uint64)(unsafe.Pointer(&amp;wg.state1[1])), &amp;wg.state1[0]</code></span>
+<span class="codeline" id="line-37"><code>	}</code></span>
+<span class="codeline" id="line-38"><code>}</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>// Add adds delta, which may be negative, to the WaitGroup counter.</code></span>
+<span class="codeline" id="line-41"><code>// If the counter becomes zero, all goroutines blocked on Wait are released.</code></span>
+<span class="codeline" id="line-42"><code>// If the counter goes negative, Add panics.</code></span>
+<span class="codeline" id="line-43"><code>//</code></span>
+<span class="codeline" id="line-44"><code>// Note that calls with a positive delta that occur when the counter is zero</code></span>
+<span class="codeline" id="line-45"><code>// must happen before a Wait. Calls with a negative delta, or calls with a</code></span>
+<span class="codeline" id="line-46"><code>// positive delta that start when the counter is greater than zero, may happen</code></span>
+<span class="codeline" id="line-47"><code>// at any time.</code></span>
+<span class="codeline" id="line-48"><code>// Typically this means the calls to Add should execute before the statement</code></span>
+<span class="codeline" id="line-49"><code>// creating the goroutine or other event to be waited for.</code></span>
+<span class="codeline" id="line-50"><code>// If a WaitGroup is reused to wait for several independent sets of events,</code></span>
+<span class="codeline" id="line-51"><code>// new Add calls must happen after all previous Wait calls have returned.</code></span>
+<span class="codeline" id="line-52"><code>// See the WaitGroup example.</code></span>
+<span class="codeline" id="line-53"><code>func (wg *WaitGroup) Add(delta int) {</code></span>
+<span class="codeline" id="line-54"><code>	statep, semap := wg.state()</code></span>
+<span class="codeline" id="line-55"><code>	if race.Enabled {</code></span>
+<span class="codeline" id="line-56"><code>		_ = *statep // trigger nil deref early</code></span>
+<span class="codeline" id="line-57"><code>		if delta &lt; 0 {</code></span>
+<span class="codeline" id="line-58"><code>			// Synchronize decrements with Wait.</code></span>
+<span class="codeline" id="line-59"><code>			race.ReleaseMerge(unsafe.Pointer(wg))</code></span>
+<span class="codeline" id="line-60"><code>		}</code></span>
+<span class="codeline" id="line-61"><code>		race.Disable()</code></span>
+<span class="codeline" id="line-62"><code>		defer race.Enable()</code></span>
+<span class="codeline" id="line-63"><code>	}</code></span>
+<span class="codeline" id="line-64"><code>	state := atomic.AddUint64(statep, uint64(delta)&lt;&lt;32)</code></span>
+<span class="codeline" id="line-65"><code>	v := int32(state &gt;&gt; 32)</code></span>
+<span class="codeline" id="line-66"><code>	w := uint32(state)</code></span>
+<span class="codeline" id="line-67"><code>	if race.Enabled &amp;&amp; delta &gt; 0 &amp;&amp; v == int32(delta) {</code></span>
+<span class="codeline" id="line-68"><code>		// The first increment must be synchronized with Wait.</code></span>
+<span class="codeline" id="line-69"><code>		// Need to model this as a read, because there can be</code></span>
+<span class="codeline" id="line-70"><code>		// several concurrent wg.counter transitions from 0.</code></span>
+<span class="codeline" id="line-71"><code>		race.Read(unsafe.Pointer(semap))</code></span>
+<span class="codeline" id="line-72"><code>	}</code></span>
+<span class="codeline" id="line-73"><code>	if v &lt; 0 {</code></span>
+<span class="codeline" id="line-74"><code>		panic("sync: negative WaitGroup counter")</code></span>
+<span class="codeline" id="line-75"><code>	}</code></span>
+<span class="codeline" id="line-76"><code>	if w != 0 &amp;&amp; delta &gt; 0 &amp;&amp; v == int32(delta) {</code></span>
+<span class="codeline" id="line-77"><code>		panic("sync: WaitGroup misuse: Add called concurrently with Wait")</code></span>
+<span class="codeline" id="line-78"><code>	}</code></span>
+<span class="codeline" id="line-79"><code>	if v &gt; 0 || w == 0 {</code></span>
+<span class="codeline" id="line-80"><code>		return</code></span>
+<span class="codeline" id="line-81"><code>	}</code></span>
+<span class="codeline" id="line-82"><code>	// This goroutine has set counter to 0 when waiters &gt; 0.</code></span>
+<span class="codeline" id="line-83"><code>	// Now there can't be concurrent mutations of state:</code></span>
+<span class="codeline" id="line-84"><code>	// - Adds must not happen concurrently with Wait,</code></span>
+<span class="codeline" id="line-85"><code>	// - Wait does not increment waiters if it sees counter == 0.</code></span>
+<span class="codeline" id="line-86"><code>	// Still do a cheap sanity check to detect WaitGroup misuse.</code></span>
+<span class="codeline" id="line-87"><code>	if *statep != state {</code></span>
+<span class="codeline" id="line-88"><code>		panic("sync: WaitGroup misuse: Add called concurrently with Wait")</code></span>
+<span class="codeline" id="line-89"><code>	}</code></span>
+<span class="codeline" id="line-90"><code>	// Reset waiters count to 0.</code></span>
+<span class="codeline" id="line-91"><code>	*statep = 0</code></span>
+<span class="codeline" id="line-92"><code>	for ; w != 0; w-- {</code></span>
+<span class="codeline" id="line-93"><code>		runtime_Semrelease(semap, false, 0)</code></span>
+<span class="codeline" id="line-94"><code>	}</code></span>
+<span class="codeline" id="line-95"><code>}</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>// Done decrements the WaitGroup counter by one.</code></span>
+<span class="codeline" id="line-98"><code>func (wg *WaitGroup) Done() {</code></span>
+<span class="codeline" id="line-99"><code>	wg.Add(-1)</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>// Wait blocks until the WaitGroup counter is zero.</code></span>
+<span class="codeline" id="line-103"><code>func (wg *WaitGroup) Wait() {</code></span>
+<span class="codeline" id="line-104"><code>	statep, semap := wg.state()</code></span>
+<span class="codeline" id="line-105"><code>	if race.Enabled {</code></span>
+<span class="codeline" id="line-106"><code>		_ = *statep // trigger nil deref early</code></span>
+<span class="codeline" id="line-107"><code>		race.Disable()</code></span>
+<span class="codeline" id="line-108"><code>	}</code></span>
+<span class="codeline" id="line-109"><code>	for {</code></span>
+<span class="codeline" id="line-110"><code>		state := atomic.LoadUint64(statep)</code></span>
+<span class="codeline" id="line-111"><code>		v := int32(state &gt;&gt; 32)</code></span>
+<span class="codeline" id="line-112"><code>		w := uint32(state)</code></span>
+<span class="codeline" id="line-113"><code>		if v == 0 {</code></span>
+<span class="codeline" id="line-114"><code>			// Counter is 0, no need to wait.</code></span>
+<span class="codeline" id="line-115"><code>			if race.Enabled {</code></span>
+<span class="codeline" id="line-116"><code>				race.Enable()</code></span>
+<span class="codeline" id="line-117"><code>				race.Acquire(unsafe.Pointer(wg))</code></span>
+<span class="codeline" id="line-118"><code>			}</code></span>
+<span class="codeline" id="line-119"><code>			return</code></span>
+<span class="codeline" id="line-120"><code>		}</code></span>
+<span class="codeline" id="line-121"><code>		// Increment waiters count.</code></span>
+<span class="codeline" id="line-122"><code>		if atomic.CompareAndSwapUint64(statep, state, state+1) {</code></span>
+<span class="codeline" id="line-123"><code>			if race.Enabled &amp;&amp; w == 0 {</code></span>
+<span class="codeline" id="line-124"><code>				// Wait must be synchronized with the first Add.</code></span>
+<span class="codeline" id="line-125"><code>				// Need to model this is as a write to race with the read in Add.</code></span>
+<span class="codeline" id="line-126"><code>				// As a consequence, can do the write only for the first waiter,</code></span>
+<span class="codeline" id="line-127"><code>				// otherwise concurrent Waits will race with each other.</code></span>
+<span class="codeline" id="line-128"><code>				race.Write(unsafe.Pointer(semap))</code></span>
+<span class="codeline" id="line-129"><code>			}</code></span>
+<span class="codeline" id="line-130"><code>			runtime_Semacquire(semap)</code></span>
+<span class="codeline" id="line-131"><code>			if *statep != 0 {</code></span>
+<span class="codeline" id="line-132"><code>				panic("sync: WaitGroup is reused before previous Wait has returned")</code></span>
+<span class="codeline" id="line-133"><code>			}</code></span>
+<span class="codeline" id="line-134"><code>			if race.Enabled {</code></span>
+<span class="codeline" id="line-135"><code>				race.Enable()</code></span>
+<span class="codeline" id="line-136"><code>				race.Acquire(unsafe.Pointer(wg))</code></span>
+<span class="codeline" id="line-137"><code>			}</code></span>
+<span class="codeline" id="line-138"><code>			return</code></span>
+<span class="codeline" id="line-139"><code>		}</code></span>
+<span class="codeline" id="line-140"><code>	}</code></span>
+<span class="codeline" id="line-141"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

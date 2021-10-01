@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: dir_unix.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	dir_unix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix dragonfly freebsd js,wasm linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package os</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"io"</code></span>
+<span class="codeline" id="line-11"><code>	"runtime"</code></span>
+<span class="codeline" id="line-12"><code>	"syscall"</code></span>
+<span class="codeline" id="line-13"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-14"><code>)</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>// Auxiliary information if the File describes a directory</code></span>
+<span class="codeline" id="line-17"><code>type dirInfo struct {</code></span>
+<span class="codeline" id="line-18"><code>	buf  []byte // buffer for directory I/O</code></span>
+<span class="codeline" id="line-19"><code>	nbuf int    // length of buf; return value from Getdirentries</code></span>
+<span class="codeline" id="line-20"><code>	bufp int    // location of next record in buf.</code></span>
+<span class="codeline" id="line-21"><code>}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>const (</code></span>
+<span class="codeline" id="line-24"><code>	// More than 5760 to work around https://golang.org/issue/24015.</code></span>
+<span class="codeline" id="line-25"><code>	blockSize = 8192</code></span>
+<span class="codeline" id="line-26"><code>)</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>func (d *dirInfo) close() {}</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>func (f *File) readdir(n int, mode readdirMode) (names []string, dirents []DirEntry, infos []FileInfo, err error) {</code></span>
+<span class="codeline" id="line-31"><code>	// If this file has no dirinfo, create one.</code></span>
+<span class="codeline" id="line-32"><code>	if f.dirinfo == nil {</code></span>
+<span class="codeline" id="line-33"><code>		f.dirinfo = new(dirInfo)</code></span>
+<span class="codeline" id="line-34"><code>		// The buffer must be at least a block long.</code></span>
+<span class="codeline" id="line-35"><code>		f.dirinfo.buf = make([]byte, blockSize)</code></span>
+<span class="codeline" id="line-36"><code>	}</code></span>
+<span class="codeline" id="line-37"><code>	d := f.dirinfo</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>	// Change the meaning of n for the implementation below.</code></span>
+<span class="codeline" id="line-40"><code>	//</code></span>
+<span class="codeline" id="line-41"><code>	// The n above was for the public interface of "if n &lt;= 0,</code></span>
+<span class="codeline" id="line-42"><code>	// Readdir returns all the FileInfo from the directory in a</code></span>
+<span class="codeline" id="line-43"><code>	// single slice".</code></span>
+<span class="codeline" id="line-44"><code>	//</code></span>
+<span class="codeline" id="line-45"><code>	// But below, we use only negative to mean looping until the</code></span>
+<span class="codeline" id="line-46"><code>	// end and positive to mean bounded, with positive</code></span>
+<span class="codeline" id="line-47"><code>	// terminating at 0.</code></span>
+<span class="codeline" id="line-48"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-49"><code>		n = -1</code></span>
+<span class="codeline" id="line-50"><code>	}</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>	for n != 0 {</code></span>
+<span class="codeline" id="line-53"><code>		// Refill the buffer if necessary</code></span>
+<span class="codeline" id="line-54"><code>		if d.bufp &gt;= d.nbuf {</code></span>
+<span class="codeline" id="line-55"><code>			d.bufp = 0</code></span>
+<span class="codeline" id="line-56"><code>			var errno error</code></span>
+<span class="codeline" id="line-57"><code>			d.nbuf, errno = f.pfd.ReadDirent(d.buf)</code></span>
+<span class="codeline" id="line-58"><code>			runtime.KeepAlive(f)</code></span>
+<span class="codeline" id="line-59"><code>			if errno != nil {</code></span>
+<span class="codeline" id="line-60"><code>				return names, dirents, infos, &amp;PathError{Op: "readdirent", Path: f.name, Err: errno}</code></span>
+<span class="codeline" id="line-61"><code>			}</code></span>
+<span class="codeline" id="line-62"><code>			if d.nbuf &lt;= 0 {</code></span>
+<span class="codeline" id="line-63"><code>				break // EOF</code></span>
+<span class="codeline" id="line-64"><code>			}</code></span>
+<span class="codeline" id="line-65"><code>		}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>		// Drain the buffer</code></span>
+<span class="codeline" id="line-68"><code>		buf := d.buf[d.bufp:d.nbuf]</code></span>
+<span class="codeline" id="line-69"><code>		reclen, ok := direntReclen(buf)</code></span>
+<span class="codeline" id="line-70"><code>		if !ok || reclen &gt; uint64(len(buf)) {</code></span>
+<span class="codeline" id="line-71"><code>			break</code></span>
+<span class="codeline" id="line-72"><code>		}</code></span>
+<span class="codeline" id="line-73"><code>		rec := buf[:reclen]</code></span>
+<span class="codeline" id="line-74"><code>		d.bufp += int(reclen)</code></span>
+<span class="codeline" id="line-75"><code>		ino, ok := direntIno(rec)</code></span>
+<span class="codeline" id="line-76"><code>		if !ok {</code></span>
+<span class="codeline" id="line-77"><code>			break</code></span>
+<span class="codeline" id="line-78"><code>		}</code></span>
+<span class="codeline" id="line-79"><code>		if ino == 0 {</code></span>
+<span class="codeline" id="line-80"><code>			continue</code></span>
+<span class="codeline" id="line-81"><code>		}</code></span>
+<span class="codeline" id="line-82"><code>		const namoff = uint64(unsafe.Offsetof(syscall.Dirent{}.Name))</code></span>
+<span class="codeline" id="line-83"><code>		namlen, ok := direntNamlen(rec)</code></span>
+<span class="codeline" id="line-84"><code>		if !ok || namoff+namlen &gt; uint64(len(rec)) {</code></span>
+<span class="codeline" id="line-85"><code>			break</code></span>
+<span class="codeline" id="line-86"><code>		}</code></span>
+<span class="codeline" id="line-87"><code>		name := rec[namoff : namoff+namlen]</code></span>
+<span class="codeline" id="line-88"><code>		for i, c := range name {</code></span>
+<span class="codeline" id="line-89"><code>			if c == 0 {</code></span>
+<span class="codeline" id="line-90"><code>				name = name[:i]</code></span>
+<span class="codeline" id="line-91"><code>				break</code></span>
+<span class="codeline" id="line-92"><code>			}</code></span>
+<span class="codeline" id="line-93"><code>		}</code></span>
+<span class="codeline" id="line-94"><code>		// Check for useless names before allocating a string.</code></span>
+<span class="codeline" id="line-95"><code>		if string(name) == "." || string(name) == ".." {</code></span>
+<span class="codeline" id="line-96"><code>			continue</code></span>
+<span class="codeline" id="line-97"><code>		}</code></span>
+<span class="codeline" id="line-98"><code>		if n &gt; 0 { // see 'n == 0' comment above</code></span>
+<span class="codeline" id="line-99"><code>			n--</code></span>
+<span class="codeline" id="line-100"><code>		}</code></span>
+<span class="codeline" id="line-101"><code>		if mode == readdirName {</code></span>
+<span class="codeline" id="line-102"><code>			names = append(names, string(name))</code></span>
+<span class="codeline" id="line-103"><code>		} else if mode == readdirDirEntry {</code></span>
+<span class="codeline" id="line-104"><code>			de, err := newUnixDirent(f.name, string(name), direntType(rec))</code></span>
+<span class="codeline" id="line-105"><code>			if IsNotExist(err) {</code></span>
+<span class="codeline" id="line-106"><code>				// File disappeared between readdir and stat.</code></span>
+<span class="codeline" id="line-107"><code>				// Treat as if it didn't exist.</code></span>
+<span class="codeline" id="line-108"><code>				continue</code></span>
+<span class="codeline" id="line-109"><code>			}</code></span>
+<span class="codeline" id="line-110"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-111"><code>				return nil, dirents, nil, err</code></span>
+<span class="codeline" id="line-112"><code>			}</code></span>
+<span class="codeline" id="line-113"><code>			dirents = append(dirents, de)</code></span>
+<span class="codeline" id="line-114"><code>		} else {</code></span>
+<span class="codeline" id="line-115"><code>			info, err := lstat(f.name + "/" + string(name))</code></span>
+<span class="codeline" id="line-116"><code>			if IsNotExist(err) {</code></span>
+<span class="codeline" id="line-117"><code>				// File disappeared between readdir + stat.</code></span>
+<span class="codeline" id="line-118"><code>				// Treat as if it didn't exist.</code></span>
+<span class="codeline" id="line-119"><code>				continue</code></span>
+<span class="codeline" id="line-120"><code>			}</code></span>
+<span class="codeline" id="line-121"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-122"><code>				return nil, nil, infos, err</code></span>
+<span class="codeline" id="line-123"><code>			}</code></span>
+<span class="codeline" id="line-124"><code>			infos = append(infos, info)</code></span>
+<span class="codeline" id="line-125"><code>		}</code></span>
+<span class="codeline" id="line-126"><code>	}</code></span>
+<span class="codeline" id="line-127"><code></code></span>
+<span class="codeline" id="line-128"><code>	if n &gt; 0 &amp;&amp; len(names)+len(dirents)+len(infos) == 0 {</code></span>
+<span class="codeline" id="line-129"><code>		return nil, nil, nil, io.EOF</code></span>
+<span class="codeline" id="line-130"><code>	}</code></span>
+<span class="codeline" id="line-131"><code>	return names, dirents, infos, nil</code></span>
+<span class="codeline" id="line-132"><code>}</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>// readInt returns the size-bytes unsigned integer in native byte order at offset off.</code></span>
+<span class="codeline" id="line-135"><code>func readInt(b []byte, off, size uintptr) (u uint64, ok bool) {</code></span>
+<span class="codeline" id="line-136"><code>	if len(b) &lt; int(off+size) {</code></span>
+<span class="codeline" id="line-137"><code>		return 0, false</code></span>
+<span class="codeline" id="line-138"><code>	}</code></span>
+<span class="codeline" id="line-139"><code>	if isBigEndian {</code></span>
+<span class="codeline" id="line-140"><code>		return readIntBE(b[off:], size), true</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>	return readIntLE(b[off:], size), true</code></span>
+<span class="codeline" id="line-143"><code>}</code></span>
+<span class="codeline" id="line-144"><code></code></span>
+<span class="codeline" id="line-145"><code>func readIntBE(b []byte, size uintptr) uint64 {</code></span>
+<span class="codeline" id="line-146"><code>	switch size {</code></span>
+<span class="codeline" id="line-147"><code>	case 1:</code></span>
+<span class="codeline" id="line-148"><code>		return uint64(b[0])</code></span>
+<span class="codeline" id="line-149"><code>	case 2:</code></span>
+<span class="codeline" id="line-150"><code>		_ = b[1] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-151"><code>		return uint64(b[1]) | uint64(b[0])&lt;&lt;8</code></span>
+<span class="codeline" id="line-152"><code>	case 4:</code></span>
+<span class="codeline" id="line-153"><code>		_ = b[3] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-154"><code>		return uint64(b[3]) | uint64(b[2])&lt;&lt;8 | uint64(b[1])&lt;&lt;16 | uint64(b[0])&lt;&lt;24</code></span>
+<span class="codeline" id="line-155"><code>	case 8:</code></span>
+<span class="codeline" id="line-156"><code>		_ = b[7] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-157"><code>		return uint64(b[7]) | uint64(b[6])&lt;&lt;8 | uint64(b[5])&lt;&lt;16 | uint64(b[4])&lt;&lt;24 |</code></span>
+<span class="codeline" id="line-158"><code>			uint64(b[3])&lt;&lt;32 | uint64(b[2])&lt;&lt;40 | uint64(b[1])&lt;&lt;48 | uint64(b[0])&lt;&lt;56</code></span>
+<span class="codeline" id="line-159"><code>	default:</code></span>
+<span class="codeline" id="line-160"><code>		panic("syscall: readInt with unsupported size")</code></span>
+<span class="codeline" id="line-161"><code>	}</code></span>
+<span class="codeline" id="line-162"><code>}</code></span>
+<span class="codeline" id="line-163"><code></code></span>
+<span class="codeline" id="line-164"><code>func readIntLE(b []byte, size uintptr) uint64 {</code></span>
+<span class="codeline" id="line-165"><code>	switch size {</code></span>
+<span class="codeline" id="line-166"><code>	case 1:</code></span>
+<span class="codeline" id="line-167"><code>		return uint64(b[0])</code></span>
+<span class="codeline" id="line-168"><code>	case 2:</code></span>
+<span class="codeline" id="line-169"><code>		_ = b[1] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-170"><code>		return uint64(b[0]) | uint64(b[1])&lt;&lt;8</code></span>
+<span class="codeline" id="line-171"><code>	case 4:</code></span>
+<span class="codeline" id="line-172"><code>		_ = b[3] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-173"><code>		return uint64(b[0]) | uint64(b[1])&lt;&lt;8 | uint64(b[2])&lt;&lt;16 | uint64(b[3])&lt;&lt;24</code></span>
+<span class="codeline" id="line-174"><code>	case 8:</code></span>
+<span class="codeline" id="line-175"><code>		_ = b[7] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-176"><code>		return uint64(b[0]) | uint64(b[1])&lt;&lt;8 | uint64(b[2])&lt;&lt;16 | uint64(b[3])&lt;&lt;24 |</code></span>
+<span class="codeline" id="line-177"><code>			uint64(b[4])&lt;&lt;32 | uint64(b[5])&lt;&lt;40 | uint64(b[6])&lt;&lt;48 | uint64(b[7])&lt;&lt;56</code></span>
+<span class="codeline" id="line-178"><code>	default:</code></span>
+<span class="codeline" id="line-179"><code>		panic("syscall: readInt with unsupported size")</code></span>
+<span class="codeline" id="line-180"><code>	}</code></span>
+<span class="codeline" id="line-181"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

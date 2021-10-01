@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: utf8.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	utf8.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2016 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Numbers fundamental to the encoding.</code></span>
+<span class="codeline" id="line-8"><code>const (</code></span>
+<span class="codeline" id="line-9"><code>	runeError = '\uFFFD'     // the "error" Rune or "Unicode replacement character"</code></span>
+<span class="codeline" id="line-10"><code>	runeSelf  = 0x80         // characters below runeSelf are represented as themselves in a single byte.</code></span>
+<span class="codeline" id="line-11"><code>	maxRune   = '\U0010FFFF' // Maximum valid Unicode code point.</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>// Code points in the surrogate range are not valid for UTF-8.</code></span>
+<span class="codeline" id="line-15"><code>const (</code></span>
+<span class="codeline" id="line-16"><code>	surrogateMin = 0xD800</code></span>
+<span class="codeline" id="line-17"><code>	surrogateMax = 0xDFFF</code></span>
+<span class="codeline" id="line-18"><code>)</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>const (</code></span>
+<span class="codeline" id="line-21"><code>	t1 = 0x00 // 0000 0000</code></span>
+<span class="codeline" id="line-22"><code>	tx = 0x80 // 1000 0000</code></span>
+<span class="codeline" id="line-23"><code>	t2 = 0xC0 // 1100 0000</code></span>
+<span class="codeline" id="line-24"><code>	t3 = 0xE0 // 1110 0000</code></span>
+<span class="codeline" id="line-25"><code>	t4 = 0xF0 // 1111 0000</code></span>
+<span class="codeline" id="line-26"><code>	t5 = 0xF8 // 1111 1000</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>	maskx = 0x3F // 0011 1111</code></span>
+<span class="codeline" id="line-29"><code>	mask2 = 0x1F // 0001 1111</code></span>
+<span class="codeline" id="line-30"><code>	mask3 = 0x0F // 0000 1111</code></span>
+<span class="codeline" id="line-31"><code>	mask4 = 0x07 // 0000 0111</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	rune1Max = 1&lt;&lt;7 - 1</code></span>
+<span class="codeline" id="line-34"><code>	rune2Max = 1&lt;&lt;11 - 1</code></span>
+<span class="codeline" id="line-35"><code>	rune3Max = 1&lt;&lt;16 - 1</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>	// The default lowest and highest continuation byte.</code></span>
+<span class="codeline" id="line-38"><code>	locb = 0x80 // 1000 0000</code></span>
+<span class="codeline" id="line-39"><code>	hicb = 0xBF // 1011 1111</code></span>
+<span class="codeline" id="line-40"><code>)</code></span>
+<span class="codeline" id="line-41"><code></code></span>
+<span class="codeline" id="line-42"><code>// countrunes returns the number of runes in s.</code></span>
+<span class="codeline" id="line-43"><code>func countrunes(s string) int {</code></span>
+<span class="codeline" id="line-44"><code>	n := 0</code></span>
+<span class="codeline" id="line-45"><code>	for range s {</code></span>
+<span class="codeline" id="line-46"><code>		n++</code></span>
+<span class="codeline" id="line-47"><code>	}</code></span>
+<span class="codeline" id="line-48"><code>	return n</code></span>
+<span class="codeline" id="line-49"><code>}</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>// decoderune returns the non-ASCII rune at the start of</code></span>
+<span class="codeline" id="line-52"><code>// s[k:] and the index after the rune in s.</code></span>
+<span class="codeline" id="line-53"><code>//</code></span>
+<span class="codeline" id="line-54"><code>// decoderune assumes that caller has checked that</code></span>
+<span class="codeline" id="line-55"><code>// the to be decoded rune is a non-ASCII rune.</code></span>
+<span class="codeline" id="line-56"><code>//</code></span>
+<span class="codeline" id="line-57"><code>// If the string appears to be incomplete or decoding problems</code></span>
+<span class="codeline" id="line-58"><code>// are encountered (runeerror, k + 1) is returned to ensure</code></span>
+<span class="codeline" id="line-59"><code>// progress when decoderune is used to iterate over a string.</code></span>
+<span class="codeline" id="line-60"><code>func decoderune(s string, k int) (r rune, pos int) {</code></span>
+<span class="codeline" id="line-61"><code>	pos = k</code></span>
+<span class="codeline" id="line-62"><code></code></span>
+<span class="codeline" id="line-63"><code>	if k &gt;= len(s) {</code></span>
+<span class="codeline" id="line-64"><code>		return runeError, k + 1</code></span>
+<span class="codeline" id="line-65"><code>	}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>	s = s[k:]</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>	switch {</code></span>
+<span class="codeline" id="line-70"><code>	case t2 &lt;= s[0] &amp;&amp; s[0] &lt; t3:</code></span>
+<span class="codeline" id="line-71"><code>		// 0080-07FF two byte sequence</code></span>
+<span class="codeline" id="line-72"><code>		if len(s) &gt; 1 &amp;&amp; (locb &lt;= s[1] &amp;&amp; s[1] &lt;= hicb) {</code></span>
+<span class="codeline" id="line-73"><code>			r = rune(s[0]&amp;mask2)&lt;&lt;6 | rune(s[1]&amp;maskx)</code></span>
+<span class="codeline" id="line-74"><code>			pos += 2</code></span>
+<span class="codeline" id="line-75"><code>			if rune1Max &lt; r {</code></span>
+<span class="codeline" id="line-76"><code>				return</code></span>
+<span class="codeline" id="line-77"><code>			}</code></span>
+<span class="codeline" id="line-78"><code>		}</code></span>
+<span class="codeline" id="line-79"><code>	case t3 &lt;= s[0] &amp;&amp; s[0] &lt; t4:</code></span>
+<span class="codeline" id="line-80"><code>		// 0800-FFFF three byte sequence</code></span>
+<span class="codeline" id="line-81"><code>		if len(s) &gt; 2 &amp;&amp; (locb &lt;= s[1] &amp;&amp; s[1] &lt;= hicb) &amp;&amp; (locb &lt;= s[2] &amp;&amp; s[2] &lt;= hicb) {</code></span>
+<span class="codeline" id="line-82"><code>			r = rune(s[0]&amp;mask3)&lt;&lt;12 | rune(s[1]&amp;maskx)&lt;&lt;6 | rune(s[2]&amp;maskx)</code></span>
+<span class="codeline" id="line-83"><code>			pos += 3</code></span>
+<span class="codeline" id="line-84"><code>			if rune2Max &lt; r &amp;&amp; !(surrogateMin &lt;= r &amp;&amp; r &lt;= surrogateMax) {</code></span>
+<span class="codeline" id="line-85"><code>				return</code></span>
+<span class="codeline" id="line-86"><code>			}</code></span>
+<span class="codeline" id="line-87"><code>		}</code></span>
+<span class="codeline" id="line-88"><code>	case t4 &lt;= s[0] &amp;&amp; s[0] &lt; t5:</code></span>
+<span class="codeline" id="line-89"><code>		// 10000-1FFFFF four byte sequence</code></span>
+<span class="codeline" id="line-90"><code>		if len(s) &gt; 3 &amp;&amp; (locb &lt;= s[1] &amp;&amp; s[1] &lt;= hicb) &amp;&amp; (locb &lt;= s[2] &amp;&amp; s[2] &lt;= hicb) &amp;&amp; (locb &lt;= s[3] &amp;&amp; s[3] &lt;= hicb) {</code></span>
+<span class="codeline" id="line-91"><code>			r = rune(s[0]&amp;mask4)&lt;&lt;18 | rune(s[1]&amp;maskx)&lt;&lt;12 | rune(s[2]&amp;maskx)&lt;&lt;6 | rune(s[3]&amp;maskx)</code></span>
+<span class="codeline" id="line-92"><code>			pos += 4</code></span>
+<span class="codeline" id="line-93"><code>			if rune3Max &lt; r &amp;&amp; r &lt;= maxRune {</code></span>
+<span class="codeline" id="line-94"><code>				return</code></span>
+<span class="codeline" id="line-95"><code>			}</code></span>
+<span class="codeline" id="line-96"><code>		}</code></span>
+<span class="codeline" id="line-97"><code>	}</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>	return runeError, k + 1</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>// encoderune writes into p (which must be large enough) the UTF-8 encoding of the rune.</code></span>
+<span class="codeline" id="line-103"><code>// It returns the number of bytes written.</code></span>
+<span class="codeline" id="line-104"><code>func encoderune(p []byte, r rune) int {</code></span>
+<span class="codeline" id="line-105"><code>	// Negative values are erroneous. Making it unsigned addresses the problem.</code></span>
+<span class="codeline" id="line-106"><code>	switch i := uint32(r); {</code></span>
+<span class="codeline" id="line-107"><code>	case i &lt;= rune1Max:</code></span>
+<span class="codeline" id="line-108"><code>		p[0] = byte(r)</code></span>
+<span class="codeline" id="line-109"><code>		return 1</code></span>
+<span class="codeline" id="line-110"><code>	case i &lt;= rune2Max:</code></span>
+<span class="codeline" id="line-111"><code>		_ = p[1] // eliminate bounds checks</code></span>
+<span class="codeline" id="line-112"><code>		p[0] = t2 | byte(r&gt;&gt;6)</code></span>
+<span class="codeline" id="line-113"><code>		p[1] = tx | byte(r)&amp;maskx</code></span>
+<span class="codeline" id="line-114"><code>		return 2</code></span>
+<span class="codeline" id="line-115"><code>	case i &gt; maxRune, surrogateMin &lt;= i &amp;&amp; i &lt;= surrogateMax:</code></span>
+<span class="codeline" id="line-116"><code>		r = runeError</code></span>
+<span class="codeline" id="line-117"><code>		fallthrough</code></span>
+<span class="codeline" id="line-118"><code>	case i &lt;= rune3Max:</code></span>
+<span class="codeline" id="line-119"><code>		_ = p[2] // eliminate bounds checks</code></span>
+<span class="codeline" id="line-120"><code>		p[0] = t3 | byte(r&gt;&gt;12)</code></span>
+<span class="codeline" id="line-121"><code>		p[1] = tx | byte(r&gt;&gt;6)&amp;maskx</code></span>
+<span class="codeline" id="line-122"><code>		p[2] = tx | byte(r)&amp;maskx</code></span>
+<span class="codeline" id="line-123"><code>		return 3</code></span>
+<span class="codeline" id="line-124"><code>	default:</code></span>
+<span class="codeline" id="line-125"><code>		_ = p[3] // eliminate bounds checks</code></span>
+<span class="codeline" id="line-126"><code>		p[0] = t4 | byte(r&gt;&gt;18)</code></span>
+<span class="codeline" id="line-127"><code>		p[1] = tx | byte(r&gt;&gt;12)&amp;maskx</code></span>
+<span class="codeline" id="line-128"><code>		p[2] = tx | byte(r&gt;&gt;6)&amp;maskx</code></span>
+<span class="codeline" id="line-129"><code>		p[3] = tx | byte(r)&amp;maskx</code></span>
+<span class="codeline" id="line-130"><code>		return 4</code></span>
+<span class="codeline" id="line-131"><code>	}</code></span>
+<span class="codeline" id="line-132"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: profbuf.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	profbuf.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors.  All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-9"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// A profBuf is a lock-free buffer for profiling events,</code></span>
+<span class="codeline" id="line-13"><code>// safe for concurrent use by one reader and one writer.</code></span>
+<span class="codeline" id="line-14"><code>// The writer may be a signal handler running without a user g.</code></span>
+<span class="codeline" id="line-15"><code>// The reader is assumed to be a user g.</code></span>
+<span class="codeline" id="line-16"><code>//</code></span>
+<span class="codeline" id="line-17"><code>// Each logged event corresponds to a fixed size header, a list of</code></span>
+<span class="codeline" id="line-18"><code>// uintptrs (typically a stack), and exactly one unsafe.Pointer tag.</code></span>
+<span class="codeline" id="line-19"><code>// The header and uintptrs are stored in the circular buffer data and the</code></span>
+<span class="codeline" id="line-20"><code>// tag is stored in a circular buffer tags, running in parallel.</code></span>
+<span class="codeline" id="line-21"><code>// In the circular buffer data, each event takes 2+hdrsize+len(stk)</code></span>
+<span class="codeline" id="line-22"><code>// words: the value 2+hdrsize+len(stk), then the time of the event, then</code></span>
+<span class="codeline" id="line-23"><code>// hdrsize words giving the fixed-size header, and then len(stk) words</code></span>
+<span class="codeline" id="line-24"><code>// for the stack.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// The current effective offsets into the tags and data circular buffers</code></span>
+<span class="codeline" id="line-27"><code>// for reading and writing are stored in the high 30 and low 32 bits of r and w.</code></span>
+<span class="codeline" id="line-28"><code>// The bottom bits of the high 32 are additional flag bits in w, unused in r.</code></span>
+<span class="codeline" id="line-29"><code>// "Effective" offsets means the total number of reads or writes, mod 2^length.</code></span>
+<span class="codeline" id="line-30"><code>// The offset in the buffer is the effective offset mod the length of the buffer.</code></span>
+<span class="codeline" id="line-31"><code>// To make wraparound mod 2^length match wraparound mod length of the buffer,</code></span>
+<span class="codeline" id="line-32"><code>// the length of the buffer must be a power of two.</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>// If the reader catches up to the writer, a flag passed to read controls</code></span>
+<span class="codeline" id="line-35"><code>// whether the read blocks until more data is available. A read returns a</code></span>
+<span class="codeline" id="line-36"><code>// pointer to the buffer data itself; the caller is assumed to be done with</code></span>
+<span class="codeline" id="line-37"><code>// that data at the next read. The read offset rNext tracks the next offset to</code></span>
+<span class="codeline" id="line-38"><code>// be returned by read. By definition, r ≤ rNext ≤ w (before wraparound),</code></span>
+<span class="codeline" id="line-39"><code>// and rNext is only used by the reader, so it can be accessed without atomics.</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>// If the writer gets ahead of the reader, so that the buffer fills,</code></span>
+<span class="codeline" id="line-42"><code>// future writes are discarded and replaced in the output stream by an</code></span>
+<span class="codeline" id="line-43"><code>// overflow entry, which has size 2+hdrsize+1, time set to the time of</code></span>
+<span class="codeline" id="line-44"><code>// the first discarded write, a header of all zeroed words, and a "stack"</code></span>
+<span class="codeline" id="line-45"><code>// containing one word, the number of discarded writes.</code></span>
+<span class="codeline" id="line-46"><code>//</code></span>
+<span class="codeline" id="line-47"><code>// Between the time the buffer fills and the buffer becomes empty enough</code></span>
+<span class="codeline" id="line-48"><code>// to hold more data, the overflow entry is stored as a pending overflow</code></span>
+<span class="codeline" id="line-49"><code>// entry in the fields overflow and overflowTime. The pending overflow</code></span>
+<span class="codeline" id="line-50"><code>// entry can be turned into a real record by either the writer or the</code></span>
+<span class="codeline" id="line-51"><code>// reader. If the writer is called to write a new record and finds that</code></span>
+<span class="codeline" id="line-52"><code>// the output buffer has room for both the pending overflow entry and the</code></span>
+<span class="codeline" id="line-53"><code>// new record, the writer emits the pending overflow entry and the new</code></span>
+<span class="codeline" id="line-54"><code>// record into the buffer. If the reader is called to read data and finds</code></span>
+<span class="codeline" id="line-55"><code>// that the output buffer is empty but that there is a pending overflow</code></span>
+<span class="codeline" id="line-56"><code>// entry, the reader will return a synthesized record for the pending</code></span>
+<span class="codeline" id="line-57"><code>// overflow entry.</code></span>
+<span class="codeline" id="line-58"><code>//</code></span>
+<span class="codeline" id="line-59"><code>// Only the writer can create or add to a pending overflow entry, but</code></span>
+<span class="codeline" id="line-60"><code>// either the reader or the writer can clear the pending overflow entry.</code></span>
+<span class="codeline" id="line-61"><code>// A pending overflow entry is indicated by the low 32 bits of 'overflow'</code></span>
+<span class="codeline" id="line-62"><code>// holding the number of discarded writes, and overflowTime holding the</code></span>
+<span class="codeline" id="line-63"><code>// time of the first discarded write. The high 32 bits of 'overflow'</code></span>
+<span class="codeline" id="line-64"><code>// increment each time the low 32 bits transition from zero to non-zero</code></span>
+<span class="codeline" id="line-65"><code>// or vice versa. This sequence number avoids ABA problems in the use of</code></span>
+<span class="codeline" id="line-66"><code>// compare-and-swap to coordinate between reader and writer.</code></span>
+<span class="codeline" id="line-67"><code>// The overflowTime is only written when the low 32 bits of overflow are</code></span>
+<span class="codeline" id="line-68"><code>// zero, that is, only when there is no pending overflow entry, in</code></span>
+<span class="codeline" id="line-69"><code>// preparation for creating a new one. The reader can therefore fetch and</code></span>
+<span class="codeline" id="line-70"><code>// clear the entry atomically using</code></span>
+<span class="codeline" id="line-71"><code>//</code></span>
+<span class="codeline" id="line-72"><code>//	for {</code></span>
+<span class="codeline" id="line-73"><code>//		overflow = load(&amp;b.overflow)</code></span>
+<span class="codeline" id="line-74"><code>//		if uint32(overflow) == 0 {</code></span>
+<span class="codeline" id="line-75"><code>//			// no pending entry</code></span>
+<span class="codeline" id="line-76"><code>//			break</code></span>
+<span class="codeline" id="line-77"><code>//		}</code></span>
+<span class="codeline" id="line-78"><code>//		time = load(&amp;b.overflowTime)</code></span>
+<span class="codeline" id="line-79"><code>//		if cas(&amp;b.overflow, overflow, ((overflow&gt;&gt;32)+1)&lt;&lt;32) {</code></span>
+<span class="codeline" id="line-80"><code>//			// pending entry cleared</code></span>
+<span class="codeline" id="line-81"><code>//			break</code></span>
+<span class="codeline" id="line-82"><code>//		}</code></span>
+<span class="codeline" id="line-83"><code>//	}</code></span>
+<span class="codeline" id="line-84"><code>//	if uint32(overflow) &gt; 0 {</code></span>
+<span class="codeline" id="line-85"><code>//		emit entry for uint32(overflow), time</code></span>
+<span class="codeline" id="line-86"><code>//	}</code></span>
+<span class="codeline" id="line-87"><code>//</code></span>
+<span class="codeline" id="line-88"><code>type profBuf struct {</code></span>
+<span class="codeline" id="line-89"><code>	// accessed atomically</code></span>
+<span class="codeline" id="line-90"><code>	r, w         profAtomic</code></span>
+<span class="codeline" id="line-91"><code>	overflow     uint64</code></span>
+<span class="codeline" id="line-92"><code>	overflowTime uint64</code></span>
+<span class="codeline" id="line-93"><code>	eof          uint32</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>	// immutable (excluding slice content)</code></span>
+<span class="codeline" id="line-96"><code>	hdrsize uintptr</code></span>
+<span class="codeline" id="line-97"><code>	data    []uint64</code></span>
+<span class="codeline" id="line-98"><code>	tags    []unsafe.Pointer</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>	// owned by reader</code></span>
+<span class="codeline" id="line-101"><code>	rNext       profIndex</code></span>
+<span class="codeline" id="line-102"><code>	overflowBuf []uint64 // for use by reader to return overflow record</code></span>
+<span class="codeline" id="line-103"><code>	wait        note</code></span>
+<span class="codeline" id="line-104"><code>}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>// A profAtomic is the atomically-accessed word holding a profIndex.</code></span>
+<span class="codeline" id="line-107"><code>type profAtomic uint64</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>// A profIndex is the packet tag and data counts and flags bits, described above.</code></span>
+<span class="codeline" id="line-110"><code>type profIndex uint64</code></span>
+<span class="codeline" id="line-111"><code></code></span>
+<span class="codeline" id="line-112"><code>const (</code></span>
+<span class="codeline" id="line-113"><code>	profReaderSleeping profIndex = 1 &lt;&lt; 32 // reader is sleeping and must be woken up</code></span>
+<span class="codeline" id="line-114"><code>	profWriteExtra     profIndex = 1 &lt;&lt; 33 // overflow or eof waiting</code></span>
+<span class="codeline" id="line-115"><code>)</code></span>
+<span class="codeline" id="line-116"><code></code></span>
+<span class="codeline" id="line-117"><code>func (x *profAtomic) load() profIndex {</code></span>
+<span class="codeline" id="line-118"><code>	return profIndex(atomic.Load64((*uint64)(x)))</code></span>
+<span class="codeline" id="line-119"><code>}</code></span>
+<span class="codeline" id="line-120"><code></code></span>
+<span class="codeline" id="line-121"><code>func (x *profAtomic) store(new profIndex) {</code></span>
+<span class="codeline" id="line-122"><code>	atomic.Store64((*uint64)(x), uint64(new))</code></span>
+<span class="codeline" id="line-123"><code>}</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>func (x *profAtomic) cas(old, new profIndex) bool {</code></span>
+<span class="codeline" id="line-126"><code>	return atomic.Cas64((*uint64)(x), uint64(old), uint64(new))</code></span>
+<span class="codeline" id="line-127"><code>}</code></span>
+<span class="codeline" id="line-128"><code></code></span>
+<span class="codeline" id="line-129"><code>func (x profIndex) dataCount() uint32 {</code></span>
+<span class="codeline" id="line-130"><code>	return uint32(x)</code></span>
+<span class="codeline" id="line-131"><code>}</code></span>
+<span class="codeline" id="line-132"><code></code></span>
+<span class="codeline" id="line-133"><code>func (x profIndex) tagCount() uint32 {</code></span>
+<span class="codeline" id="line-134"><code>	return uint32(x &gt;&gt; 34)</code></span>
+<span class="codeline" id="line-135"><code>}</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>// countSub subtracts two counts obtained from profIndex.dataCount or profIndex.tagCount,</code></span>
+<span class="codeline" id="line-138"><code>// assuming that they are no more than 2^29 apart (guaranteed since they are never more than</code></span>
+<span class="codeline" id="line-139"><code>// len(data) or len(tags) apart, respectively).</code></span>
+<span class="codeline" id="line-140"><code>// tagCount wraps at 2^30, while dataCount wraps at 2^32.</code></span>
+<span class="codeline" id="line-141"><code>// This function works for both.</code></span>
+<span class="codeline" id="line-142"><code>func countSub(x, y uint32) int {</code></span>
+<span class="codeline" id="line-143"><code>	// x-y is 32-bit signed or 30-bit signed; sign-extend to 32 bits and convert to int.</code></span>
+<span class="codeline" id="line-144"><code>	return int(int32(x-y) &lt;&lt; 2 &gt;&gt; 2)</code></span>
+<span class="codeline" id="line-145"><code>}</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>// addCountsAndClearFlags returns the packed form of "x + (data, tag) - all flags".</code></span>
+<span class="codeline" id="line-148"><code>func (x profIndex) addCountsAndClearFlags(data, tag int) profIndex {</code></span>
+<span class="codeline" id="line-149"><code>	return profIndex((uint64(x)&gt;&gt;34+uint64(uint32(tag)&lt;&lt;2&gt;&gt;2))&lt;&lt;34 | uint64(uint32(x)+uint32(data)))</code></span>
+<span class="codeline" id="line-150"><code>}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>// hasOverflow reports whether b has any overflow records pending.</code></span>
+<span class="codeline" id="line-153"><code>func (b *profBuf) hasOverflow() bool {</code></span>
+<span class="codeline" id="line-154"><code>	return uint32(atomic.Load64(&amp;b.overflow)) &gt; 0</code></span>
+<span class="codeline" id="line-155"><code>}</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>// takeOverflow consumes the pending overflow records, returning the overflow count</code></span>
+<span class="codeline" id="line-158"><code>// and the time of the first overflow.</code></span>
+<span class="codeline" id="line-159"><code>// When called by the reader, it is racing against incrementOverflow.</code></span>
+<span class="codeline" id="line-160"><code>func (b *profBuf) takeOverflow() (count uint32, time uint64) {</code></span>
+<span class="codeline" id="line-161"><code>	overflow := atomic.Load64(&amp;b.overflow)</code></span>
+<span class="codeline" id="line-162"><code>	time = atomic.Load64(&amp;b.overflowTime)</code></span>
+<span class="codeline" id="line-163"><code>	for {</code></span>
+<span class="codeline" id="line-164"><code>		count = uint32(overflow)</code></span>
+<span class="codeline" id="line-165"><code>		if count == 0 {</code></span>
+<span class="codeline" id="line-166"><code>			time = 0</code></span>
+<span class="codeline" id="line-167"><code>			break</code></span>
+<span class="codeline" id="line-168"><code>		}</code></span>
+<span class="codeline" id="line-169"><code>		// Increment generation, clear overflow count in low bits.</code></span>
+<span class="codeline" id="line-170"><code>		if atomic.Cas64(&amp;b.overflow, overflow, ((overflow&gt;&gt;32)+1)&lt;&lt;32) {</code></span>
+<span class="codeline" id="line-171"><code>			break</code></span>
+<span class="codeline" id="line-172"><code>		}</code></span>
+<span class="codeline" id="line-173"><code>		overflow = atomic.Load64(&amp;b.overflow)</code></span>
+<span class="codeline" id="line-174"><code>		time = atomic.Load64(&amp;b.overflowTime)</code></span>
+<span class="codeline" id="line-175"><code>	}</code></span>
+<span class="codeline" id="line-176"><code>	return uint32(overflow), time</code></span>
+<span class="codeline" id="line-177"><code>}</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>// incrementOverflow records a single overflow at time now.</code></span>
+<span class="codeline" id="line-180"><code>// It is racing against a possible takeOverflow in the reader.</code></span>
+<span class="codeline" id="line-181"><code>func (b *profBuf) incrementOverflow(now int64) {</code></span>
+<span class="codeline" id="line-182"><code>	for {</code></span>
+<span class="codeline" id="line-183"><code>		overflow := atomic.Load64(&amp;b.overflow)</code></span>
+<span class="codeline" id="line-184"><code></code></span>
+<span class="codeline" id="line-185"><code>		// Once we see b.overflow reach 0, it's stable: no one else is changing it underfoot.</code></span>
+<span class="codeline" id="line-186"><code>		// We need to set overflowTime if we're incrementing b.overflow from 0.</code></span>
+<span class="codeline" id="line-187"><code>		if uint32(overflow) == 0 {</code></span>
+<span class="codeline" id="line-188"><code>			// Store overflowTime first so it's always available when overflow != 0.</code></span>
+<span class="codeline" id="line-189"><code>			atomic.Store64(&amp;b.overflowTime, uint64(now))</code></span>
+<span class="codeline" id="line-190"><code>			atomic.Store64(&amp;b.overflow, (((overflow&gt;&gt;32)+1)&lt;&lt;32)+1)</code></span>
+<span class="codeline" id="line-191"><code>			break</code></span>
+<span class="codeline" id="line-192"><code>		}</code></span>
+<span class="codeline" id="line-193"><code>		// Otherwise we're racing to increment against reader</code></span>
+<span class="codeline" id="line-194"><code>		// who wants to set b.overflow to 0.</code></span>
+<span class="codeline" id="line-195"><code>		// Out of paranoia, leave 2³²-1 a sticky overflow value,</code></span>
+<span class="codeline" id="line-196"><code>		// to avoid wrapping around. Extremely unlikely.</code></span>
+<span class="codeline" id="line-197"><code>		if int32(overflow) == -1 {</code></span>
+<span class="codeline" id="line-198"><code>			break</code></span>
+<span class="codeline" id="line-199"><code>		}</code></span>
+<span class="codeline" id="line-200"><code>		if atomic.Cas64(&amp;b.overflow, overflow, overflow+1) {</code></span>
+<span class="codeline" id="line-201"><code>			break</code></span>
+<span class="codeline" id="line-202"><code>		}</code></span>
+<span class="codeline" id="line-203"><code>	}</code></span>
+<span class="codeline" id="line-204"><code>}</code></span>
+<span class="codeline" id="line-205"><code></code></span>
+<span class="codeline" id="line-206"><code>// newProfBuf returns a new profiling buffer with room for</code></span>
+<span class="codeline" id="line-207"><code>// a header of hdrsize words and a buffer of at least bufwords words.</code></span>
+<span class="codeline" id="line-208"><code>func newProfBuf(hdrsize, bufwords, tags int) *profBuf {</code></span>
+<span class="codeline" id="line-209"><code>	if min := 2 + hdrsize + 1; bufwords &lt; min {</code></span>
+<span class="codeline" id="line-210"><code>		bufwords = min</code></span>
+<span class="codeline" id="line-211"><code>	}</code></span>
+<span class="codeline" id="line-212"><code></code></span>
+<span class="codeline" id="line-213"><code>	// Buffer sizes must be power of two, so that we don't have to</code></span>
+<span class="codeline" id="line-214"><code>	// worry about uint32 wraparound changing the effective position</code></span>
+<span class="codeline" id="line-215"><code>	// within the buffers. We store 30 bits of count; limiting to 28</code></span>
+<span class="codeline" id="line-216"><code>	// gives us some room for intermediate calculations.</code></span>
+<span class="codeline" id="line-217"><code>	if bufwords &gt;= 1&lt;&lt;28 || tags &gt;= 1&lt;&lt;28 {</code></span>
+<span class="codeline" id="line-218"><code>		throw("newProfBuf: buffer too large")</code></span>
+<span class="codeline" id="line-219"><code>	}</code></span>
+<span class="codeline" id="line-220"><code>	var i int</code></span>
+<span class="codeline" id="line-221"><code>	for i = 1; i &lt; bufwords; i &lt;&lt;= 1 {</code></span>
+<span class="codeline" id="line-222"><code>	}</code></span>
+<span class="codeline" id="line-223"><code>	bufwords = i</code></span>
+<span class="codeline" id="line-224"><code>	for i = 1; i &lt; tags; i &lt;&lt;= 1 {</code></span>
+<span class="codeline" id="line-225"><code>	}</code></span>
+<span class="codeline" id="line-226"><code>	tags = i</code></span>
+<span class="codeline" id="line-227"><code></code></span>
+<span class="codeline" id="line-228"><code>	b := new(profBuf)</code></span>
+<span class="codeline" id="line-229"><code>	b.hdrsize = uintptr(hdrsize)</code></span>
+<span class="codeline" id="line-230"><code>	b.data = make([]uint64, bufwords)</code></span>
+<span class="codeline" id="line-231"><code>	b.tags = make([]unsafe.Pointer, tags)</code></span>
+<span class="codeline" id="line-232"><code>	b.overflowBuf = make([]uint64, 2+b.hdrsize+1)</code></span>
+<span class="codeline" id="line-233"><code>	return b</code></span>
+<span class="codeline" id="line-234"><code>}</code></span>
+<span class="codeline" id="line-235"><code></code></span>
+<span class="codeline" id="line-236"><code>// canWriteRecord reports whether the buffer has room</code></span>
+<span class="codeline" id="line-237"><code>// for a single contiguous record with a stack of length nstk.</code></span>
+<span class="codeline" id="line-238"><code>func (b *profBuf) canWriteRecord(nstk int) bool {</code></span>
+<span class="codeline" id="line-239"><code>	br := b.r.load()</code></span>
+<span class="codeline" id="line-240"><code>	bw := b.w.load()</code></span>
+<span class="codeline" id="line-241"><code></code></span>
+<span class="codeline" id="line-242"><code>	// room for tag?</code></span>
+<span class="codeline" id="line-243"><code>	if countSub(br.tagCount(), bw.tagCount())+len(b.tags) &lt; 1 {</code></span>
+<span class="codeline" id="line-244"><code>		return false</code></span>
+<span class="codeline" id="line-245"><code>	}</code></span>
+<span class="codeline" id="line-246"><code></code></span>
+<span class="codeline" id="line-247"><code>	// room for data?</code></span>
+<span class="codeline" id="line-248"><code>	nd := countSub(br.dataCount(), bw.dataCount()) + len(b.data)</code></span>
+<span class="codeline" id="line-249"><code>	want := 2 + int(b.hdrsize) + nstk</code></span>
+<span class="codeline" id="line-250"><code>	i := int(bw.dataCount() % uint32(len(b.data)))</code></span>
+<span class="codeline" id="line-251"><code>	if i+want &gt; len(b.data) {</code></span>
+<span class="codeline" id="line-252"><code>		// Can't fit in trailing fragment of slice.</code></span>
+<span class="codeline" id="line-253"><code>		// Skip over that and start over at beginning of slice.</code></span>
+<span class="codeline" id="line-254"><code>		nd -= len(b.data) - i</code></span>
+<span class="codeline" id="line-255"><code>	}</code></span>
+<span class="codeline" id="line-256"><code>	return nd &gt;= want</code></span>
+<span class="codeline" id="line-257"><code>}</code></span>
+<span class="codeline" id="line-258"><code></code></span>
+<span class="codeline" id="line-259"><code>// canWriteTwoRecords reports whether the buffer has room</code></span>
+<span class="codeline" id="line-260"><code>// for two records with stack lengths nstk1, nstk2, in that order.</code></span>
+<span class="codeline" id="line-261"><code>// Each record must be contiguous on its own, but the two</code></span>
+<span class="codeline" id="line-262"><code>// records need not be contiguous (one can be at the end of the buffer</code></span>
+<span class="codeline" id="line-263"><code>// and the other can wrap around and start at the beginning of the buffer).</code></span>
+<span class="codeline" id="line-264"><code>func (b *profBuf) canWriteTwoRecords(nstk1, nstk2 int) bool {</code></span>
+<span class="codeline" id="line-265"><code>	br := b.r.load()</code></span>
+<span class="codeline" id="line-266"><code>	bw := b.w.load()</code></span>
+<span class="codeline" id="line-267"><code></code></span>
+<span class="codeline" id="line-268"><code>	// room for tag?</code></span>
+<span class="codeline" id="line-269"><code>	if countSub(br.tagCount(), bw.tagCount())+len(b.tags) &lt; 2 {</code></span>
+<span class="codeline" id="line-270"><code>		return false</code></span>
+<span class="codeline" id="line-271"><code>	}</code></span>
+<span class="codeline" id="line-272"><code></code></span>
+<span class="codeline" id="line-273"><code>	// room for data?</code></span>
+<span class="codeline" id="line-274"><code>	nd := countSub(br.dataCount(), bw.dataCount()) + len(b.data)</code></span>
+<span class="codeline" id="line-275"><code></code></span>
+<span class="codeline" id="line-276"><code>	// first record</code></span>
+<span class="codeline" id="line-277"><code>	want := 2 + int(b.hdrsize) + nstk1</code></span>
+<span class="codeline" id="line-278"><code>	i := int(bw.dataCount() % uint32(len(b.data)))</code></span>
+<span class="codeline" id="line-279"><code>	if i+want &gt; len(b.data) {</code></span>
+<span class="codeline" id="line-280"><code>		// Can't fit in trailing fragment of slice.</code></span>
+<span class="codeline" id="line-281"><code>		// Skip over that and start over at beginning of slice.</code></span>
+<span class="codeline" id="line-282"><code>		nd -= len(b.data) - i</code></span>
+<span class="codeline" id="line-283"><code>		i = 0</code></span>
+<span class="codeline" id="line-284"><code>	}</code></span>
+<span class="codeline" id="line-285"><code>	i += want</code></span>
+<span class="codeline" id="line-286"><code>	nd -= want</code></span>
+<span class="codeline" id="line-287"><code></code></span>
+<span class="codeline" id="line-288"><code>	// second record</code></span>
+<span class="codeline" id="line-289"><code>	want = 2 + int(b.hdrsize) + nstk2</code></span>
+<span class="codeline" id="line-290"><code>	if i+want &gt; len(b.data) {</code></span>
+<span class="codeline" id="line-291"><code>		// Can't fit in trailing fragment of slice.</code></span>
+<span class="codeline" id="line-292"><code>		// Skip over that and start over at beginning of slice.</code></span>
+<span class="codeline" id="line-293"><code>		nd -= len(b.data) - i</code></span>
+<span class="codeline" id="line-294"><code>		i = 0</code></span>
+<span class="codeline" id="line-295"><code>	}</code></span>
+<span class="codeline" id="line-296"><code>	return nd &gt;= want</code></span>
+<span class="codeline" id="line-297"><code>}</code></span>
+<span class="codeline" id="line-298"><code></code></span>
+<span class="codeline" id="line-299"><code>// write writes an entry to the profiling buffer b.</code></span>
+<span class="codeline" id="line-300"><code>// The entry begins with a fixed hdr, which must have</code></span>
+<span class="codeline" id="line-301"><code>// length b.hdrsize, followed by a variable-sized stack</code></span>
+<span class="codeline" id="line-302"><code>// and a single tag pointer *tagPtr (or nil if tagPtr is nil).</code></span>
+<span class="codeline" id="line-303"><code>// No write barriers allowed because this might be called from a signal handler.</code></span>
+<span class="codeline" id="line-304"><code>func (b *profBuf) write(tagPtr *unsafe.Pointer, now int64, hdr []uint64, stk []uintptr) {</code></span>
+<span class="codeline" id="line-305"><code>	if b == nil {</code></span>
+<span class="codeline" id="line-306"><code>		return</code></span>
+<span class="codeline" id="line-307"><code>	}</code></span>
+<span class="codeline" id="line-308"><code>	if len(hdr) &gt; int(b.hdrsize) {</code></span>
+<span class="codeline" id="line-309"><code>		throw("misuse of profBuf.write")</code></span>
+<span class="codeline" id="line-310"><code>	}</code></span>
+<span class="codeline" id="line-311"><code></code></span>
+<span class="codeline" id="line-312"><code>	if hasOverflow := b.hasOverflow(); hasOverflow &amp;&amp; b.canWriteTwoRecords(1, len(stk)) {</code></span>
+<span class="codeline" id="line-313"><code>		// Room for both an overflow record and the one being written.</code></span>
+<span class="codeline" id="line-314"><code>		// Write the overflow record if the reader hasn't gotten to it yet.</code></span>
+<span class="codeline" id="line-315"><code>		// Only racing against reader, not other writers.</code></span>
+<span class="codeline" id="line-316"><code>		count, time := b.takeOverflow()</code></span>
+<span class="codeline" id="line-317"><code>		if count &gt; 0 {</code></span>
+<span class="codeline" id="line-318"><code>			var stk [1]uintptr</code></span>
+<span class="codeline" id="line-319"><code>			stk[0] = uintptr(count)</code></span>
+<span class="codeline" id="line-320"><code>			b.write(nil, int64(time), nil, stk[:])</code></span>
+<span class="codeline" id="line-321"><code>		}</code></span>
+<span class="codeline" id="line-322"><code>	} else if hasOverflow || !b.canWriteRecord(len(stk)) {</code></span>
+<span class="codeline" id="line-323"><code>		// Pending overflow without room to write overflow and new records</code></span>
+<span class="codeline" id="line-324"><code>		// or no overflow but also no room for new record.</code></span>
+<span class="codeline" id="line-325"><code>		b.incrementOverflow(now)</code></span>
+<span class="codeline" id="line-326"><code>		b.wakeupExtra()</code></span>
+<span class="codeline" id="line-327"><code>		return</code></span>
+<span class="codeline" id="line-328"><code>	}</code></span>
+<span class="codeline" id="line-329"><code></code></span>
+<span class="codeline" id="line-330"><code>	// There's room: write the record.</code></span>
+<span class="codeline" id="line-331"><code>	br := b.r.load()</code></span>
+<span class="codeline" id="line-332"><code>	bw := b.w.load()</code></span>
+<span class="codeline" id="line-333"><code></code></span>
+<span class="codeline" id="line-334"><code>	// Profiling tag</code></span>
+<span class="codeline" id="line-335"><code>	//</code></span>
+<span class="codeline" id="line-336"><code>	// The tag is a pointer, but we can't run a write barrier here.</code></span>
+<span class="codeline" id="line-337"><code>	// We have interrupted the OS-level execution of gp, but the</code></span>
+<span class="codeline" id="line-338"><code>	// runtime still sees gp as executing. In effect, we are running</code></span>
+<span class="codeline" id="line-339"><code>	// in place of the real gp. Since gp is the only goroutine that</code></span>
+<span class="codeline" id="line-340"><code>	// can overwrite gp.labels, the value of gp.labels is stable during</code></span>
+<span class="codeline" id="line-341"><code>	// this signal handler: it will still be reachable from gp when</code></span>
+<span class="codeline" id="line-342"><code>	// we finish executing. If a GC is in progress right now, it must</code></span>
+<span class="codeline" id="line-343"><code>	// keep gp.labels alive, because gp.labels is reachable from gp.</code></span>
+<span class="codeline" id="line-344"><code>	// If gp were to overwrite gp.labels, the deletion barrier would</code></span>
+<span class="codeline" id="line-345"><code>	// still shade that pointer, which would preserve it for the</code></span>
+<span class="codeline" id="line-346"><code>	// in-progress GC, so all is well. Any future GC will see the</code></span>
+<span class="codeline" id="line-347"><code>	// value we copied when scanning b.tags (heap-allocated).</code></span>
+<span class="codeline" id="line-348"><code>	// We arrange that the store here is always overwriting a nil,</code></span>
+<span class="codeline" id="line-349"><code>	// so there is no need for a deletion barrier on b.tags[wt].</code></span>
+<span class="codeline" id="line-350"><code>	wt := int(bw.tagCount() % uint32(len(b.tags)))</code></span>
+<span class="codeline" id="line-351"><code>	if tagPtr != nil {</code></span>
+<span class="codeline" id="line-352"><code>		*(*uintptr)(unsafe.Pointer(&amp;b.tags[wt])) = uintptr(unsafe.Pointer(*tagPtr))</code></span>
+<span class="codeline" id="line-353"><code>	}</code></span>
+<span class="codeline" id="line-354"><code></code></span>
+<span class="codeline" id="line-355"><code>	// Main record.</code></span>
+<span class="codeline" id="line-356"><code>	// It has to fit in a contiguous section of the slice, so if it doesn't fit at the end,</code></span>
+<span class="codeline" id="line-357"><code>	// leave a rewind marker (0) and start over at the beginning of the slice.</code></span>
+<span class="codeline" id="line-358"><code>	wd := int(bw.dataCount() % uint32(len(b.data)))</code></span>
+<span class="codeline" id="line-359"><code>	nd := countSub(br.dataCount(), bw.dataCount()) + len(b.data)</code></span>
+<span class="codeline" id="line-360"><code>	skip := 0</code></span>
+<span class="codeline" id="line-361"><code>	if wd+2+int(b.hdrsize)+len(stk) &gt; len(b.data) {</code></span>
+<span class="codeline" id="line-362"><code>		b.data[wd] = 0</code></span>
+<span class="codeline" id="line-363"><code>		skip = len(b.data) - wd</code></span>
+<span class="codeline" id="line-364"><code>		nd -= skip</code></span>
+<span class="codeline" id="line-365"><code>		wd = 0</code></span>
+<span class="codeline" id="line-366"><code>	}</code></span>
+<span class="codeline" id="line-367"><code>	data := b.data[wd:]</code></span>
+<span class="codeline" id="line-368"><code>	data[0] = uint64(2 + b.hdrsize + uintptr(len(stk))) // length</code></span>
+<span class="codeline" id="line-369"><code>	data[1] = uint64(now)                               // time stamp</code></span>
+<span class="codeline" id="line-370"><code>	// header, zero-padded</code></span>
+<span class="codeline" id="line-371"><code>	i := uintptr(copy(data[2:2+b.hdrsize], hdr))</code></span>
+<span class="codeline" id="line-372"><code>	for ; i &lt; b.hdrsize; i++ {</code></span>
+<span class="codeline" id="line-373"><code>		data[2+i] = 0</code></span>
+<span class="codeline" id="line-374"><code>	}</code></span>
+<span class="codeline" id="line-375"><code>	for i, pc := range stk {</code></span>
+<span class="codeline" id="line-376"><code>		data[2+b.hdrsize+uintptr(i)] = uint64(pc)</code></span>
+<span class="codeline" id="line-377"><code>	}</code></span>
+<span class="codeline" id="line-378"><code></code></span>
+<span class="codeline" id="line-379"><code>	for {</code></span>
+<span class="codeline" id="line-380"><code>		// Commit write.</code></span>
+<span class="codeline" id="line-381"><code>		// Racing with reader setting flag bits in b.w, to avoid lost wakeups.</code></span>
+<span class="codeline" id="line-382"><code>		old := b.w.load()</code></span>
+<span class="codeline" id="line-383"><code>		new := old.addCountsAndClearFlags(skip+2+len(stk)+int(b.hdrsize), 1)</code></span>
+<span class="codeline" id="line-384"><code>		if !b.w.cas(old, new) {</code></span>
+<span class="codeline" id="line-385"><code>			continue</code></span>
+<span class="codeline" id="line-386"><code>		}</code></span>
+<span class="codeline" id="line-387"><code>		// If there was a reader, wake it up.</code></span>
+<span class="codeline" id="line-388"><code>		if old&amp;profReaderSleeping != 0 {</code></span>
+<span class="codeline" id="line-389"><code>			notewakeup(&amp;b.wait)</code></span>
+<span class="codeline" id="line-390"><code>		}</code></span>
+<span class="codeline" id="line-391"><code>		break</code></span>
+<span class="codeline" id="line-392"><code>	}</code></span>
+<span class="codeline" id="line-393"><code>}</code></span>
+<span class="codeline" id="line-394"><code></code></span>
+<span class="codeline" id="line-395"><code>// close signals that there will be no more writes on the buffer.</code></span>
+<span class="codeline" id="line-396"><code>// Once all the data has been read from the buffer, reads will return eof=true.</code></span>
+<span class="codeline" id="line-397"><code>func (b *profBuf) close() {</code></span>
+<span class="codeline" id="line-398"><code>	if atomic.Load(&amp;b.eof) &gt; 0 {</code></span>
+<span class="codeline" id="line-399"><code>		throw("runtime: profBuf already closed")</code></span>
+<span class="codeline" id="line-400"><code>	}</code></span>
+<span class="codeline" id="line-401"><code>	atomic.Store(&amp;b.eof, 1)</code></span>
+<span class="codeline" id="line-402"><code>	b.wakeupExtra()</code></span>
+<span class="codeline" id="line-403"><code>}</code></span>
+<span class="codeline" id="line-404"><code></code></span>
+<span class="codeline" id="line-405"><code>// wakeupExtra must be called after setting one of the "extra"</code></span>
+<span class="codeline" id="line-406"><code>// atomic fields b.overflow or b.eof.</code></span>
+<span class="codeline" id="line-407"><code>// It records the change in b.w and wakes up the reader if needed.</code></span>
+<span class="codeline" id="line-408"><code>func (b *profBuf) wakeupExtra() {</code></span>
+<span class="codeline" id="line-409"><code>	for {</code></span>
+<span class="codeline" id="line-410"><code>		old := b.w.load()</code></span>
+<span class="codeline" id="line-411"><code>		new := old | profWriteExtra</code></span>
+<span class="codeline" id="line-412"><code>		if !b.w.cas(old, new) {</code></span>
+<span class="codeline" id="line-413"><code>			continue</code></span>
+<span class="codeline" id="line-414"><code>		}</code></span>
+<span class="codeline" id="line-415"><code>		if old&amp;profReaderSleeping != 0 {</code></span>
+<span class="codeline" id="line-416"><code>			notewakeup(&amp;b.wait)</code></span>
+<span class="codeline" id="line-417"><code>		}</code></span>
+<span class="codeline" id="line-418"><code>		break</code></span>
+<span class="codeline" id="line-419"><code>	}</code></span>
+<span class="codeline" id="line-420"><code>}</code></span>
+<span class="codeline" id="line-421"><code></code></span>
+<span class="codeline" id="line-422"><code>// profBufReadMode specifies whether to block when no data is available to read.</code></span>
+<span class="codeline" id="line-423"><code>type profBufReadMode int</code></span>
+<span class="codeline" id="line-424"><code></code></span>
+<span class="codeline" id="line-425"><code>const (</code></span>
+<span class="codeline" id="line-426"><code>	profBufBlocking profBufReadMode = iota</code></span>
+<span class="codeline" id="line-427"><code>	profBufNonBlocking</code></span>
+<span class="codeline" id="line-428"><code>)</code></span>
+<span class="codeline" id="line-429"><code></code></span>
+<span class="codeline" id="line-430"><code>var overflowTag [1]unsafe.Pointer // always nil</code></span>
+<span class="codeline" id="line-431"><code></code></span>
+<span class="codeline" id="line-432"><code>func (b *profBuf) read(mode profBufReadMode) (data []uint64, tags []unsafe.Pointer, eof bool) {</code></span>
+<span class="codeline" id="line-433"><code>	if b == nil {</code></span>
+<span class="codeline" id="line-434"><code>		return nil, nil, true</code></span>
+<span class="codeline" id="line-435"><code>	}</code></span>
+<span class="codeline" id="line-436"><code></code></span>
+<span class="codeline" id="line-437"><code>	br := b.rNext</code></span>
+<span class="codeline" id="line-438"><code></code></span>
+<span class="codeline" id="line-439"><code>	// Commit previous read, returning that part of the ring to the writer.</code></span>
+<span class="codeline" id="line-440"><code>	// First clear tags that have now been read, both to avoid holding</code></span>
+<span class="codeline" id="line-441"><code>	// up the memory they point at for longer than necessary</code></span>
+<span class="codeline" id="line-442"><code>	// and so that b.write can assume it is always overwriting</code></span>
+<span class="codeline" id="line-443"><code>	// nil tag entries (see comment in b.write).</code></span>
+<span class="codeline" id="line-444"><code>	rPrev := b.r.load()</code></span>
+<span class="codeline" id="line-445"><code>	if rPrev != br {</code></span>
+<span class="codeline" id="line-446"><code>		ntag := countSub(br.tagCount(), rPrev.tagCount())</code></span>
+<span class="codeline" id="line-447"><code>		ti := int(rPrev.tagCount() % uint32(len(b.tags)))</code></span>
+<span class="codeline" id="line-448"><code>		for i := 0; i &lt; ntag; i++ {</code></span>
+<span class="codeline" id="line-449"><code>			b.tags[ti] = nil</code></span>
+<span class="codeline" id="line-450"><code>			if ti++; ti == len(b.tags) {</code></span>
+<span class="codeline" id="line-451"><code>				ti = 0</code></span>
+<span class="codeline" id="line-452"><code>			}</code></span>
+<span class="codeline" id="line-453"><code>		}</code></span>
+<span class="codeline" id="line-454"><code>		b.r.store(br)</code></span>
+<span class="codeline" id="line-455"><code>	}</code></span>
+<span class="codeline" id="line-456"><code></code></span>
+<span class="codeline" id="line-457"><code>Read:</code></span>
+<span class="codeline" id="line-458"><code>	bw := b.w.load()</code></span>
+<span class="codeline" id="line-459"><code>	numData := countSub(bw.dataCount(), br.dataCount())</code></span>
+<span class="codeline" id="line-460"><code>	if numData == 0 {</code></span>
+<span class="codeline" id="line-461"><code>		if b.hasOverflow() {</code></span>
+<span class="codeline" id="line-462"><code>			// No data to read, but there is overflow to report.</code></span>
+<span class="codeline" id="line-463"><code>			// Racing with writer flushing b.overflow into a real record.</code></span>
+<span class="codeline" id="line-464"><code>			count, time := b.takeOverflow()</code></span>
+<span class="codeline" id="line-465"><code>			if count == 0 {</code></span>
+<span class="codeline" id="line-466"><code>				// Lost the race, go around again.</code></span>
+<span class="codeline" id="line-467"><code>				goto Read</code></span>
+<span class="codeline" id="line-468"><code>			}</code></span>
+<span class="codeline" id="line-469"><code>			// Won the race, report overflow.</code></span>
+<span class="codeline" id="line-470"><code>			dst := b.overflowBuf</code></span>
+<span class="codeline" id="line-471"><code>			dst[0] = uint64(2 + b.hdrsize + 1)</code></span>
+<span class="codeline" id="line-472"><code>			dst[1] = uint64(time)</code></span>
+<span class="codeline" id="line-473"><code>			for i := uintptr(0); i &lt; b.hdrsize; i++ {</code></span>
+<span class="codeline" id="line-474"><code>				dst[2+i] = 0</code></span>
+<span class="codeline" id="line-475"><code>			}</code></span>
+<span class="codeline" id="line-476"><code>			dst[2+b.hdrsize] = uint64(count)</code></span>
+<span class="codeline" id="line-477"><code>			return dst[:2+b.hdrsize+1], overflowTag[:1], false</code></span>
+<span class="codeline" id="line-478"><code>		}</code></span>
+<span class="codeline" id="line-479"><code>		if atomic.Load(&amp;b.eof) &gt; 0 {</code></span>
+<span class="codeline" id="line-480"><code>			// No data, no overflow, EOF set: done.</code></span>
+<span class="codeline" id="line-481"><code>			return nil, nil, true</code></span>
+<span class="codeline" id="line-482"><code>		}</code></span>
+<span class="codeline" id="line-483"><code>		if bw&amp;profWriteExtra != 0 {</code></span>
+<span class="codeline" id="line-484"><code>			// Writer claims to have published extra information (overflow or eof).</code></span>
+<span class="codeline" id="line-485"><code>			// Attempt to clear notification and then check again.</code></span>
+<span class="codeline" id="line-486"><code>			// If we fail to clear the notification it means b.w changed,</code></span>
+<span class="codeline" id="line-487"><code>			// so we still need to check again.</code></span>
+<span class="codeline" id="line-488"><code>			b.w.cas(bw, bw&amp;^profWriteExtra)</code></span>
+<span class="codeline" id="line-489"><code>			goto Read</code></span>
+<span class="codeline" id="line-490"><code>		}</code></span>
+<span class="codeline" id="line-491"><code></code></span>
+<span class="codeline" id="line-492"><code>		// Nothing to read right now.</code></span>
+<span class="codeline" id="line-493"><code>		// Return or sleep according to mode.</code></span>
+<span class="codeline" id="line-494"><code>		if mode == profBufNonBlocking {</code></span>
+<span class="codeline" id="line-495"><code>			return nil, nil, false</code></span>
+<span class="codeline" id="line-496"><code>		}</code></span>
+<span class="codeline" id="line-497"><code>		if !b.w.cas(bw, bw|profReaderSleeping) {</code></span>
+<span class="codeline" id="line-498"><code>			goto Read</code></span>
+<span class="codeline" id="line-499"><code>		}</code></span>
+<span class="codeline" id="line-500"><code>		// Committed to sleeping.</code></span>
+<span class="codeline" id="line-501"><code>		notetsleepg(&amp;b.wait, -1)</code></span>
+<span class="codeline" id="line-502"><code>		noteclear(&amp;b.wait)</code></span>
+<span class="codeline" id="line-503"><code>		goto Read</code></span>
+<span class="codeline" id="line-504"><code>	}</code></span>
+<span class="codeline" id="line-505"><code>	data = b.data[br.dataCount()%uint32(len(b.data)):]</code></span>
+<span class="codeline" id="line-506"><code>	if len(data) &gt; numData {</code></span>
+<span class="codeline" id="line-507"><code>		data = data[:numData]</code></span>
+<span class="codeline" id="line-508"><code>	} else {</code></span>
+<span class="codeline" id="line-509"><code>		numData -= len(data) // available in case of wraparound</code></span>
+<span class="codeline" id="line-510"><code>	}</code></span>
+<span class="codeline" id="line-511"><code>	skip := 0</code></span>
+<span class="codeline" id="line-512"><code>	if data[0] == 0 {</code></span>
+<span class="codeline" id="line-513"><code>		// Wraparound record. Go back to the beginning of the ring.</code></span>
+<span class="codeline" id="line-514"><code>		skip = len(data)</code></span>
+<span class="codeline" id="line-515"><code>		data = b.data</code></span>
+<span class="codeline" id="line-516"><code>		if len(data) &gt; numData {</code></span>
+<span class="codeline" id="line-517"><code>			data = data[:numData]</code></span>
+<span class="codeline" id="line-518"><code>		}</code></span>
+<span class="codeline" id="line-519"><code>	}</code></span>
+<span class="codeline" id="line-520"><code></code></span>
+<span class="codeline" id="line-521"><code>	ntag := countSub(bw.tagCount(), br.tagCount())</code></span>
+<span class="codeline" id="line-522"><code>	if ntag == 0 {</code></span>
+<span class="codeline" id="line-523"><code>		throw("runtime: malformed profBuf buffer - tag and data out of sync")</code></span>
+<span class="codeline" id="line-524"><code>	}</code></span>
+<span class="codeline" id="line-525"><code>	tags = b.tags[br.tagCount()%uint32(len(b.tags)):]</code></span>
+<span class="codeline" id="line-526"><code>	if len(tags) &gt; ntag {</code></span>
+<span class="codeline" id="line-527"><code>		tags = tags[:ntag]</code></span>
+<span class="codeline" id="line-528"><code>	}</code></span>
+<span class="codeline" id="line-529"><code></code></span>
+<span class="codeline" id="line-530"><code>	// Count out whole data records until either data or tags is done.</code></span>
+<span class="codeline" id="line-531"><code>	// They are always in sync in the buffer, but due to an end-of-slice</code></span>
+<span class="codeline" id="line-532"><code>	// wraparound we might need to stop early and return the rest</code></span>
+<span class="codeline" id="line-533"><code>	// in the next call.</code></span>
+<span class="codeline" id="line-534"><code>	di := 0</code></span>
+<span class="codeline" id="line-535"><code>	ti := 0</code></span>
+<span class="codeline" id="line-536"><code>	for di &lt; len(data) &amp;&amp; data[di] != 0 &amp;&amp; ti &lt; len(tags) {</code></span>
+<span class="codeline" id="line-537"><code>		if uintptr(di)+uintptr(data[di]) &gt; uintptr(len(data)) {</code></span>
+<span class="codeline" id="line-538"><code>			throw("runtime: malformed profBuf buffer - invalid size")</code></span>
+<span class="codeline" id="line-539"><code>		}</code></span>
+<span class="codeline" id="line-540"><code>		di += int(data[di])</code></span>
+<span class="codeline" id="line-541"><code>		ti++</code></span>
+<span class="codeline" id="line-542"><code>	}</code></span>
+<span class="codeline" id="line-543"><code></code></span>
+<span class="codeline" id="line-544"><code>	// Remember how much we returned, to commit read on next call.</code></span>
+<span class="codeline" id="line-545"><code>	b.rNext = br.addCountsAndClearFlags(skip+di, ti)</code></span>
+<span class="codeline" id="line-546"><code></code></span>
+<span class="codeline" id="line-547"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-548"><code>		// Match racereleasemerge in runtime_setProfLabel,</code></span>
+<span class="codeline" id="line-549"><code>		// so that the setting of the labels in runtime_setProfLabel</code></span>
+<span class="codeline" id="line-550"><code>		// is treated as happening before any use of the labels</code></span>
+<span class="codeline" id="line-551"><code>		// by our caller. The synchronization on labelSync itself is a fiction</code></span>
+<span class="codeline" id="line-552"><code>		// for the race detector. The actual synchronization is handled</code></span>
+<span class="codeline" id="line-553"><code>		// by the fact that the signal handler only reads from the current</code></span>
+<span class="codeline" id="line-554"><code>		// goroutine and uses atomics to write the updated queue indices,</code></span>
+<span class="codeline" id="line-555"><code>		// and then the read-out from the signal handler buffer uses</code></span>
+<span class="codeline" id="line-556"><code>		// atomics to read those queue indices.</code></span>
+<span class="codeline" id="line-557"><code>		raceacquire(unsafe.Pointer(&amp;labelSync))</code></span>
+<span class="codeline" id="line-558"><code>	}</code></span>
+<span class="codeline" id="line-559"><code></code></span>
+<span class="codeline" id="line-560"><code>	return data[:di], tags[:ti], false</code></span>
+<span class="codeline" id="line-561"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

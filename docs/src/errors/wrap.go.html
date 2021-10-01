@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: wrap.go in package errors</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	wrap.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/errors.html">errors</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package errors</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/reflectlite"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// Unwrap returns the result of calling the Unwrap method on err, if err's</code></span>
+<span class="codeline" id="line-12"><code>// type contains an Unwrap method returning error.</code></span>
+<span class="codeline" id="line-13"><code>// Otherwise, Unwrap returns nil.</code></span>
+<span class="codeline" id="line-14"><code>func Unwrap(err error) error {</code></span>
+<span class="codeline" id="line-15"><code>	u, ok := err.(interface {</code></span>
+<span class="codeline" id="line-16"><code>		Unwrap() error</code></span>
+<span class="codeline" id="line-17"><code>	})</code></span>
+<span class="codeline" id="line-18"><code>	if !ok {</code></span>
+<span class="codeline" id="line-19"><code>		return nil</code></span>
+<span class="codeline" id="line-20"><code>	}</code></span>
+<span class="codeline" id="line-21"><code>	return u.Unwrap()</code></span>
+<span class="codeline" id="line-22"><code>}</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>// Is reports whether any error in err's chain matches target.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// The chain consists of err itself followed by the sequence of errors obtained by</code></span>
+<span class="codeline" id="line-27"><code>// repeatedly calling Unwrap.</code></span>
+<span class="codeline" id="line-28"><code>//</code></span>
+<span class="codeline" id="line-29"><code>// An error is considered to match a target if it is equal to that target or if</code></span>
+<span class="codeline" id="line-30"><code>// it implements a method Is(error) bool such that Is(target) returns true.</code></span>
+<span class="codeline" id="line-31"><code>//</code></span>
+<span class="codeline" id="line-32"><code>// An error type might provide an Is method so it can be treated as equivalent</code></span>
+<span class="codeline" id="line-33"><code>// to an existing error. For example, if MyError defines</code></span>
+<span class="codeline" id="line-34"><code>//</code></span>
+<span class="codeline" id="line-35"><code>//	func (m MyError) Is(target error) bool { return target == fs.ErrExist }</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// then Is(MyError{}, fs.ErrExist) returns true. See syscall.Errno.Is for</code></span>
+<span class="codeline" id="line-38"><code>// an example in the standard library.</code></span>
+<span class="codeline" id="line-39"><code>func Is(err, target error) bool {</code></span>
+<span class="codeline" id="line-40"><code>	if target == nil {</code></span>
+<span class="codeline" id="line-41"><code>		return err == target</code></span>
+<span class="codeline" id="line-42"><code>	}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	isComparable := reflectlite.TypeOf(target).Comparable()</code></span>
+<span class="codeline" id="line-45"><code>	for {</code></span>
+<span class="codeline" id="line-46"><code>		if isComparable &amp;&amp; err == target {</code></span>
+<span class="codeline" id="line-47"><code>			return true</code></span>
+<span class="codeline" id="line-48"><code>		}</code></span>
+<span class="codeline" id="line-49"><code>		if x, ok := err.(interface{ Is(error) bool }); ok &amp;&amp; x.Is(target) {</code></span>
+<span class="codeline" id="line-50"><code>			return true</code></span>
+<span class="codeline" id="line-51"><code>		}</code></span>
+<span class="codeline" id="line-52"><code>		// TODO: consider supporting target.Is(err). This would allow</code></span>
+<span class="codeline" id="line-53"><code>		// user-definable predicates, but also may allow for coping with sloppy</code></span>
+<span class="codeline" id="line-54"><code>		// APIs, thereby making it easier to get away with them.</code></span>
+<span class="codeline" id="line-55"><code>		if err = Unwrap(err); err == nil {</code></span>
+<span class="codeline" id="line-56"><code>			return false</code></span>
+<span class="codeline" id="line-57"><code>		}</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>// As finds the first error in err's chain that matches target, and if so, sets</code></span>
+<span class="codeline" id="line-62"><code>// target to that error value and returns true. Otherwise, it returns false.</code></span>
+<span class="codeline" id="line-63"><code>//</code></span>
+<span class="codeline" id="line-64"><code>// The chain consists of err itself followed by the sequence of errors obtained by</code></span>
+<span class="codeline" id="line-65"><code>// repeatedly calling Unwrap.</code></span>
+<span class="codeline" id="line-66"><code>//</code></span>
+<span class="codeline" id="line-67"><code>// An error matches target if the error's concrete value is assignable to the value</code></span>
+<span class="codeline" id="line-68"><code>// pointed to by target, or if the error has a method As(interface{}) bool such that</code></span>
+<span class="codeline" id="line-69"><code>// As(target) returns true. In the latter case, the As method is responsible for</code></span>
+<span class="codeline" id="line-70"><code>// setting target.</code></span>
+<span class="codeline" id="line-71"><code>//</code></span>
+<span class="codeline" id="line-72"><code>// An error type might provide an As method so it can be treated as if it were a</code></span>
+<span class="codeline" id="line-73"><code>// different error type.</code></span>
+<span class="codeline" id="line-74"><code>//</code></span>
+<span class="codeline" id="line-75"><code>// As panics if target is not a non-nil pointer to either a type that implements</code></span>
+<span class="codeline" id="line-76"><code>// error, or to any interface type.</code></span>
+<span class="codeline" id="line-77"><code>func As(err error, target interface{}) bool {</code></span>
+<span class="codeline" id="line-78"><code>	if target == nil {</code></span>
+<span class="codeline" id="line-79"><code>		panic("errors: target cannot be nil")</code></span>
+<span class="codeline" id="line-80"><code>	}</code></span>
+<span class="codeline" id="line-81"><code>	val := reflectlite.ValueOf(target)</code></span>
+<span class="codeline" id="line-82"><code>	typ := val.Type()</code></span>
+<span class="codeline" id="line-83"><code>	if typ.Kind() != reflectlite.Ptr || val.IsNil() {</code></span>
+<span class="codeline" id="line-84"><code>		panic("errors: target must be a non-nil pointer")</code></span>
+<span class="codeline" id="line-85"><code>	}</code></span>
+<span class="codeline" id="line-86"><code>	if e := typ.Elem(); e.Kind() != reflectlite.Interface &amp;&amp; !e.Implements(errorType) {</code></span>
+<span class="codeline" id="line-87"><code>		panic("errors: *target must be interface or implement error")</code></span>
+<span class="codeline" id="line-88"><code>	}</code></span>
+<span class="codeline" id="line-89"><code>	targetType := typ.Elem()</code></span>
+<span class="codeline" id="line-90"><code>	for err != nil {</code></span>
+<span class="codeline" id="line-91"><code>		if reflectlite.TypeOf(err).AssignableTo(targetType) {</code></span>
+<span class="codeline" id="line-92"><code>			val.Elem().Set(reflectlite.ValueOf(err))</code></span>
+<span class="codeline" id="line-93"><code>			return true</code></span>
+<span class="codeline" id="line-94"><code>		}</code></span>
+<span class="codeline" id="line-95"><code>		if x, ok := err.(interface{ As(interface{}) bool }); ok &amp;&amp; x.As(target) {</code></span>
+<span class="codeline" id="line-96"><code>			return true</code></span>
+<span class="codeline" id="line-97"><code>		}</code></span>
+<span class="codeline" id="line-98"><code>		err = Unwrap(err)</code></span>
+<span class="codeline" id="line-99"><code>	}</code></span>
+<span class="codeline" id="line-100"><code>	return false</code></span>
+<span class="codeline" id="line-101"><code>}</code></span>
+<span class="codeline" id="line-102"><code></code></span>
+<span class="codeline" id="line-103"><code>var errorType = reflectlite.TypeOf((*error)(nil)).Elem()</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: lsf_linux.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	lsf_linux.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Linux socket filter</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package syscall</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// Deprecated: Use golang.org/x/net/bpf instead.</code></span>
+<span class="codeline" id="line-14"><code>func LsfStmt(code, k int) *SockFilter {</code></span>
+<span class="codeline" id="line-15"><code>	return &amp;SockFilter{Code: uint16(code), K: uint32(k)}</code></span>
+<span class="codeline" id="line-16"><code>}</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>// Deprecated: Use golang.org/x/net/bpf instead.</code></span>
+<span class="codeline" id="line-19"><code>func LsfJump(code, k, jt, jf int) *SockFilter {</code></span>
+<span class="codeline" id="line-20"><code>	return &amp;SockFilter{Code: uint16(code), Jt: uint8(jt), Jf: uint8(jf), K: uint32(k)}</code></span>
+<span class="codeline" id="line-21"><code>}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>// Deprecated: Use golang.org/x/net/bpf instead.</code></span>
+<span class="codeline" id="line-24"><code>func LsfSocket(ifindex, proto int) (int, error) {</code></span>
+<span class="codeline" id="line-25"><code>	var lsall SockaddrLinklayer</code></span>
+<span class="codeline" id="line-26"><code>	// This is missing SOCK_CLOEXEC, but adding the flag</code></span>
+<span class="codeline" id="line-27"><code>	// could break callers.</code></span>
+<span class="codeline" id="line-28"><code>	s, e := Socket(AF_PACKET, SOCK_RAW, proto)</code></span>
+<span class="codeline" id="line-29"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-30"><code>		return 0, e</code></span>
+<span class="codeline" id="line-31"><code>	}</code></span>
+<span class="codeline" id="line-32"><code>	p := (*[2]byte)(unsafe.Pointer(&amp;lsall.Protocol))</code></span>
+<span class="codeline" id="line-33"><code>	p[0] = byte(proto &gt;&gt; 8)</code></span>
+<span class="codeline" id="line-34"><code>	p[1] = byte(proto)</code></span>
+<span class="codeline" id="line-35"><code>	lsall.Ifindex = ifindex</code></span>
+<span class="codeline" id="line-36"><code>	e = Bind(s, &amp;lsall)</code></span>
+<span class="codeline" id="line-37"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-38"><code>		Close(s)</code></span>
+<span class="codeline" id="line-39"><code>		return 0, e</code></span>
+<span class="codeline" id="line-40"><code>	}</code></span>
+<span class="codeline" id="line-41"><code>	return s, nil</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>type iflags struct {</code></span>
+<span class="codeline" id="line-45"><code>	name  [IFNAMSIZ]byte</code></span>
+<span class="codeline" id="line-46"><code>	flags uint16</code></span>
+<span class="codeline" id="line-47"><code>}</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>// Deprecated: Use golang.org/x/net/bpf instead.</code></span>
+<span class="codeline" id="line-50"><code>func SetLsfPromisc(name string, m bool) error {</code></span>
+<span class="codeline" id="line-51"><code>	s, e := cloexecSocket(AF_INET, SOCK_DGRAM, 0)</code></span>
+<span class="codeline" id="line-52"><code>	if e != nil {</code></span>
+<span class="codeline" id="line-53"><code>		return e</code></span>
+<span class="codeline" id="line-54"><code>	}</code></span>
+<span class="codeline" id="line-55"><code>	defer Close(s)</code></span>
+<span class="codeline" id="line-56"><code>	var ifl iflags</code></span>
+<span class="codeline" id="line-57"><code>	copy(ifl.name[:], []byte(name))</code></span>
+<span class="codeline" id="line-58"><code>	_, _, ep := Syscall(SYS_IOCTL, uintptr(s), SIOCGIFFLAGS, uintptr(unsafe.Pointer(&amp;ifl)))</code></span>
+<span class="codeline" id="line-59"><code>	if ep != 0 {</code></span>
+<span class="codeline" id="line-60"><code>		return Errno(ep)</code></span>
+<span class="codeline" id="line-61"><code>	}</code></span>
+<span class="codeline" id="line-62"><code>	if m {</code></span>
+<span class="codeline" id="line-63"><code>		ifl.flags |= uint16(IFF_PROMISC)</code></span>
+<span class="codeline" id="line-64"><code>	} else {</code></span>
+<span class="codeline" id="line-65"><code>		ifl.flags &amp;^= uint16(IFF_PROMISC)</code></span>
+<span class="codeline" id="line-66"><code>	}</code></span>
+<span class="codeline" id="line-67"><code>	_, _, ep = Syscall(SYS_IOCTL, uintptr(s), SIOCSIFFLAGS, uintptr(unsafe.Pointer(&amp;ifl)))</code></span>
+<span class="codeline" id="line-68"><code>	if ep != 0 {</code></span>
+<span class="codeline" id="line-69"><code>		return Errno(ep)</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code>	return nil</code></span>
+<span class="codeline" id="line-72"><code>}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>// Deprecated: Use golang.org/x/net/bpf instead.</code></span>
+<span class="codeline" id="line-75"><code>func AttachLsf(fd int, i []SockFilter) error {</code></span>
+<span class="codeline" id="line-76"><code>	var p SockFprog</code></span>
+<span class="codeline" id="line-77"><code>	p.Len = uint16(len(i))</code></span>
+<span class="codeline" id="line-78"><code>	p.Filter = (*SockFilter)(unsafe.Pointer(&amp;i[0]))</code></span>
+<span class="codeline" id="line-79"><code>	return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, unsafe.Pointer(&amp;p), unsafe.Sizeof(p))</code></span>
+<span class="codeline" id="line-80"><code>}</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>// Deprecated: Use golang.org/x/net/bpf instead.</code></span>
+<span class="codeline" id="line-83"><code>func DetachLsf(fd int) error {</code></span>
+<span class="codeline" id="line-84"><code>	var dummy int</code></span>
+<span class="codeline" id="line-85"><code>	return setsockopt(fd, SOL_SOCKET, SO_DETACH_FILTER, unsafe.Pointer(&amp;dummy), unsafe.Sizeof(dummy))</code></span>
+<span class="codeline" id="line-86"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

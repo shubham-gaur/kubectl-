@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: once.go in package sync</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	once.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/sync.html">sync</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package sync</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"sync/atomic"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// Once is an object that will perform exactly one action.</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>// A Once must not be copied after first use.</code></span>
+<span class="codeline" id="line-14"><code>type Once struct {</code></span>
+<span class="codeline" id="line-15"><code>	// done indicates whether the action has been performed.</code></span>
+<span class="codeline" id="line-16"><code>	// It is first in the struct because it is used in the hot path.</code></span>
+<span class="codeline" id="line-17"><code>	// The hot path is inlined at every call site.</code></span>
+<span class="codeline" id="line-18"><code>	// Placing done first allows more compact instructions on some architectures (amd64/386),</code></span>
+<span class="codeline" id="line-19"><code>	// and fewer instructions (to calculate offset) on other architectures.</code></span>
+<span class="codeline" id="line-20"><code>	done uint32</code></span>
+<span class="codeline" id="line-21"><code>	m    Mutex</code></span>
+<span class="codeline" id="line-22"><code>}</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>// Do calls the function f if and only if Do is being called for the</code></span>
+<span class="codeline" id="line-25"><code>// first time for this instance of Once. In other words, given</code></span>
+<span class="codeline" id="line-26"><code>// 	var once Once</code></span>
+<span class="codeline" id="line-27"><code>// if once.Do(f) is called multiple times, only the first call will invoke f,</code></span>
+<span class="codeline" id="line-28"><code>// even if f has a different value in each invocation. A new instance of</code></span>
+<span class="codeline" id="line-29"><code>// Once is required for each function to execute.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// Do is intended for initialization that must be run exactly once. Since f</code></span>
+<span class="codeline" id="line-32"><code>// is niladic, it may be necessary to use a function literal to capture the</code></span>
+<span class="codeline" id="line-33"><code>// arguments to a function to be invoked by Do:</code></span>
+<span class="codeline" id="line-34"><code>// 	config.once.Do(func() { config.init(filename) })</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>// Because no call to Do returns until the one call to f returns, if f causes</code></span>
+<span class="codeline" id="line-37"><code>// Do to be called, it will deadlock.</code></span>
+<span class="codeline" id="line-38"><code>//</code></span>
+<span class="codeline" id="line-39"><code>// If f panics, Do considers it to have returned; future calls of Do return</code></span>
+<span class="codeline" id="line-40"><code>// without calling f.</code></span>
+<span class="codeline" id="line-41"><code>//</code></span>
+<span class="codeline" id="line-42"><code>func (o *Once) Do(f func()) {</code></span>
+<span class="codeline" id="line-43"><code>	// Note: Here is an incorrect implementation of Do:</code></span>
+<span class="codeline" id="line-44"><code>	//</code></span>
+<span class="codeline" id="line-45"><code>	//	if atomic.CompareAndSwapUint32(&amp;o.done, 0, 1) {</code></span>
+<span class="codeline" id="line-46"><code>	//		f()</code></span>
+<span class="codeline" id="line-47"><code>	//	}</code></span>
+<span class="codeline" id="line-48"><code>	//</code></span>
+<span class="codeline" id="line-49"><code>	// Do guarantees that when it returns, f has finished.</code></span>
+<span class="codeline" id="line-50"><code>	// This implementation would not implement that guarantee:</code></span>
+<span class="codeline" id="line-51"><code>	// given two simultaneous calls, the winner of the cas would</code></span>
+<span class="codeline" id="line-52"><code>	// call f, and the second would return immediately, without</code></span>
+<span class="codeline" id="line-53"><code>	// waiting for the first's call to f to complete.</code></span>
+<span class="codeline" id="line-54"><code>	// This is why the slow path falls back to a mutex, and why</code></span>
+<span class="codeline" id="line-55"><code>	// the atomic.StoreUint32 must be delayed until after f returns.</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>	if atomic.LoadUint32(&amp;o.done) == 0 {</code></span>
+<span class="codeline" id="line-58"><code>		// Outlined slow-path to allow inlining of the fast-path.</code></span>
+<span class="codeline" id="line-59"><code>		o.doSlow(f)</code></span>
+<span class="codeline" id="line-60"><code>	}</code></span>
+<span class="codeline" id="line-61"><code>}</code></span>
+<span class="codeline" id="line-62"><code></code></span>
+<span class="codeline" id="line-63"><code>func (o *Once) doSlow(f func()) {</code></span>
+<span class="codeline" id="line-64"><code>	o.m.Lock()</code></span>
+<span class="codeline" id="line-65"><code>	defer o.m.Unlock()</code></span>
+<span class="codeline" id="line-66"><code>	if o.done == 0 {</code></span>
+<span class="codeline" id="line-67"><code>		defer atomic.StoreUint32(&amp;o.done, 1)</code></span>
+<span class="codeline" id="line-68"><code>		f()</code></span>
+<span class="codeline" id="line-69"><code>	}</code></span>
+<span class="codeline" id="line-70"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

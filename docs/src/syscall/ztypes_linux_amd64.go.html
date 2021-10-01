@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: ztypes_linux_amd64.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	ztypes_linux_amd64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Created by cgo -godefs - DO NOT EDIT</code></span>
+<span class="codeline" id="line-2"><code>// cgo -godefs types_linux.go</code></span>
+<span class="codeline" id="line-3"><code></code></span>
+<span class="codeline" id="line-4"><code>// +build amd64,linux</code></span>
+<span class="codeline" id="line-5"><code></code></span>
+<span class="codeline" id="line-6"><code>package syscall</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>const (</code></span>
+<span class="codeline" id="line-9"><code>	sizeofPtr      = 0x8</code></span>
+<span class="codeline" id="line-10"><code>	sizeofShort    = 0x2</code></span>
+<span class="codeline" id="line-11"><code>	sizeofInt      = 0x4</code></span>
+<span class="codeline" id="line-12"><code>	sizeofLong     = 0x8</code></span>
+<span class="codeline" id="line-13"><code>	sizeofLongLong = 0x8</code></span>
+<span class="codeline" id="line-14"><code>	PathMax        = 0x1000</code></span>
+<span class="codeline" id="line-15"><code>)</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>type (</code></span>
+<span class="codeline" id="line-18"><code>	_C_short     int16</code></span>
+<span class="codeline" id="line-19"><code>	_C_int       int32</code></span>
+<span class="codeline" id="line-20"><code>	_C_long      int64</code></span>
+<span class="codeline" id="line-21"><code>	_C_long_long int64</code></span>
+<span class="codeline" id="line-22"><code>)</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>type Timespec struct {</code></span>
+<span class="codeline" id="line-25"><code>	Sec  int64</code></span>
+<span class="codeline" id="line-26"><code>	Nsec int64</code></span>
+<span class="codeline" id="line-27"><code>}</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>type Timeval struct {</code></span>
+<span class="codeline" id="line-30"><code>	Sec  int64</code></span>
+<span class="codeline" id="line-31"><code>	Usec int64</code></span>
+<span class="codeline" id="line-32"><code>}</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>type Timex struct {</code></span>
+<span class="codeline" id="line-35"><code>	Modes     uint32</code></span>
+<span class="codeline" id="line-36"><code>	Pad_cgo_0 [4]byte</code></span>
+<span class="codeline" id="line-37"><code>	Offset    int64</code></span>
+<span class="codeline" id="line-38"><code>	Freq      int64</code></span>
+<span class="codeline" id="line-39"><code>	Maxerror  int64</code></span>
+<span class="codeline" id="line-40"><code>	Esterror  int64</code></span>
+<span class="codeline" id="line-41"><code>	Status    int32</code></span>
+<span class="codeline" id="line-42"><code>	Pad_cgo_1 [4]byte</code></span>
+<span class="codeline" id="line-43"><code>	Constant  int64</code></span>
+<span class="codeline" id="line-44"><code>	Precision int64</code></span>
+<span class="codeline" id="line-45"><code>	Tolerance int64</code></span>
+<span class="codeline" id="line-46"><code>	Time      Timeval</code></span>
+<span class="codeline" id="line-47"><code>	Tick      int64</code></span>
+<span class="codeline" id="line-48"><code>	Ppsfreq   int64</code></span>
+<span class="codeline" id="line-49"><code>	Jitter    int64</code></span>
+<span class="codeline" id="line-50"><code>	Shift     int32</code></span>
+<span class="codeline" id="line-51"><code>	Pad_cgo_2 [4]byte</code></span>
+<span class="codeline" id="line-52"><code>	Stabil    int64</code></span>
+<span class="codeline" id="line-53"><code>	Jitcnt    int64</code></span>
+<span class="codeline" id="line-54"><code>	Calcnt    int64</code></span>
+<span class="codeline" id="line-55"><code>	Errcnt    int64</code></span>
+<span class="codeline" id="line-56"><code>	Stbcnt    int64</code></span>
+<span class="codeline" id="line-57"><code>	Tai       int32</code></span>
+<span class="codeline" id="line-58"><code>	Pad_cgo_3 [44]byte</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>type Time_t int64</code></span>
+<span class="codeline" id="line-62"><code></code></span>
+<span class="codeline" id="line-63"><code>type Tms struct {</code></span>
+<span class="codeline" id="line-64"><code>	Utime  int64</code></span>
+<span class="codeline" id="line-65"><code>	Stime  int64</code></span>
+<span class="codeline" id="line-66"><code>	Cutime int64</code></span>
+<span class="codeline" id="line-67"><code>	Cstime int64</code></span>
+<span class="codeline" id="line-68"><code>}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>type Utimbuf struct {</code></span>
+<span class="codeline" id="line-71"><code>	Actime  int64</code></span>
+<span class="codeline" id="line-72"><code>	Modtime int64</code></span>
+<span class="codeline" id="line-73"><code>}</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>type Rusage struct {</code></span>
+<span class="codeline" id="line-76"><code>	Utime    Timeval</code></span>
+<span class="codeline" id="line-77"><code>	Stime    Timeval</code></span>
+<span class="codeline" id="line-78"><code>	Maxrss   int64</code></span>
+<span class="codeline" id="line-79"><code>	Ixrss    int64</code></span>
+<span class="codeline" id="line-80"><code>	Idrss    int64</code></span>
+<span class="codeline" id="line-81"><code>	Isrss    int64</code></span>
+<span class="codeline" id="line-82"><code>	Minflt   int64</code></span>
+<span class="codeline" id="line-83"><code>	Majflt   int64</code></span>
+<span class="codeline" id="line-84"><code>	Nswap    int64</code></span>
+<span class="codeline" id="line-85"><code>	Inblock  int64</code></span>
+<span class="codeline" id="line-86"><code>	Oublock  int64</code></span>
+<span class="codeline" id="line-87"><code>	Msgsnd   int64</code></span>
+<span class="codeline" id="line-88"><code>	Msgrcv   int64</code></span>
+<span class="codeline" id="line-89"><code>	Nsignals int64</code></span>
+<span class="codeline" id="line-90"><code>	Nvcsw    int64</code></span>
+<span class="codeline" id="line-91"><code>	Nivcsw   int64</code></span>
+<span class="codeline" id="line-92"><code>}</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>type Rlimit struct {</code></span>
+<span class="codeline" id="line-95"><code>	Cur uint64</code></span>
+<span class="codeline" id="line-96"><code>	Max uint64</code></span>
+<span class="codeline" id="line-97"><code>}</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>type _Gid_t uint32</code></span>
+<span class="codeline" id="line-100"><code></code></span>
+<span class="codeline" id="line-101"><code>type Stat_t struct {</code></span>
+<span class="codeline" id="line-102"><code>	Dev       uint64</code></span>
+<span class="codeline" id="line-103"><code>	Ino       uint64</code></span>
+<span class="codeline" id="line-104"><code>	Nlink     uint64</code></span>
+<span class="codeline" id="line-105"><code>	Mode      uint32</code></span>
+<span class="codeline" id="line-106"><code>	Uid       uint32</code></span>
+<span class="codeline" id="line-107"><code>	Gid       uint32</code></span>
+<span class="codeline" id="line-108"><code>	X__pad0   int32</code></span>
+<span class="codeline" id="line-109"><code>	Rdev      uint64</code></span>
+<span class="codeline" id="line-110"><code>	Size      int64</code></span>
+<span class="codeline" id="line-111"><code>	Blksize   int64</code></span>
+<span class="codeline" id="line-112"><code>	Blocks    int64</code></span>
+<span class="codeline" id="line-113"><code>	Atim      Timespec</code></span>
+<span class="codeline" id="line-114"><code>	Mtim      Timespec</code></span>
+<span class="codeline" id="line-115"><code>	Ctim      Timespec</code></span>
+<span class="codeline" id="line-116"><code>	X__unused [3]int64</code></span>
+<span class="codeline" id="line-117"><code>}</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>type Statfs_t struct {</code></span>
+<span class="codeline" id="line-120"><code>	Type    int64</code></span>
+<span class="codeline" id="line-121"><code>	Bsize   int64</code></span>
+<span class="codeline" id="line-122"><code>	Blocks  uint64</code></span>
+<span class="codeline" id="line-123"><code>	Bfree   uint64</code></span>
+<span class="codeline" id="line-124"><code>	Bavail  uint64</code></span>
+<span class="codeline" id="line-125"><code>	Files   uint64</code></span>
+<span class="codeline" id="line-126"><code>	Ffree   uint64</code></span>
+<span class="codeline" id="line-127"><code>	Fsid    Fsid</code></span>
+<span class="codeline" id="line-128"><code>	Namelen int64</code></span>
+<span class="codeline" id="line-129"><code>	Frsize  int64</code></span>
+<span class="codeline" id="line-130"><code>	Flags   int64</code></span>
+<span class="codeline" id="line-131"><code>	Spare   [4]int64</code></span>
+<span class="codeline" id="line-132"><code>}</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>type Dirent struct {</code></span>
+<span class="codeline" id="line-135"><code>	Ino       uint64</code></span>
+<span class="codeline" id="line-136"><code>	Off       int64</code></span>
+<span class="codeline" id="line-137"><code>	Reclen    uint16</code></span>
+<span class="codeline" id="line-138"><code>	Type      uint8</code></span>
+<span class="codeline" id="line-139"><code>	Name      [256]int8</code></span>
+<span class="codeline" id="line-140"><code>	Pad_cgo_0 [5]byte</code></span>
+<span class="codeline" id="line-141"><code>}</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>type Fsid struct {</code></span>
+<span class="codeline" id="line-144"><code>	X__val [2]int32</code></span>
+<span class="codeline" id="line-145"><code>}</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>type Flock_t struct {</code></span>
+<span class="codeline" id="line-148"><code>	Type      int16</code></span>
+<span class="codeline" id="line-149"><code>	Whence    int16</code></span>
+<span class="codeline" id="line-150"><code>	Pad_cgo_0 [4]byte</code></span>
+<span class="codeline" id="line-151"><code>	Start     int64</code></span>
+<span class="codeline" id="line-152"><code>	Len       int64</code></span>
+<span class="codeline" id="line-153"><code>	Pid       int32</code></span>
+<span class="codeline" id="line-154"><code>	Pad_cgo_1 [4]byte</code></span>
+<span class="codeline" id="line-155"><code>}</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>type RawSockaddrInet4 struct {</code></span>
+<span class="codeline" id="line-158"><code>	Family uint16</code></span>
+<span class="codeline" id="line-159"><code>	Port   uint16</code></span>
+<span class="codeline" id="line-160"><code>	Addr   [4]byte /* in_addr */</code></span>
+<span class="codeline" id="line-161"><code>	Zero   [8]uint8</code></span>
+<span class="codeline" id="line-162"><code>}</code></span>
+<span class="codeline" id="line-163"><code></code></span>
+<span class="codeline" id="line-164"><code>type RawSockaddrInet6 struct {</code></span>
+<span class="codeline" id="line-165"><code>	Family   uint16</code></span>
+<span class="codeline" id="line-166"><code>	Port     uint16</code></span>
+<span class="codeline" id="line-167"><code>	Flowinfo uint32</code></span>
+<span class="codeline" id="line-168"><code>	Addr     [16]byte /* in6_addr */</code></span>
+<span class="codeline" id="line-169"><code>	Scope_id uint32</code></span>
+<span class="codeline" id="line-170"><code>}</code></span>
+<span class="codeline" id="line-171"><code></code></span>
+<span class="codeline" id="line-172"><code>type RawSockaddrUnix struct {</code></span>
+<span class="codeline" id="line-173"><code>	Family uint16</code></span>
+<span class="codeline" id="line-174"><code>	Path   [108]int8</code></span>
+<span class="codeline" id="line-175"><code>}</code></span>
+<span class="codeline" id="line-176"><code></code></span>
+<span class="codeline" id="line-177"><code>type RawSockaddrLinklayer struct {</code></span>
+<span class="codeline" id="line-178"><code>	Family   uint16</code></span>
+<span class="codeline" id="line-179"><code>	Protocol uint16</code></span>
+<span class="codeline" id="line-180"><code>	Ifindex  int32</code></span>
+<span class="codeline" id="line-181"><code>	Hatype   uint16</code></span>
+<span class="codeline" id="line-182"><code>	Pkttype  uint8</code></span>
+<span class="codeline" id="line-183"><code>	Halen    uint8</code></span>
+<span class="codeline" id="line-184"><code>	Addr     [8]uint8</code></span>
+<span class="codeline" id="line-185"><code>}</code></span>
+<span class="codeline" id="line-186"><code></code></span>
+<span class="codeline" id="line-187"><code>type RawSockaddrNetlink struct {</code></span>
+<span class="codeline" id="line-188"><code>	Family uint16</code></span>
+<span class="codeline" id="line-189"><code>	Pad    uint16</code></span>
+<span class="codeline" id="line-190"><code>	Pid    uint32</code></span>
+<span class="codeline" id="line-191"><code>	Groups uint32</code></span>
+<span class="codeline" id="line-192"><code>}</code></span>
+<span class="codeline" id="line-193"><code></code></span>
+<span class="codeline" id="line-194"><code>type RawSockaddr struct {</code></span>
+<span class="codeline" id="line-195"><code>	Family uint16</code></span>
+<span class="codeline" id="line-196"><code>	Data   [14]int8</code></span>
+<span class="codeline" id="line-197"><code>}</code></span>
+<span class="codeline" id="line-198"><code></code></span>
+<span class="codeline" id="line-199"><code>type RawSockaddrAny struct {</code></span>
+<span class="codeline" id="line-200"><code>	Addr RawSockaddr</code></span>
+<span class="codeline" id="line-201"><code>	Pad  [96]int8</code></span>
+<span class="codeline" id="line-202"><code>}</code></span>
+<span class="codeline" id="line-203"><code></code></span>
+<span class="codeline" id="line-204"><code>type _Socklen uint32</code></span>
+<span class="codeline" id="line-205"><code></code></span>
+<span class="codeline" id="line-206"><code>type Linger struct {</code></span>
+<span class="codeline" id="line-207"><code>	Onoff  int32</code></span>
+<span class="codeline" id="line-208"><code>	Linger int32</code></span>
+<span class="codeline" id="line-209"><code>}</code></span>
+<span class="codeline" id="line-210"><code></code></span>
+<span class="codeline" id="line-211"><code>type Iovec struct {</code></span>
+<span class="codeline" id="line-212"><code>	Base *byte</code></span>
+<span class="codeline" id="line-213"><code>	Len  uint64</code></span>
+<span class="codeline" id="line-214"><code>}</code></span>
+<span class="codeline" id="line-215"><code></code></span>
+<span class="codeline" id="line-216"><code>type IPMreq struct {</code></span>
+<span class="codeline" id="line-217"><code>	Multiaddr [4]byte /* in_addr */</code></span>
+<span class="codeline" id="line-218"><code>	Interface [4]byte /* in_addr */</code></span>
+<span class="codeline" id="line-219"><code>}</code></span>
+<span class="codeline" id="line-220"><code></code></span>
+<span class="codeline" id="line-221"><code>type IPMreqn struct {</code></span>
+<span class="codeline" id="line-222"><code>	Multiaddr [4]byte /* in_addr */</code></span>
+<span class="codeline" id="line-223"><code>	Address   [4]byte /* in_addr */</code></span>
+<span class="codeline" id="line-224"><code>	Ifindex   int32</code></span>
+<span class="codeline" id="line-225"><code>}</code></span>
+<span class="codeline" id="line-226"><code></code></span>
+<span class="codeline" id="line-227"><code>type IPv6Mreq struct {</code></span>
+<span class="codeline" id="line-228"><code>	Multiaddr [16]byte /* in6_addr */</code></span>
+<span class="codeline" id="line-229"><code>	Interface uint32</code></span>
+<span class="codeline" id="line-230"><code>}</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>type Msghdr struct {</code></span>
+<span class="codeline" id="line-233"><code>	Name       *byte</code></span>
+<span class="codeline" id="line-234"><code>	Namelen    uint32</code></span>
+<span class="codeline" id="line-235"><code>	Pad_cgo_0  [4]byte</code></span>
+<span class="codeline" id="line-236"><code>	Iov        *Iovec</code></span>
+<span class="codeline" id="line-237"><code>	Iovlen     uint64</code></span>
+<span class="codeline" id="line-238"><code>	Control    *byte</code></span>
+<span class="codeline" id="line-239"><code>	Controllen uint64</code></span>
+<span class="codeline" id="line-240"><code>	Flags      int32</code></span>
+<span class="codeline" id="line-241"><code>	Pad_cgo_1  [4]byte</code></span>
+<span class="codeline" id="line-242"><code>}</code></span>
+<span class="codeline" id="line-243"><code></code></span>
+<span class="codeline" id="line-244"><code>type Cmsghdr struct {</code></span>
+<span class="codeline" id="line-245"><code>	Len   uint64</code></span>
+<span class="codeline" id="line-246"><code>	Level int32</code></span>
+<span class="codeline" id="line-247"><code>	Type  int32</code></span>
+<span class="codeline" id="line-248"><code>}</code></span>
+<span class="codeline" id="line-249"><code></code></span>
+<span class="codeline" id="line-250"><code>type Inet4Pktinfo struct {</code></span>
+<span class="codeline" id="line-251"><code>	Ifindex  int32</code></span>
+<span class="codeline" id="line-252"><code>	Spec_dst [4]byte /* in_addr */</code></span>
+<span class="codeline" id="line-253"><code>	Addr     [4]byte /* in_addr */</code></span>
+<span class="codeline" id="line-254"><code>}</code></span>
+<span class="codeline" id="line-255"><code></code></span>
+<span class="codeline" id="line-256"><code>type Inet6Pktinfo struct {</code></span>
+<span class="codeline" id="line-257"><code>	Addr    [16]byte /* in6_addr */</code></span>
+<span class="codeline" id="line-258"><code>	Ifindex uint32</code></span>
+<span class="codeline" id="line-259"><code>}</code></span>
+<span class="codeline" id="line-260"><code></code></span>
+<span class="codeline" id="line-261"><code>type IPv6MTUInfo struct {</code></span>
+<span class="codeline" id="line-262"><code>	Addr RawSockaddrInet6</code></span>
+<span class="codeline" id="line-263"><code>	Mtu  uint32</code></span>
+<span class="codeline" id="line-264"><code>}</code></span>
+<span class="codeline" id="line-265"><code></code></span>
+<span class="codeline" id="line-266"><code>type ICMPv6Filter struct {</code></span>
+<span class="codeline" id="line-267"><code>	Data [8]uint32</code></span>
+<span class="codeline" id="line-268"><code>}</code></span>
+<span class="codeline" id="line-269"><code></code></span>
+<span class="codeline" id="line-270"><code>type Ucred struct {</code></span>
+<span class="codeline" id="line-271"><code>	Pid int32</code></span>
+<span class="codeline" id="line-272"><code>	Uid uint32</code></span>
+<span class="codeline" id="line-273"><code>	Gid uint32</code></span>
+<span class="codeline" id="line-274"><code>}</code></span>
+<span class="codeline" id="line-275"><code></code></span>
+<span class="codeline" id="line-276"><code>type TCPInfo struct {</code></span>
+<span class="codeline" id="line-277"><code>	State          uint8</code></span>
+<span class="codeline" id="line-278"><code>	Ca_state       uint8</code></span>
+<span class="codeline" id="line-279"><code>	Retransmits    uint8</code></span>
+<span class="codeline" id="line-280"><code>	Probes         uint8</code></span>
+<span class="codeline" id="line-281"><code>	Backoff        uint8</code></span>
+<span class="codeline" id="line-282"><code>	Options        uint8</code></span>
+<span class="codeline" id="line-283"><code>	Pad_cgo_0      [2]byte</code></span>
+<span class="codeline" id="line-284"><code>	Rto            uint32</code></span>
+<span class="codeline" id="line-285"><code>	Ato            uint32</code></span>
+<span class="codeline" id="line-286"><code>	Snd_mss        uint32</code></span>
+<span class="codeline" id="line-287"><code>	Rcv_mss        uint32</code></span>
+<span class="codeline" id="line-288"><code>	Unacked        uint32</code></span>
+<span class="codeline" id="line-289"><code>	Sacked         uint32</code></span>
+<span class="codeline" id="line-290"><code>	Lost           uint32</code></span>
+<span class="codeline" id="line-291"><code>	Retrans        uint32</code></span>
+<span class="codeline" id="line-292"><code>	Fackets        uint32</code></span>
+<span class="codeline" id="line-293"><code>	Last_data_sent uint32</code></span>
+<span class="codeline" id="line-294"><code>	Last_ack_sent  uint32</code></span>
+<span class="codeline" id="line-295"><code>	Last_data_recv uint32</code></span>
+<span class="codeline" id="line-296"><code>	Last_ack_recv  uint32</code></span>
+<span class="codeline" id="line-297"><code>	Pmtu           uint32</code></span>
+<span class="codeline" id="line-298"><code>	Rcv_ssthresh   uint32</code></span>
+<span class="codeline" id="line-299"><code>	Rtt            uint32</code></span>
+<span class="codeline" id="line-300"><code>	Rttvar         uint32</code></span>
+<span class="codeline" id="line-301"><code>	Snd_ssthresh   uint32</code></span>
+<span class="codeline" id="line-302"><code>	Snd_cwnd       uint32</code></span>
+<span class="codeline" id="line-303"><code>	Advmss         uint32</code></span>
+<span class="codeline" id="line-304"><code>	Reordering     uint32</code></span>
+<span class="codeline" id="line-305"><code>	Rcv_rtt        uint32</code></span>
+<span class="codeline" id="line-306"><code>	Rcv_space      uint32</code></span>
+<span class="codeline" id="line-307"><code>	Total_retrans  uint32</code></span>
+<span class="codeline" id="line-308"><code>}</code></span>
+<span class="codeline" id="line-309"><code></code></span>
+<span class="codeline" id="line-310"><code>const (</code></span>
+<span class="codeline" id="line-311"><code>	SizeofSockaddrInet4     = 0x10</code></span>
+<span class="codeline" id="line-312"><code>	SizeofSockaddrInet6     = 0x1c</code></span>
+<span class="codeline" id="line-313"><code>	SizeofSockaddrAny       = 0x70</code></span>
+<span class="codeline" id="line-314"><code>	SizeofSockaddrUnix      = 0x6e</code></span>
+<span class="codeline" id="line-315"><code>	SizeofSockaddrLinklayer = 0x14</code></span>
+<span class="codeline" id="line-316"><code>	SizeofSockaddrNetlink   = 0xc</code></span>
+<span class="codeline" id="line-317"><code>	SizeofLinger            = 0x8</code></span>
+<span class="codeline" id="line-318"><code>	SizeofIPMreq            = 0x8</code></span>
+<span class="codeline" id="line-319"><code>	SizeofIPMreqn           = 0xc</code></span>
+<span class="codeline" id="line-320"><code>	SizeofIPv6Mreq          = 0x14</code></span>
+<span class="codeline" id="line-321"><code>	SizeofMsghdr            = 0x38</code></span>
+<span class="codeline" id="line-322"><code>	SizeofCmsghdr           = 0x10</code></span>
+<span class="codeline" id="line-323"><code>	SizeofInet4Pktinfo      = 0xc</code></span>
+<span class="codeline" id="line-324"><code>	SizeofInet6Pktinfo      = 0x14</code></span>
+<span class="codeline" id="line-325"><code>	SizeofIPv6MTUInfo       = 0x20</code></span>
+<span class="codeline" id="line-326"><code>	SizeofICMPv6Filter      = 0x20</code></span>
+<span class="codeline" id="line-327"><code>	SizeofUcred             = 0xc</code></span>
+<span class="codeline" id="line-328"><code>	SizeofTCPInfo           = 0x68</code></span>
+<span class="codeline" id="line-329"><code>)</code></span>
+<span class="codeline" id="line-330"><code></code></span>
+<span class="codeline" id="line-331"><code>const (</code></span>
+<span class="codeline" id="line-332"><code>	IFA_UNSPEC          = 0x0</code></span>
+<span class="codeline" id="line-333"><code>	IFA_ADDRESS         = 0x1</code></span>
+<span class="codeline" id="line-334"><code>	IFA_LOCAL           = 0x2</code></span>
+<span class="codeline" id="line-335"><code>	IFA_LABEL           = 0x3</code></span>
+<span class="codeline" id="line-336"><code>	IFA_BROADCAST       = 0x4</code></span>
+<span class="codeline" id="line-337"><code>	IFA_ANYCAST         = 0x5</code></span>
+<span class="codeline" id="line-338"><code>	IFA_CACHEINFO       = 0x6</code></span>
+<span class="codeline" id="line-339"><code>	IFA_MULTICAST       = 0x7</code></span>
+<span class="codeline" id="line-340"><code>	IFLA_UNSPEC         = 0x0</code></span>
+<span class="codeline" id="line-341"><code>	IFLA_ADDRESS        = 0x1</code></span>
+<span class="codeline" id="line-342"><code>	IFLA_BROADCAST      = 0x2</code></span>
+<span class="codeline" id="line-343"><code>	IFLA_IFNAME         = 0x3</code></span>
+<span class="codeline" id="line-344"><code>	IFLA_MTU            = 0x4</code></span>
+<span class="codeline" id="line-345"><code>	IFLA_LINK           = 0x5</code></span>
+<span class="codeline" id="line-346"><code>	IFLA_QDISC          = 0x6</code></span>
+<span class="codeline" id="line-347"><code>	IFLA_STATS          = 0x7</code></span>
+<span class="codeline" id="line-348"><code>	IFLA_COST           = 0x8</code></span>
+<span class="codeline" id="line-349"><code>	IFLA_PRIORITY       = 0x9</code></span>
+<span class="codeline" id="line-350"><code>	IFLA_MASTER         = 0xa</code></span>
+<span class="codeline" id="line-351"><code>	IFLA_WIRELESS       = 0xb</code></span>
+<span class="codeline" id="line-352"><code>	IFLA_PROTINFO       = 0xc</code></span>
+<span class="codeline" id="line-353"><code>	IFLA_TXQLEN         = 0xd</code></span>
+<span class="codeline" id="line-354"><code>	IFLA_MAP            = 0xe</code></span>
+<span class="codeline" id="line-355"><code>	IFLA_WEIGHT         = 0xf</code></span>
+<span class="codeline" id="line-356"><code>	IFLA_OPERSTATE      = 0x10</code></span>
+<span class="codeline" id="line-357"><code>	IFLA_LINKMODE       = 0x11</code></span>
+<span class="codeline" id="line-358"><code>	IFLA_LINKINFO       = 0x12</code></span>
+<span class="codeline" id="line-359"><code>	IFLA_NET_NS_PID     = 0x13</code></span>
+<span class="codeline" id="line-360"><code>	IFLA_IFALIAS        = 0x14</code></span>
+<span class="codeline" id="line-361"><code>	IFLA_MAX            = 0x1d</code></span>
+<span class="codeline" id="line-362"><code>	RT_SCOPE_UNIVERSE   = 0x0</code></span>
+<span class="codeline" id="line-363"><code>	RT_SCOPE_SITE       = 0xc8</code></span>
+<span class="codeline" id="line-364"><code>	RT_SCOPE_LINK       = 0xfd</code></span>
+<span class="codeline" id="line-365"><code>	RT_SCOPE_HOST       = 0xfe</code></span>
+<span class="codeline" id="line-366"><code>	RT_SCOPE_NOWHERE    = 0xff</code></span>
+<span class="codeline" id="line-367"><code>	RT_TABLE_UNSPEC     = 0x0</code></span>
+<span class="codeline" id="line-368"><code>	RT_TABLE_COMPAT     = 0xfc</code></span>
+<span class="codeline" id="line-369"><code>	RT_TABLE_DEFAULT    = 0xfd</code></span>
+<span class="codeline" id="line-370"><code>	RT_TABLE_MAIN       = 0xfe</code></span>
+<span class="codeline" id="line-371"><code>	RT_TABLE_LOCAL      = 0xff</code></span>
+<span class="codeline" id="line-372"><code>	RT_TABLE_MAX        = 0xffffffff</code></span>
+<span class="codeline" id="line-373"><code>	RTA_UNSPEC          = 0x0</code></span>
+<span class="codeline" id="line-374"><code>	RTA_DST             = 0x1</code></span>
+<span class="codeline" id="line-375"><code>	RTA_SRC             = 0x2</code></span>
+<span class="codeline" id="line-376"><code>	RTA_IIF             = 0x3</code></span>
+<span class="codeline" id="line-377"><code>	RTA_OIF             = 0x4</code></span>
+<span class="codeline" id="line-378"><code>	RTA_GATEWAY         = 0x5</code></span>
+<span class="codeline" id="line-379"><code>	RTA_PRIORITY        = 0x6</code></span>
+<span class="codeline" id="line-380"><code>	RTA_PREFSRC         = 0x7</code></span>
+<span class="codeline" id="line-381"><code>	RTA_METRICS         = 0x8</code></span>
+<span class="codeline" id="line-382"><code>	RTA_MULTIPATH       = 0x9</code></span>
+<span class="codeline" id="line-383"><code>	RTA_FLOW            = 0xb</code></span>
+<span class="codeline" id="line-384"><code>	RTA_CACHEINFO       = 0xc</code></span>
+<span class="codeline" id="line-385"><code>	RTA_TABLE           = 0xf</code></span>
+<span class="codeline" id="line-386"><code>	RTN_UNSPEC          = 0x0</code></span>
+<span class="codeline" id="line-387"><code>	RTN_UNICAST         = 0x1</code></span>
+<span class="codeline" id="line-388"><code>	RTN_LOCAL           = 0x2</code></span>
+<span class="codeline" id="line-389"><code>	RTN_BROADCAST       = 0x3</code></span>
+<span class="codeline" id="line-390"><code>	RTN_ANYCAST         = 0x4</code></span>
+<span class="codeline" id="line-391"><code>	RTN_MULTICAST       = 0x5</code></span>
+<span class="codeline" id="line-392"><code>	RTN_BLACKHOLE       = 0x6</code></span>
+<span class="codeline" id="line-393"><code>	RTN_UNREACHABLE     = 0x7</code></span>
+<span class="codeline" id="line-394"><code>	RTN_PROHIBIT        = 0x8</code></span>
+<span class="codeline" id="line-395"><code>	RTN_THROW           = 0x9</code></span>
+<span class="codeline" id="line-396"><code>	RTN_NAT             = 0xa</code></span>
+<span class="codeline" id="line-397"><code>	RTN_XRESOLVE        = 0xb</code></span>
+<span class="codeline" id="line-398"><code>	RTNLGRP_NONE        = 0x0</code></span>
+<span class="codeline" id="line-399"><code>	RTNLGRP_LINK        = 0x1</code></span>
+<span class="codeline" id="line-400"><code>	RTNLGRP_NOTIFY      = 0x2</code></span>
+<span class="codeline" id="line-401"><code>	RTNLGRP_NEIGH       = 0x3</code></span>
+<span class="codeline" id="line-402"><code>	RTNLGRP_TC          = 0x4</code></span>
+<span class="codeline" id="line-403"><code>	RTNLGRP_IPV4_IFADDR = 0x5</code></span>
+<span class="codeline" id="line-404"><code>	RTNLGRP_IPV4_MROUTE = 0x6</code></span>
+<span class="codeline" id="line-405"><code>	RTNLGRP_IPV4_ROUTE  = 0x7</code></span>
+<span class="codeline" id="line-406"><code>	RTNLGRP_IPV4_RULE   = 0x8</code></span>
+<span class="codeline" id="line-407"><code>	RTNLGRP_IPV6_IFADDR = 0x9</code></span>
+<span class="codeline" id="line-408"><code>	RTNLGRP_IPV6_MROUTE = 0xa</code></span>
+<span class="codeline" id="line-409"><code>	RTNLGRP_IPV6_ROUTE  = 0xb</code></span>
+<span class="codeline" id="line-410"><code>	RTNLGRP_IPV6_IFINFO = 0xc</code></span>
+<span class="codeline" id="line-411"><code>	RTNLGRP_IPV6_PREFIX = 0x12</code></span>
+<span class="codeline" id="line-412"><code>	RTNLGRP_IPV6_RULE   = 0x13</code></span>
+<span class="codeline" id="line-413"><code>	RTNLGRP_ND_USEROPT  = 0x14</code></span>
+<span class="codeline" id="line-414"><code>	SizeofNlMsghdr      = 0x10</code></span>
+<span class="codeline" id="line-415"><code>	SizeofNlMsgerr      = 0x14</code></span>
+<span class="codeline" id="line-416"><code>	SizeofRtGenmsg      = 0x1</code></span>
+<span class="codeline" id="line-417"><code>	SizeofNlAttr        = 0x4</code></span>
+<span class="codeline" id="line-418"><code>	SizeofRtAttr        = 0x4</code></span>
+<span class="codeline" id="line-419"><code>	SizeofIfInfomsg     = 0x10</code></span>
+<span class="codeline" id="line-420"><code>	SizeofIfAddrmsg     = 0x8</code></span>
+<span class="codeline" id="line-421"><code>	SizeofRtMsg         = 0xc</code></span>
+<span class="codeline" id="line-422"><code>	SizeofRtNexthop     = 0x8</code></span>
+<span class="codeline" id="line-423"><code>)</code></span>
+<span class="codeline" id="line-424"><code></code></span>
+<span class="codeline" id="line-425"><code>type NlMsghdr struct {</code></span>
+<span class="codeline" id="line-426"><code>	Len   uint32</code></span>
+<span class="codeline" id="line-427"><code>	Type  uint16</code></span>
+<span class="codeline" id="line-428"><code>	Flags uint16</code></span>
+<span class="codeline" id="line-429"><code>	Seq   uint32</code></span>
+<span class="codeline" id="line-430"><code>	Pid   uint32</code></span>
+<span class="codeline" id="line-431"><code>}</code></span>
+<span class="codeline" id="line-432"><code></code></span>
+<span class="codeline" id="line-433"><code>type NlMsgerr struct {</code></span>
+<span class="codeline" id="line-434"><code>	Error int32</code></span>
+<span class="codeline" id="line-435"><code>	Msg   NlMsghdr</code></span>
+<span class="codeline" id="line-436"><code>}</code></span>
+<span class="codeline" id="line-437"><code></code></span>
+<span class="codeline" id="line-438"><code>type RtGenmsg struct {</code></span>
+<span class="codeline" id="line-439"><code>	Family uint8</code></span>
+<span class="codeline" id="line-440"><code>}</code></span>
+<span class="codeline" id="line-441"><code></code></span>
+<span class="codeline" id="line-442"><code>type NlAttr struct {</code></span>
+<span class="codeline" id="line-443"><code>	Len  uint16</code></span>
+<span class="codeline" id="line-444"><code>	Type uint16</code></span>
+<span class="codeline" id="line-445"><code>}</code></span>
+<span class="codeline" id="line-446"><code></code></span>
+<span class="codeline" id="line-447"><code>type RtAttr struct {</code></span>
+<span class="codeline" id="line-448"><code>	Len  uint16</code></span>
+<span class="codeline" id="line-449"><code>	Type uint16</code></span>
+<span class="codeline" id="line-450"><code>}</code></span>
+<span class="codeline" id="line-451"><code></code></span>
+<span class="codeline" id="line-452"><code>type IfInfomsg struct {</code></span>
+<span class="codeline" id="line-453"><code>	Family     uint8</code></span>
+<span class="codeline" id="line-454"><code>	X__ifi_pad uint8</code></span>
+<span class="codeline" id="line-455"><code>	Type       uint16</code></span>
+<span class="codeline" id="line-456"><code>	Index      int32</code></span>
+<span class="codeline" id="line-457"><code>	Flags      uint32</code></span>
+<span class="codeline" id="line-458"><code>	Change     uint32</code></span>
+<span class="codeline" id="line-459"><code>}</code></span>
+<span class="codeline" id="line-460"><code></code></span>
+<span class="codeline" id="line-461"><code>type IfAddrmsg struct {</code></span>
+<span class="codeline" id="line-462"><code>	Family    uint8</code></span>
+<span class="codeline" id="line-463"><code>	Prefixlen uint8</code></span>
+<span class="codeline" id="line-464"><code>	Flags     uint8</code></span>
+<span class="codeline" id="line-465"><code>	Scope     uint8</code></span>
+<span class="codeline" id="line-466"><code>	Index     uint32</code></span>
+<span class="codeline" id="line-467"><code>}</code></span>
+<span class="codeline" id="line-468"><code></code></span>
+<span class="codeline" id="line-469"><code>type RtMsg struct {</code></span>
+<span class="codeline" id="line-470"><code>	Family   uint8</code></span>
+<span class="codeline" id="line-471"><code>	Dst_len  uint8</code></span>
+<span class="codeline" id="line-472"><code>	Src_len  uint8</code></span>
+<span class="codeline" id="line-473"><code>	Tos      uint8</code></span>
+<span class="codeline" id="line-474"><code>	Table    uint8</code></span>
+<span class="codeline" id="line-475"><code>	Protocol uint8</code></span>
+<span class="codeline" id="line-476"><code>	Scope    uint8</code></span>
+<span class="codeline" id="line-477"><code>	Type     uint8</code></span>
+<span class="codeline" id="line-478"><code>	Flags    uint32</code></span>
+<span class="codeline" id="line-479"><code>}</code></span>
+<span class="codeline" id="line-480"><code></code></span>
+<span class="codeline" id="line-481"><code>type RtNexthop struct {</code></span>
+<span class="codeline" id="line-482"><code>	Len     uint16</code></span>
+<span class="codeline" id="line-483"><code>	Flags   uint8</code></span>
+<span class="codeline" id="line-484"><code>	Hops    uint8</code></span>
+<span class="codeline" id="line-485"><code>	Ifindex int32</code></span>
+<span class="codeline" id="line-486"><code>}</code></span>
+<span class="codeline" id="line-487"><code></code></span>
+<span class="codeline" id="line-488"><code>const (</code></span>
+<span class="codeline" id="line-489"><code>	SizeofSockFilter = 0x8</code></span>
+<span class="codeline" id="line-490"><code>	SizeofSockFprog  = 0x10</code></span>
+<span class="codeline" id="line-491"><code>)</code></span>
+<span class="codeline" id="line-492"><code></code></span>
+<span class="codeline" id="line-493"><code>type SockFilter struct {</code></span>
+<span class="codeline" id="line-494"><code>	Code uint16</code></span>
+<span class="codeline" id="line-495"><code>	Jt   uint8</code></span>
+<span class="codeline" id="line-496"><code>	Jf   uint8</code></span>
+<span class="codeline" id="line-497"><code>	K    uint32</code></span>
+<span class="codeline" id="line-498"><code>}</code></span>
+<span class="codeline" id="line-499"><code></code></span>
+<span class="codeline" id="line-500"><code>type SockFprog struct {</code></span>
+<span class="codeline" id="line-501"><code>	Len       uint16</code></span>
+<span class="codeline" id="line-502"><code>	Pad_cgo_0 [6]byte</code></span>
+<span class="codeline" id="line-503"><code>	Filter    *SockFilter</code></span>
+<span class="codeline" id="line-504"><code>}</code></span>
+<span class="codeline" id="line-505"><code></code></span>
+<span class="codeline" id="line-506"><code>type InotifyEvent struct {</code></span>
+<span class="codeline" id="line-507"><code>	Wd     int32</code></span>
+<span class="codeline" id="line-508"><code>	Mask   uint32</code></span>
+<span class="codeline" id="line-509"><code>	Cookie uint32</code></span>
+<span class="codeline" id="line-510"><code>	Len    uint32</code></span>
+<span class="codeline" id="line-511"><code>	Name   [0]uint8</code></span>
+<span class="codeline" id="line-512"><code>}</code></span>
+<span class="codeline" id="line-513"><code></code></span>
+<span class="codeline" id="line-514"><code>const SizeofInotifyEvent = 0x10</code></span>
+<span class="codeline" id="line-515"><code></code></span>
+<span class="codeline" id="line-516"><code>type PtraceRegs struct {</code></span>
+<span class="codeline" id="line-517"><code>	R15      uint64</code></span>
+<span class="codeline" id="line-518"><code>	R14      uint64</code></span>
+<span class="codeline" id="line-519"><code>	R13      uint64</code></span>
+<span class="codeline" id="line-520"><code>	R12      uint64</code></span>
+<span class="codeline" id="line-521"><code>	Rbp      uint64</code></span>
+<span class="codeline" id="line-522"><code>	Rbx      uint64</code></span>
+<span class="codeline" id="line-523"><code>	R11      uint64</code></span>
+<span class="codeline" id="line-524"><code>	R10      uint64</code></span>
+<span class="codeline" id="line-525"><code>	R9       uint64</code></span>
+<span class="codeline" id="line-526"><code>	R8       uint64</code></span>
+<span class="codeline" id="line-527"><code>	Rax      uint64</code></span>
+<span class="codeline" id="line-528"><code>	Rcx      uint64</code></span>
+<span class="codeline" id="line-529"><code>	Rdx      uint64</code></span>
+<span class="codeline" id="line-530"><code>	Rsi      uint64</code></span>
+<span class="codeline" id="line-531"><code>	Rdi      uint64</code></span>
+<span class="codeline" id="line-532"><code>	Orig_rax uint64</code></span>
+<span class="codeline" id="line-533"><code>	Rip      uint64</code></span>
+<span class="codeline" id="line-534"><code>	Cs       uint64</code></span>
+<span class="codeline" id="line-535"><code>	Eflags   uint64</code></span>
+<span class="codeline" id="line-536"><code>	Rsp      uint64</code></span>
+<span class="codeline" id="line-537"><code>	Ss       uint64</code></span>
+<span class="codeline" id="line-538"><code>	Fs_base  uint64</code></span>
+<span class="codeline" id="line-539"><code>	Gs_base  uint64</code></span>
+<span class="codeline" id="line-540"><code>	Ds       uint64</code></span>
+<span class="codeline" id="line-541"><code>	Es       uint64</code></span>
+<span class="codeline" id="line-542"><code>	Fs       uint64</code></span>
+<span class="codeline" id="line-543"><code>	Gs       uint64</code></span>
+<span class="codeline" id="line-544"><code>}</code></span>
+<span class="codeline" id="line-545"><code></code></span>
+<span class="codeline" id="line-546"><code>type FdSet struct {</code></span>
+<span class="codeline" id="line-547"><code>	Bits [16]int64</code></span>
+<span class="codeline" id="line-548"><code>}</code></span>
+<span class="codeline" id="line-549"><code></code></span>
+<span class="codeline" id="line-550"><code>type Sysinfo_t struct {</code></span>
+<span class="codeline" id="line-551"><code>	Uptime    int64</code></span>
+<span class="codeline" id="line-552"><code>	Loads     [3]uint64</code></span>
+<span class="codeline" id="line-553"><code>	Totalram  uint64</code></span>
+<span class="codeline" id="line-554"><code>	Freeram   uint64</code></span>
+<span class="codeline" id="line-555"><code>	Sharedram uint64</code></span>
+<span class="codeline" id="line-556"><code>	Bufferram uint64</code></span>
+<span class="codeline" id="line-557"><code>	Totalswap uint64</code></span>
+<span class="codeline" id="line-558"><code>	Freeswap  uint64</code></span>
+<span class="codeline" id="line-559"><code>	Procs     uint16</code></span>
+<span class="codeline" id="line-560"><code>	Pad       uint16</code></span>
+<span class="codeline" id="line-561"><code>	Pad_cgo_0 [4]byte</code></span>
+<span class="codeline" id="line-562"><code>	Totalhigh uint64</code></span>
+<span class="codeline" id="line-563"><code>	Freehigh  uint64</code></span>
+<span class="codeline" id="line-564"><code>	Unit      uint32</code></span>
+<span class="codeline" id="line-565"><code>	X_f       [0]byte</code></span>
+<span class="codeline" id="line-566"><code>	Pad_cgo_1 [4]byte</code></span>
+<span class="codeline" id="line-567"><code>}</code></span>
+<span class="codeline" id="line-568"><code></code></span>
+<span class="codeline" id="line-569"><code>type Utsname struct {</code></span>
+<span class="codeline" id="line-570"><code>	Sysname    [65]int8</code></span>
+<span class="codeline" id="line-571"><code>	Nodename   [65]int8</code></span>
+<span class="codeline" id="line-572"><code>	Release    [65]int8</code></span>
+<span class="codeline" id="line-573"><code>	Version    [65]int8</code></span>
+<span class="codeline" id="line-574"><code>	Machine    [65]int8</code></span>
+<span class="codeline" id="line-575"><code>	Domainname [65]int8</code></span>
+<span class="codeline" id="line-576"><code>}</code></span>
+<span class="codeline" id="line-577"><code></code></span>
+<span class="codeline" id="line-578"><code>type Ustat_t struct {</code></span>
+<span class="codeline" id="line-579"><code>	Tfree     int32</code></span>
+<span class="codeline" id="line-580"><code>	Pad_cgo_0 [4]byte</code></span>
+<span class="codeline" id="line-581"><code>	Tinode    uint64</code></span>
+<span class="codeline" id="line-582"><code>	Fname     [6]int8</code></span>
+<span class="codeline" id="line-583"><code>	Fpack     [6]int8</code></span>
+<span class="codeline" id="line-584"><code>	Pad_cgo_1 [4]byte</code></span>
+<span class="codeline" id="line-585"><code>}</code></span>
+<span class="codeline" id="line-586"><code></code></span>
+<span class="codeline" id="line-587"><code>type EpollEvent struct {</code></span>
+<span class="codeline" id="line-588"><code>	Events uint32</code></span>
+<span class="codeline" id="line-589"><code>	Fd     int32</code></span>
+<span class="codeline" id="line-590"><code>	Pad    int32</code></span>
+<span class="codeline" id="line-591"><code>}</code></span>
+<span class="codeline" id="line-592"><code></code></span>
+<span class="codeline" id="line-593"><code>const (</code></span>
+<span class="codeline" id="line-594"><code>	_AT_FDCWD            = -0x64</code></span>
+<span class="codeline" id="line-595"><code>	_AT_REMOVEDIR        = 0x200</code></span>
+<span class="codeline" id="line-596"><code>	_AT_SYMLINK_NOFOLLOW = 0x100</code></span>
+<span class="codeline" id="line-597"><code>	_AT_EACCESS          = 0x200</code></span>
+<span class="codeline" id="line-598"><code>)</code></span>
+<span class="codeline" id="line-599"><code></code></span>
+<span class="codeline" id="line-600"><code>type pollFd struct {</code></span>
+<span class="codeline" id="line-601"><code>	Fd      int32</code></span>
+<span class="codeline" id="line-602"><code>	Events  int16</code></span>
+<span class="codeline" id="line-603"><code>	Revents int16</code></span>
+<span class="codeline" id="line-604"><code>}</code></span>
+<span class="codeline" id="line-605"><code></code></span>
+<span class="codeline" id="line-606"><code>type Termios struct {</code></span>
+<span class="codeline" id="line-607"><code>	Iflag     uint32</code></span>
+<span class="codeline" id="line-608"><code>	Oflag     uint32</code></span>
+<span class="codeline" id="line-609"><code>	Cflag     uint32</code></span>
+<span class="codeline" id="line-610"><code>	Lflag     uint32</code></span>
+<span class="codeline" id="line-611"><code>	Line      uint8</code></span>
+<span class="codeline" id="line-612"><code>	Cc        [32]uint8</code></span>
+<span class="codeline" id="line-613"><code>	Pad_cgo_0 [3]byte</code></span>
+<span class="codeline" id="line-614"><code>	Ispeed    uint32</code></span>
+<span class="codeline" id="line-615"><code>	Ospeed    uint32</code></span>
+<span class="codeline" id="line-616"><code>}</code></span>
+<span class="codeline" id="line-617"><code></code></span>
+<span class="codeline" id="line-618"><code>const (</code></span>
+<span class="codeline" id="line-619"><code>	VINTR    = 0x0</code></span>
+<span class="codeline" id="line-620"><code>	VQUIT    = 0x1</code></span>
+<span class="codeline" id="line-621"><code>	VERASE   = 0x2</code></span>
+<span class="codeline" id="line-622"><code>	VKILL    = 0x3</code></span>
+<span class="codeline" id="line-623"><code>	VEOF     = 0x4</code></span>
+<span class="codeline" id="line-624"><code>	VTIME    = 0x5</code></span>
+<span class="codeline" id="line-625"><code>	VMIN     = 0x6</code></span>
+<span class="codeline" id="line-626"><code>	VSWTC    = 0x7</code></span>
+<span class="codeline" id="line-627"><code>	VSTART   = 0x8</code></span>
+<span class="codeline" id="line-628"><code>	VSTOP    = 0x9</code></span>
+<span class="codeline" id="line-629"><code>	VSUSP    = 0xa</code></span>
+<span class="codeline" id="line-630"><code>	VEOL     = 0xb</code></span>
+<span class="codeline" id="line-631"><code>	VREPRINT = 0xc</code></span>
+<span class="codeline" id="line-632"><code>	VDISCARD = 0xd</code></span>
+<span class="codeline" id="line-633"><code>	VWERASE  = 0xe</code></span>
+<span class="codeline" id="line-634"><code>	VLNEXT   = 0xf</code></span>
+<span class="codeline" id="line-635"><code>	VEOL2    = 0x10</code></span>
+<span class="codeline" id="line-636"><code>	IGNBRK   = 0x1</code></span>
+<span class="codeline" id="line-637"><code>	BRKINT   = 0x2</code></span>
+<span class="codeline" id="line-638"><code>	IGNPAR   = 0x4</code></span>
+<span class="codeline" id="line-639"><code>	PARMRK   = 0x8</code></span>
+<span class="codeline" id="line-640"><code>	INPCK    = 0x10</code></span>
+<span class="codeline" id="line-641"><code>	ISTRIP   = 0x20</code></span>
+<span class="codeline" id="line-642"><code>	INLCR    = 0x40</code></span>
+<span class="codeline" id="line-643"><code>	IGNCR    = 0x80</code></span>
+<span class="codeline" id="line-644"><code>	ICRNL    = 0x100</code></span>
+<span class="codeline" id="line-645"><code>	IUCLC    = 0x200</code></span>
+<span class="codeline" id="line-646"><code>	IXON     = 0x400</code></span>
+<span class="codeline" id="line-647"><code>	IXANY    = 0x800</code></span>
+<span class="codeline" id="line-648"><code>	IXOFF    = 0x1000</code></span>
+<span class="codeline" id="line-649"><code>	IMAXBEL  = 0x2000</code></span>
+<span class="codeline" id="line-650"><code>	IUTF8    = 0x4000</code></span>
+<span class="codeline" id="line-651"><code>	OPOST    = 0x1</code></span>
+<span class="codeline" id="line-652"><code>	OLCUC    = 0x2</code></span>
+<span class="codeline" id="line-653"><code>	ONLCR    = 0x4</code></span>
+<span class="codeline" id="line-654"><code>	OCRNL    = 0x8</code></span>
+<span class="codeline" id="line-655"><code>	ONOCR    = 0x10</code></span>
+<span class="codeline" id="line-656"><code>	ONLRET   = 0x20</code></span>
+<span class="codeline" id="line-657"><code>	OFILL    = 0x40</code></span>
+<span class="codeline" id="line-658"><code>	OFDEL    = 0x80</code></span>
+<span class="codeline" id="line-659"><code>	B0       = 0x0</code></span>
+<span class="codeline" id="line-660"><code>	B50      = 0x1</code></span>
+<span class="codeline" id="line-661"><code>	B75      = 0x2</code></span>
+<span class="codeline" id="line-662"><code>	B110     = 0x3</code></span>
+<span class="codeline" id="line-663"><code>	B134     = 0x4</code></span>
+<span class="codeline" id="line-664"><code>	B150     = 0x5</code></span>
+<span class="codeline" id="line-665"><code>	B200     = 0x6</code></span>
+<span class="codeline" id="line-666"><code>	B300     = 0x7</code></span>
+<span class="codeline" id="line-667"><code>	B600     = 0x8</code></span>
+<span class="codeline" id="line-668"><code>	B1200    = 0x9</code></span>
+<span class="codeline" id="line-669"><code>	B1800    = 0xa</code></span>
+<span class="codeline" id="line-670"><code>	B2400    = 0xb</code></span>
+<span class="codeline" id="line-671"><code>	B4800    = 0xc</code></span>
+<span class="codeline" id="line-672"><code>	B9600    = 0xd</code></span>
+<span class="codeline" id="line-673"><code>	B19200   = 0xe</code></span>
+<span class="codeline" id="line-674"><code>	B38400   = 0xf</code></span>
+<span class="codeline" id="line-675"><code>	CSIZE    = 0x30</code></span>
+<span class="codeline" id="line-676"><code>	CS5      = 0x0</code></span>
+<span class="codeline" id="line-677"><code>	CS6      = 0x10</code></span>
+<span class="codeline" id="line-678"><code>	CS7      = 0x20</code></span>
+<span class="codeline" id="line-679"><code>	CS8      = 0x30</code></span>
+<span class="codeline" id="line-680"><code>	CSTOPB   = 0x40</code></span>
+<span class="codeline" id="line-681"><code>	CREAD    = 0x80</code></span>
+<span class="codeline" id="line-682"><code>	PARENB   = 0x100</code></span>
+<span class="codeline" id="line-683"><code>	PARODD   = 0x200</code></span>
+<span class="codeline" id="line-684"><code>	HUPCL    = 0x400</code></span>
+<span class="codeline" id="line-685"><code>	CLOCAL   = 0x800</code></span>
+<span class="codeline" id="line-686"><code>	B57600   = 0x1001</code></span>
+<span class="codeline" id="line-687"><code>	B115200  = 0x1002</code></span>
+<span class="codeline" id="line-688"><code>	B230400  = 0x1003</code></span>
+<span class="codeline" id="line-689"><code>	B460800  = 0x1004</code></span>
+<span class="codeline" id="line-690"><code>	B500000  = 0x1005</code></span>
+<span class="codeline" id="line-691"><code>	B576000  = 0x1006</code></span>
+<span class="codeline" id="line-692"><code>	B921600  = 0x1007</code></span>
+<span class="codeline" id="line-693"><code>	B1000000 = 0x1008</code></span>
+<span class="codeline" id="line-694"><code>	B1152000 = 0x1009</code></span>
+<span class="codeline" id="line-695"><code>	B1500000 = 0x100a</code></span>
+<span class="codeline" id="line-696"><code>	B2000000 = 0x100b</code></span>
+<span class="codeline" id="line-697"><code>	B2500000 = 0x100c</code></span>
+<span class="codeline" id="line-698"><code>	B3000000 = 0x100d</code></span>
+<span class="codeline" id="line-699"><code>	B3500000 = 0x100e</code></span>
+<span class="codeline" id="line-700"><code>	B4000000 = 0x100f</code></span>
+<span class="codeline" id="line-701"><code>	ISIG     = 0x1</code></span>
+<span class="codeline" id="line-702"><code>	ICANON   = 0x2</code></span>
+<span class="codeline" id="line-703"><code>	XCASE    = 0x4</code></span>
+<span class="codeline" id="line-704"><code>	ECHO     = 0x8</code></span>
+<span class="codeline" id="line-705"><code>	ECHOE    = 0x10</code></span>
+<span class="codeline" id="line-706"><code>	ECHOK    = 0x20</code></span>
+<span class="codeline" id="line-707"><code>	ECHONL   = 0x40</code></span>
+<span class="codeline" id="line-708"><code>	NOFLSH   = 0x80</code></span>
+<span class="codeline" id="line-709"><code>	TOSTOP   = 0x100</code></span>
+<span class="codeline" id="line-710"><code>	ECHOCTL  = 0x200</code></span>
+<span class="codeline" id="line-711"><code>	ECHOPRT  = 0x400</code></span>
+<span class="codeline" id="line-712"><code>	ECHOKE   = 0x800</code></span>
+<span class="codeline" id="line-713"><code>	FLUSHO   = 0x1000</code></span>
+<span class="codeline" id="line-714"><code>	PENDIN   = 0x4000</code></span>
+<span class="codeline" id="line-715"><code>	IEXTEN   = 0x8000</code></span>
+<span class="codeline" id="line-716"><code>	TCGETS   = 0x5401</code></span>
+<span class="codeline" id="line-717"><code>	TCSETS   = 0x5402</code></span>
+<span class="codeline" id="line-718"><code>)</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

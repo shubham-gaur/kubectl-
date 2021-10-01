@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: replace.go in package strings</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	replace.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/strings.html">strings</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package strings</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"io"</code></span>
+<span class="codeline" id="line-9"><code>	"sync"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// Replacer replaces a list of strings with replacements.</code></span>
+<span class="codeline" id="line-13"><code>// It is safe for concurrent use by multiple goroutines.</code></span>
+<span class="codeline" id="line-14"><code>type Replacer struct {</code></span>
+<span class="codeline" id="line-15"><code>	once   sync.Once // guards buildOnce method</code></span>
+<span class="codeline" id="line-16"><code>	r      replacer</code></span>
+<span class="codeline" id="line-17"><code>	oldnew []string</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// replacer is the interface that a replacement algorithm needs to implement.</code></span>
+<span class="codeline" id="line-21"><code>type replacer interface {</code></span>
+<span class="codeline" id="line-22"><code>	Replace(s string) string</code></span>
+<span class="codeline" id="line-23"><code>	WriteString(w io.Writer, s string) (n int, err error)</code></span>
+<span class="codeline" id="line-24"><code>}</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>// NewReplacer returns a new Replacer from a list of old, new string</code></span>
+<span class="codeline" id="line-27"><code>// pairs. Replacements are performed in the order they appear in the</code></span>
+<span class="codeline" id="line-28"><code>// target string, without overlapping matches. The old string</code></span>
+<span class="codeline" id="line-29"><code>// comparisons are done in argument order.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// NewReplacer panics if given an odd number of arguments.</code></span>
+<span class="codeline" id="line-32"><code>func NewReplacer(oldnew ...string) *Replacer {</code></span>
+<span class="codeline" id="line-33"><code>	if len(oldnew)%2 == 1 {</code></span>
+<span class="codeline" id="line-34"><code>		panic("strings.NewReplacer: odd argument count")</code></span>
+<span class="codeline" id="line-35"><code>	}</code></span>
+<span class="codeline" id="line-36"><code>	return &amp;Replacer{oldnew: append([]string(nil), oldnew...)}</code></span>
+<span class="codeline" id="line-37"><code>}</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>func (r *Replacer) buildOnce() {</code></span>
+<span class="codeline" id="line-40"><code>	r.r = r.build()</code></span>
+<span class="codeline" id="line-41"><code>	r.oldnew = nil</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>func (b *Replacer) build() replacer {</code></span>
+<span class="codeline" id="line-45"><code>	oldnew := b.oldnew</code></span>
+<span class="codeline" id="line-46"><code>	if len(oldnew) == 2 &amp;&amp; len(oldnew[0]) &gt; 1 {</code></span>
+<span class="codeline" id="line-47"><code>		return makeSingleStringReplacer(oldnew[0], oldnew[1])</code></span>
+<span class="codeline" id="line-48"><code>	}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>	allNewBytes := true</code></span>
+<span class="codeline" id="line-51"><code>	for i := 0; i &lt; len(oldnew); i += 2 {</code></span>
+<span class="codeline" id="line-52"><code>		if len(oldnew[i]) != 1 {</code></span>
+<span class="codeline" id="line-53"><code>			return makeGenericReplacer(oldnew)</code></span>
+<span class="codeline" id="line-54"><code>		}</code></span>
+<span class="codeline" id="line-55"><code>		if len(oldnew[i+1]) != 1 {</code></span>
+<span class="codeline" id="line-56"><code>			allNewBytes = false</code></span>
+<span class="codeline" id="line-57"><code>		}</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>	if allNewBytes {</code></span>
+<span class="codeline" id="line-61"><code>		r := byteReplacer{}</code></span>
+<span class="codeline" id="line-62"><code>		for i := range r {</code></span>
+<span class="codeline" id="line-63"><code>			r[i] = byte(i)</code></span>
+<span class="codeline" id="line-64"><code>		}</code></span>
+<span class="codeline" id="line-65"><code>		// The first occurrence of old-&gt;new map takes precedence</code></span>
+<span class="codeline" id="line-66"><code>		// over the others with the same old string.</code></span>
+<span class="codeline" id="line-67"><code>		for i := len(oldnew) - 2; i &gt;= 0; i -= 2 {</code></span>
+<span class="codeline" id="line-68"><code>			o := oldnew[i][0]</code></span>
+<span class="codeline" id="line-69"><code>			n := oldnew[i+1][0]</code></span>
+<span class="codeline" id="line-70"><code>			r[o] = n</code></span>
+<span class="codeline" id="line-71"><code>		}</code></span>
+<span class="codeline" id="line-72"><code>		return &amp;r</code></span>
+<span class="codeline" id="line-73"><code>	}</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>	r := byteStringReplacer{toReplace: make([]string, 0, len(oldnew)/2)}</code></span>
+<span class="codeline" id="line-76"><code>	// The first occurrence of old-&gt;new map takes precedence</code></span>
+<span class="codeline" id="line-77"><code>	// over the others with the same old string.</code></span>
+<span class="codeline" id="line-78"><code>	for i := len(oldnew) - 2; i &gt;= 0; i -= 2 {</code></span>
+<span class="codeline" id="line-79"><code>		o := oldnew[i][0]</code></span>
+<span class="codeline" id="line-80"><code>		n := oldnew[i+1]</code></span>
+<span class="codeline" id="line-81"><code>		// To avoid counting repetitions multiple times.</code></span>
+<span class="codeline" id="line-82"><code>		if r.replacements[o] == nil {</code></span>
+<span class="codeline" id="line-83"><code>			// We need to use string([]byte{o}) instead of string(o),</code></span>
+<span class="codeline" id="line-84"><code>			// to avoid utf8 encoding of o.</code></span>
+<span class="codeline" id="line-85"><code>			// E. g. byte(150) produces string of length 2.</code></span>
+<span class="codeline" id="line-86"><code>			r.toReplace = append(r.toReplace, string([]byte{o}))</code></span>
+<span class="codeline" id="line-87"><code>		}</code></span>
+<span class="codeline" id="line-88"><code>		r.replacements[o] = []byte(n)</code></span>
+<span class="codeline" id="line-89"><code></code></span>
+<span class="codeline" id="line-90"><code>	}</code></span>
+<span class="codeline" id="line-91"><code>	return &amp;r</code></span>
+<span class="codeline" id="line-92"><code>}</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>// Replace returns a copy of s with all replacements performed.</code></span>
+<span class="codeline" id="line-95"><code>func (r *Replacer) Replace(s string) string {</code></span>
+<span class="codeline" id="line-96"><code>	r.once.Do(r.buildOnce)</code></span>
+<span class="codeline" id="line-97"><code>	return r.r.Replace(s)</code></span>
+<span class="codeline" id="line-98"><code>}</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>// WriteString writes s to w with all replacements performed.</code></span>
+<span class="codeline" id="line-101"><code>func (r *Replacer) WriteString(w io.Writer, s string) (n int, err error) {</code></span>
+<span class="codeline" id="line-102"><code>	r.once.Do(r.buildOnce)</code></span>
+<span class="codeline" id="line-103"><code>	return r.r.WriteString(w, s)</code></span>
+<span class="codeline" id="line-104"><code>}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>// trieNode is a node in a lookup trie for prioritized key/value pairs. Keys</code></span>
+<span class="codeline" id="line-107"><code>// and values may be empty. For example, the trie containing keys "ax", "ay",</code></span>
+<span class="codeline" id="line-108"><code>// "bcbc", "x" and "xy" could have eight nodes:</code></span>
+<span class="codeline" id="line-109"><code>//</code></span>
+<span class="codeline" id="line-110"><code>//  n0  -</code></span>
+<span class="codeline" id="line-111"><code>//  n1  a-</code></span>
+<span class="codeline" id="line-112"><code>//  n2  .x+</code></span>
+<span class="codeline" id="line-113"><code>//  n3  .y+</code></span>
+<span class="codeline" id="line-114"><code>//  n4  b-</code></span>
+<span class="codeline" id="line-115"><code>//  n5  .cbc+</code></span>
+<span class="codeline" id="line-116"><code>//  n6  x+</code></span>
+<span class="codeline" id="line-117"><code>//  n7  .y+</code></span>
+<span class="codeline" id="line-118"><code>//</code></span>
+<span class="codeline" id="line-119"><code>// n0 is the root node, and its children are n1, n4 and n6; n1's children are</code></span>
+<span class="codeline" id="line-120"><code>// n2 and n3; n4's child is n5; n6's child is n7. Nodes n0, n1 and n4 (marked</code></span>
+<span class="codeline" id="line-121"><code>// with a trailing "-") are partial keys, and nodes n2, n3, n5, n6 and n7</code></span>
+<span class="codeline" id="line-122"><code>// (marked with a trailing "+") are complete keys.</code></span>
+<span class="codeline" id="line-123"><code>type trieNode struct {</code></span>
+<span class="codeline" id="line-124"><code>	// value is the value of the trie node's key/value pair. It is empty if</code></span>
+<span class="codeline" id="line-125"><code>	// this node is not a complete key.</code></span>
+<span class="codeline" id="line-126"><code>	value string</code></span>
+<span class="codeline" id="line-127"><code>	// priority is the priority (higher is more important) of the trie node's</code></span>
+<span class="codeline" id="line-128"><code>	// key/value pair; keys are not necessarily matched shortest- or longest-</code></span>
+<span class="codeline" id="line-129"><code>	// first. Priority is positive if this node is a complete key, and zero</code></span>
+<span class="codeline" id="line-130"><code>	// otherwise. In the example above, positive/zero priorities are marked</code></span>
+<span class="codeline" id="line-131"><code>	// with a trailing "+" or "-".</code></span>
+<span class="codeline" id="line-132"><code>	priority int</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>	// A trie node may have zero, one or more child nodes:</code></span>
+<span class="codeline" id="line-135"><code>	//  * if the remaining fields are zero, there are no children.</code></span>
+<span class="codeline" id="line-136"><code>	//  * if prefix and next are non-zero, there is one child in next.</code></span>
+<span class="codeline" id="line-137"><code>	//  * if table is non-zero, it defines all the children.</code></span>
+<span class="codeline" id="line-138"><code>	//</code></span>
+<span class="codeline" id="line-139"><code>	// Prefixes are preferred over tables when there is one child, but the</code></span>
+<span class="codeline" id="line-140"><code>	// root node always uses a table for lookup efficiency.</code></span>
+<span class="codeline" id="line-141"><code></code></span>
+<span class="codeline" id="line-142"><code>	// prefix is the difference in keys between this trie node and the next.</code></span>
+<span class="codeline" id="line-143"><code>	// In the example above, node n4 has prefix "cbc" and n4's next node is n5.</code></span>
+<span class="codeline" id="line-144"><code>	// Node n5 has no children and so has zero prefix, next and table fields.</code></span>
+<span class="codeline" id="line-145"><code>	prefix string</code></span>
+<span class="codeline" id="line-146"><code>	next   *trieNode</code></span>
+<span class="codeline" id="line-147"><code></code></span>
+<span class="codeline" id="line-148"><code>	// table is a lookup table indexed by the next byte in the key, after</code></span>
+<span class="codeline" id="line-149"><code>	// remapping that byte through genericReplacer.mapping to create a dense</code></span>
+<span class="codeline" id="line-150"><code>	// index. In the example above, the keys only use 'a', 'b', 'c', 'x' and</code></span>
+<span class="codeline" id="line-151"><code>	// 'y', which remap to 0, 1, 2, 3 and 4. All other bytes remap to 5, and</code></span>
+<span class="codeline" id="line-152"><code>	// genericReplacer.tableSize will be 5. Node n0's table will be</code></span>
+<span class="codeline" id="line-153"><code>	// []*trieNode{ 0:n1, 1:n4, 3:n6 }, where the 0, 1 and 3 are the remapped</code></span>
+<span class="codeline" id="line-154"><code>	// 'a', 'b' and 'x'.</code></span>
+<span class="codeline" id="line-155"><code>	table []*trieNode</code></span>
+<span class="codeline" id="line-156"><code>}</code></span>
+<span class="codeline" id="line-157"><code></code></span>
+<span class="codeline" id="line-158"><code>func (t *trieNode) add(key, val string, priority int, r *genericReplacer) {</code></span>
+<span class="codeline" id="line-159"><code>	if key == "" {</code></span>
+<span class="codeline" id="line-160"><code>		if t.priority == 0 {</code></span>
+<span class="codeline" id="line-161"><code>			t.value = val</code></span>
+<span class="codeline" id="line-162"><code>			t.priority = priority</code></span>
+<span class="codeline" id="line-163"><code>		}</code></span>
+<span class="codeline" id="line-164"><code>		return</code></span>
+<span class="codeline" id="line-165"><code>	}</code></span>
+<span class="codeline" id="line-166"><code></code></span>
+<span class="codeline" id="line-167"><code>	if t.prefix != "" {</code></span>
+<span class="codeline" id="line-168"><code>		// Need to split the prefix among multiple nodes.</code></span>
+<span class="codeline" id="line-169"><code>		var n int // length of the longest common prefix</code></span>
+<span class="codeline" id="line-170"><code>		for ; n &lt; len(t.prefix) &amp;&amp; n &lt; len(key); n++ {</code></span>
+<span class="codeline" id="line-171"><code>			if t.prefix[n] != key[n] {</code></span>
+<span class="codeline" id="line-172"><code>				break</code></span>
+<span class="codeline" id="line-173"><code>			}</code></span>
+<span class="codeline" id="line-174"><code>		}</code></span>
+<span class="codeline" id="line-175"><code>		if n == len(t.prefix) {</code></span>
+<span class="codeline" id="line-176"><code>			t.next.add(key[n:], val, priority, r)</code></span>
+<span class="codeline" id="line-177"><code>		} else if n == 0 {</code></span>
+<span class="codeline" id="line-178"><code>			// First byte differs, start a new lookup table here. Looking up</code></span>
+<span class="codeline" id="line-179"><code>			// what is currently t.prefix[0] will lead to prefixNode, and</code></span>
+<span class="codeline" id="line-180"><code>			// looking up key[0] will lead to keyNode.</code></span>
+<span class="codeline" id="line-181"><code>			var prefixNode *trieNode</code></span>
+<span class="codeline" id="line-182"><code>			if len(t.prefix) == 1 {</code></span>
+<span class="codeline" id="line-183"><code>				prefixNode = t.next</code></span>
+<span class="codeline" id="line-184"><code>			} else {</code></span>
+<span class="codeline" id="line-185"><code>				prefixNode = &amp;trieNode{</code></span>
+<span class="codeline" id="line-186"><code>					prefix: t.prefix[1:],</code></span>
+<span class="codeline" id="line-187"><code>					next:   t.next,</code></span>
+<span class="codeline" id="line-188"><code>				}</code></span>
+<span class="codeline" id="line-189"><code>			}</code></span>
+<span class="codeline" id="line-190"><code>			keyNode := new(trieNode)</code></span>
+<span class="codeline" id="line-191"><code>			t.table = make([]*trieNode, r.tableSize)</code></span>
+<span class="codeline" id="line-192"><code>			t.table[r.mapping[t.prefix[0]]] = prefixNode</code></span>
+<span class="codeline" id="line-193"><code>			t.table[r.mapping[key[0]]] = keyNode</code></span>
+<span class="codeline" id="line-194"><code>			t.prefix = ""</code></span>
+<span class="codeline" id="line-195"><code>			t.next = nil</code></span>
+<span class="codeline" id="line-196"><code>			keyNode.add(key[1:], val, priority, r)</code></span>
+<span class="codeline" id="line-197"><code>		} else {</code></span>
+<span class="codeline" id="line-198"><code>			// Insert new node after the common section of the prefix.</code></span>
+<span class="codeline" id="line-199"><code>			next := &amp;trieNode{</code></span>
+<span class="codeline" id="line-200"><code>				prefix: t.prefix[n:],</code></span>
+<span class="codeline" id="line-201"><code>				next:   t.next,</code></span>
+<span class="codeline" id="line-202"><code>			}</code></span>
+<span class="codeline" id="line-203"><code>			t.prefix = t.prefix[:n]</code></span>
+<span class="codeline" id="line-204"><code>			t.next = next</code></span>
+<span class="codeline" id="line-205"><code>			next.add(key[n:], val, priority, r)</code></span>
+<span class="codeline" id="line-206"><code>		}</code></span>
+<span class="codeline" id="line-207"><code>	} else if t.table != nil {</code></span>
+<span class="codeline" id="line-208"><code>		// Insert into existing table.</code></span>
+<span class="codeline" id="line-209"><code>		m := r.mapping[key[0]]</code></span>
+<span class="codeline" id="line-210"><code>		if t.table[m] == nil {</code></span>
+<span class="codeline" id="line-211"><code>			t.table[m] = new(trieNode)</code></span>
+<span class="codeline" id="line-212"><code>		}</code></span>
+<span class="codeline" id="line-213"><code>		t.table[m].add(key[1:], val, priority, r)</code></span>
+<span class="codeline" id="line-214"><code>	} else {</code></span>
+<span class="codeline" id="line-215"><code>		t.prefix = key</code></span>
+<span class="codeline" id="line-216"><code>		t.next = new(trieNode)</code></span>
+<span class="codeline" id="line-217"><code>		t.next.add("", val, priority, r)</code></span>
+<span class="codeline" id="line-218"><code>	}</code></span>
+<span class="codeline" id="line-219"><code>}</code></span>
+<span class="codeline" id="line-220"><code></code></span>
+<span class="codeline" id="line-221"><code>func (r *genericReplacer) lookup(s string, ignoreRoot bool) (val string, keylen int, found bool) {</code></span>
+<span class="codeline" id="line-222"><code>	// Iterate down the trie to the end, and grab the value and keylen with</code></span>
+<span class="codeline" id="line-223"><code>	// the highest priority.</code></span>
+<span class="codeline" id="line-224"><code>	bestPriority := 0</code></span>
+<span class="codeline" id="line-225"><code>	node := &amp;r.root</code></span>
+<span class="codeline" id="line-226"><code>	n := 0</code></span>
+<span class="codeline" id="line-227"><code>	for node != nil {</code></span>
+<span class="codeline" id="line-228"><code>		if node.priority &gt; bestPriority &amp;&amp; !(ignoreRoot &amp;&amp; node == &amp;r.root) {</code></span>
+<span class="codeline" id="line-229"><code>			bestPriority = node.priority</code></span>
+<span class="codeline" id="line-230"><code>			val = node.value</code></span>
+<span class="codeline" id="line-231"><code>			keylen = n</code></span>
+<span class="codeline" id="line-232"><code>			found = true</code></span>
+<span class="codeline" id="line-233"><code>		}</code></span>
+<span class="codeline" id="line-234"><code></code></span>
+<span class="codeline" id="line-235"><code>		if s == "" {</code></span>
+<span class="codeline" id="line-236"><code>			break</code></span>
+<span class="codeline" id="line-237"><code>		}</code></span>
+<span class="codeline" id="line-238"><code>		if node.table != nil {</code></span>
+<span class="codeline" id="line-239"><code>			index := r.mapping[s[0]]</code></span>
+<span class="codeline" id="line-240"><code>			if int(index) == r.tableSize {</code></span>
+<span class="codeline" id="line-241"><code>				break</code></span>
+<span class="codeline" id="line-242"><code>			}</code></span>
+<span class="codeline" id="line-243"><code>			node = node.table[index]</code></span>
+<span class="codeline" id="line-244"><code>			s = s[1:]</code></span>
+<span class="codeline" id="line-245"><code>			n++</code></span>
+<span class="codeline" id="line-246"><code>		} else if node.prefix != "" &amp;&amp; HasPrefix(s, node.prefix) {</code></span>
+<span class="codeline" id="line-247"><code>			n += len(node.prefix)</code></span>
+<span class="codeline" id="line-248"><code>			s = s[len(node.prefix):]</code></span>
+<span class="codeline" id="line-249"><code>			node = node.next</code></span>
+<span class="codeline" id="line-250"><code>		} else {</code></span>
+<span class="codeline" id="line-251"><code>			break</code></span>
+<span class="codeline" id="line-252"><code>		}</code></span>
+<span class="codeline" id="line-253"><code>	}</code></span>
+<span class="codeline" id="line-254"><code>	return</code></span>
+<span class="codeline" id="line-255"><code>}</code></span>
+<span class="codeline" id="line-256"><code></code></span>
+<span class="codeline" id="line-257"><code>// genericReplacer is the fully generic algorithm.</code></span>
+<span class="codeline" id="line-258"><code>// It's used as a fallback when nothing faster can be used.</code></span>
+<span class="codeline" id="line-259"><code>type genericReplacer struct {</code></span>
+<span class="codeline" id="line-260"><code>	root trieNode</code></span>
+<span class="codeline" id="line-261"><code>	// tableSize is the size of a trie node's lookup table. It is the number</code></span>
+<span class="codeline" id="line-262"><code>	// of unique key bytes.</code></span>
+<span class="codeline" id="line-263"><code>	tableSize int</code></span>
+<span class="codeline" id="line-264"><code>	// mapping maps from key bytes to a dense index for trieNode.table.</code></span>
+<span class="codeline" id="line-265"><code>	mapping [256]byte</code></span>
+<span class="codeline" id="line-266"><code>}</code></span>
+<span class="codeline" id="line-267"><code></code></span>
+<span class="codeline" id="line-268"><code>func makeGenericReplacer(oldnew []string) *genericReplacer {</code></span>
+<span class="codeline" id="line-269"><code>	r := new(genericReplacer)</code></span>
+<span class="codeline" id="line-270"><code>	// Find each byte used, then assign them each an index.</code></span>
+<span class="codeline" id="line-271"><code>	for i := 0; i &lt; len(oldnew); i += 2 {</code></span>
+<span class="codeline" id="line-272"><code>		key := oldnew[i]</code></span>
+<span class="codeline" id="line-273"><code>		for j := 0; j &lt; len(key); j++ {</code></span>
+<span class="codeline" id="line-274"><code>			r.mapping[key[j]] = 1</code></span>
+<span class="codeline" id="line-275"><code>		}</code></span>
+<span class="codeline" id="line-276"><code>	}</code></span>
+<span class="codeline" id="line-277"><code></code></span>
+<span class="codeline" id="line-278"><code>	for _, b := range r.mapping {</code></span>
+<span class="codeline" id="line-279"><code>		r.tableSize += int(b)</code></span>
+<span class="codeline" id="line-280"><code>	}</code></span>
+<span class="codeline" id="line-281"><code></code></span>
+<span class="codeline" id="line-282"><code>	var index byte</code></span>
+<span class="codeline" id="line-283"><code>	for i, b := range r.mapping {</code></span>
+<span class="codeline" id="line-284"><code>		if b == 0 {</code></span>
+<span class="codeline" id="line-285"><code>			r.mapping[i] = byte(r.tableSize)</code></span>
+<span class="codeline" id="line-286"><code>		} else {</code></span>
+<span class="codeline" id="line-287"><code>			r.mapping[i] = index</code></span>
+<span class="codeline" id="line-288"><code>			index++</code></span>
+<span class="codeline" id="line-289"><code>		}</code></span>
+<span class="codeline" id="line-290"><code>	}</code></span>
+<span class="codeline" id="line-291"><code>	// Ensure root node uses a lookup table (for performance).</code></span>
+<span class="codeline" id="line-292"><code>	r.root.table = make([]*trieNode, r.tableSize)</code></span>
+<span class="codeline" id="line-293"><code></code></span>
+<span class="codeline" id="line-294"><code>	for i := 0; i &lt; len(oldnew); i += 2 {</code></span>
+<span class="codeline" id="line-295"><code>		r.root.add(oldnew[i], oldnew[i+1], len(oldnew)-i, r)</code></span>
+<span class="codeline" id="line-296"><code>	}</code></span>
+<span class="codeline" id="line-297"><code>	return r</code></span>
+<span class="codeline" id="line-298"><code>}</code></span>
+<span class="codeline" id="line-299"><code></code></span>
+<span class="codeline" id="line-300"><code>type appendSliceWriter []byte</code></span>
+<span class="codeline" id="line-301"><code></code></span>
+<span class="codeline" id="line-302"><code>// Write writes to the buffer to satisfy io.Writer.</code></span>
+<span class="codeline" id="line-303"><code>func (w *appendSliceWriter) Write(p []byte) (int, error) {</code></span>
+<span class="codeline" id="line-304"><code>	*w = append(*w, p...)</code></span>
+<span class="codeline" id="line-305"><code>	return len(p), nil</code></span>
+<span class="codeline" id="line-306"><code>}</code></span>
+<span class="codeline" id="line-307"><code></code></span>
+<span class="codeline" id="line-308"><code>// WriteString writes to the buffer without string-&gt;[]byte-&gt;string allocations.</code></span>
+<span class="codeline" id="line-309"><code>func (w *appendSliceWriter) WriteString(s string) (int, error) {</code></span>
+<span class="codeline" id="line-310"><code>	*w = append(*w, s...)</code></span>
+<span class="codeline" id="line-311"><code>	return len(s), nil</code></span>
+<span class="codeline" id="line-312"><code>}</code></span>
+<span class="codeline" id="line-313"><code></code></span>
+<span class="codeline" id="line-314"><code>type stringWriter struct {</code></span>
+<span class="codeline" id="line-315"><code>	w io.Writer</code></span>
+<span class="codeline" id="line-316"><code>}</code></span>
+<span class="codeline" id="line-317"><code></code></span>
+<span class="codeline" id="line-318"><code>func (w stringWriter) WriteString(s string) (int, error) {</code></span>
+<span class="codeline" id="line-319"><code>	return w.w.Write([]byte(s))</code></span>
+<span class="codeline" id="line-320"><code>}</code></span>
+<span class="codeline" id="line-321"><code></code></span>
+<span class="codeline" id="line-322"><code>func getStringWriter(w io.Writer) io.StringWriter {</code></span>
+<span class="codeline" id="line-323"><code>	sw, ok := w.(io.StringWriter)</code></span>
+<span class="codeline" id="line-324"><code>	if !ok {</code></span>
+<span class="codeline" id="line-325"><code>		sw = stringWriter{w}</code></span>
+<span class="codeline" id="line-326"><code>	}</code></span>
+<span class="codeline" id="line-327"><code>	return sw</code></span>
+<span class="codeline" id="line-328"><code>}</code></span>
+<span class="codeline" id="line-329"><code></code></span>
+<span class="codeline" id="line-330"><code>func (r *genericReplacer) Replace(s string) string {</code></span>
+<span class="codeline" id="line-331"><code>	buf := make(appendSliceWriter, 0, len(s))</code></span>
+<span class="codeline" id="line-332"><code>	r.WriteString(&amp;buf, s)</code></span>
+<span class="codeline" id="line-333"><code>	return string(buf)</code></span>
+<span class="codeline" id="line-334"><code>}</code></span>
+<span class="codeline" id="line-335"><code></code></span>
+<span class="codeline" id="line-336"><code>func (r *genericReplacer) WriteString(w io.Writer, s string) (n int, err error) {</code></span>
+<span class="codeline" id="line-337"><code>	sw := getStringWriter(w)</code></span>
+<span class="codeline" id="line-338"><code>	var last, wn int</code></span>
+<span class="codeline" id="line-339"><code>	var prevMatchEmpty bool</code></span>
+<span class="codeline" id="line-340"><code>	for i := 0; i &lt;= len(s); {</code></span>
+<span class="codeline" id="line-341"><code>		// Fast path: s[i] is not a prefix of any pattern.</code></span>
+<span class="codeline" id="line-342"><code>		if i != len(s) &amp;&amp; r.root.priority == 0 {</code></span>
+<span class="codeline" id="line-343"><code>			index := int(r.mapping[s[i]])</code></span>
+<span class="codeline" id="line-344"><code>			if index == r.tableSize || r.root.table[index] == nil {</code></span>
+<span class="codeline" id="line-345"><code>				i++</code></span>
+<span class="codeline" id="line-346"><code>				continue</code></span>
+<span class="codeline" id="line-347"><code>			}</code></span>
+<span class="codeline" id="line-348"><code>		}</code></span>
+<span class="codeline" id="line-349"><code></code></span>
+<span class="codeline" id="line-350"><code>		// Ignore the empty match iff the previous loop found the empty match.</code></span>
+<span class="codeline" id="line-351"><code>		val, keylen, match := r.lookup(s[i:], prevMatchEmpty)</code></span>
+<span class="codeline" id="line-352"><code>		prevMatchEmpty = match &amp;&amp; keylen == 0</code></span>
+<span class="codeline" id="line-353"><code>		if match {</code></span>
+<span class="codeline" id="line-354"><code>			wn, err = sw.WriteString(s[last:i])</code></span>
+<span class="codeline" id="line-355"><code>			n += wn</code></span>
+<span class="codeline" id="line-356"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-357"><code>				return</code></span>
+<span class="codeline" id="line-358"><code>			}</code></span>
+<span class="codeline" id="line-359"><code>			wn, err = sw.WriteString(val)</code></span>
+<span class="codeline" id="line-360"><code>			n += wn</code></span>
+<span class="codeline" id="line-361"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-362"><code>				return</code></span>
+<span class="codeline" id="line-363"><code>			}</code></span>
+<span class="codeline" id="line-364"><code>			i += keylen</code></span>
+<span class="codeline" id="line-365"><code>			last = i</code></span>
+<span class="codeline" id="line-366"><code>			continue</code></span>
+<span class="codeline" id="line-367"><code>		}</code></span>
+<span class="codeline" id="line-368"><code>		i++</code></span>
+<span class="codeline" id="line-369"><code>	}</code></span>
+<span class="codeline" id="line-370"><code>	if last != len(s) {</code></span>
+<span class="codeline" id="line-371"><code>		wn, err = sw.WriteString(s[last:])</code></span>
+<span class="codeline" id="line-372"><code>		n += wn</code></span>
+<span class="codeline" id="line-373"><code>	}</code></span>
+<span class="codeline" id="line-374"><code>	return</code></span>
+<span class="codeline" id="line-375"><code>}</code></span>
+<span class="codeline" id="line-376"><code></code></span>
+<span class="codeline" id="line-377"><code>// singleStringReplacer is the implementation that's used when there is only</code></span>
+<span class="codeline" id="line-378"><code>// one string to replace (and that string has more than one byte).</code></span>
+<span class="codeline" id="line-379"><code>type singleStringReplacer struct {</code></span>
+<span class="codeline" id="line-380"><code>	finder *stringFinder</code></span>
+<span class="codeline" id="line-381"><code>	// value is the new string that replaces that pattern when it's found.</code></span>
+<span class="codeline" id="line-382"><code>	value string</code></span>
+<span class="codeline" id="line-383"><code>}</code></span>
+<span class="codeline" id="line-384"><code></code></span>
+<span class="codeline" id="line-385"><code>func makeSingleStringReplacer(pattern string, value string) *singleStringReplacer {</code></span>
+<span class="codeline" id="line-386"><code>	return &amp;singleStringReplacer{finder: makeStringFinder(pattern), value: value}</code></span>
+<span class="codeline" id="line-387"><code>}</code></span>
+<span class="codeline" id="line-388"><code></code></span>
+<span class="codeline" id="line-389"><code>func (r *singleStringReplacer) Replace(s string) string {</code></span>
+<span class="codeline" id="line-390"><code>	var buf []byte</code></span>
+<span class="codeline" id="line-391"><code>	i, matched := 0, false</code></span>
+<span class="codeline" id="line-392"><code>	for {</code></span>
+<span class="codeline" id="line-393"><code>		match := r.finder.next(s[i:])</code></span>
+<span class="codeline" id="line-394"><code>		if match == -1 {</code></span>
+<span class="codeline" id="line-395"><code>			break</code></span>
+<span class="codeline" id="line-396"><code>		}</code></span>
+<span class="codeline" id="line-397"><code>		matched = true</code></span>
+<span class="codeline" id="line-398"><code>		buf = append(buf, s[i:i+match]...)</code></span>
+<span class="codeline" id="line-399"><code>		buf = append(buf, r.value...)</code></span>
+<span class="codeline" id="line-400"><code>		i += match + len(r.finder.pattern)</code></span>
+<span class="codeline" id="line-401"><code>	}</code></span>
+<span class="codeline" id="line-402"><code>	if !matched {</code></span>
+<span class="codeline" id="line-403"><code>		return s</code></span>
+<span class="codeline" id="line-404"><code>	}</code></span>
+<span class="codeline" id="line-405"><code>	buf = append(buf, s[i:]...)</code></span>
+<span class="codeline" id="line-406"><code>	return string(buf)</code></span>
+<span class="codeline" id="line-407"><code>}</code></span>
+<span class="codeline" id="line-408"><code></code></span>
+<span class="codeline" id="line-409"><code>func (r *singleStringReplacer) WriteString(w io.Writer, s string) (n int, err error) {</code></span>
+<span class="codeline" id="line-410"><code>	sw := getStringWriter(w)</code></span>
+<span class="codeline" id="line-411"><code>	var i, wn int</code></span>
+<span class="codeline" id="line-412"><code>	for {</code></span>
+<span class="codeline" id="line-413"><code>		match := r.finder.next(s[i:])</code></span>
+<span class="codeline" id="line-414"><code>		if match == -1 {</code></span>
+<span class="codeline" id="line-415"><code>			break</code></span>
+<span class="codeline" id="line-416"><code>		}</code></span>
+<span class="codeline" id="line-417"><code>		wn, err = sw.WriteString(s[i : i+match])</code></span>
+<span class="codeline" id="line-418"><code>		n += wn</code></span>
+<span class="codeline" id="line-419"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-420"><code>			return</code></span>
+<span class="codeline" id="line-421"><code>		}</code></span>
+<span class="codeline" id="line-422"><code>		wn, err = sw.WriteString(r.value)</code></span>
+<span class="codeline" id="line-423"><code>		n += wn</code></span>
+<span class="codeline" id="line-424"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-425"><code>			return</code></span>
+<span class="codeline" id="line-426"><code>		}</code></span>
+<span class="codeline" id="line-427"><code>		i += match + len(r.finder.pattern)</code></span>
+<span class="codeline" id="line-428"><code>	}</code></span>
+<span class="codeline" id="line-429"><code>	wn, err = sw.WriteString(s[i:])</code></span>
+<span class="codeline" id="line-430"><code>	n += wn</code></span>
+<span class="codeline" id="line-431"><code>	return</code></span>
+<span class="codeline" id="line-432"><code>}</code></span>
+<span class="codeline" id="line-433"><code></code></span>
+<span class="codeline" id="line-434"><code>// byteReplacer is the implementation that's used when all the "old"</code></span>
+<span class="codeline" id="line-435"><code>// and "new" values are single ASCII bytes.</code></span>
+<span class="codeline" id="line-436"><code>// The array contains replacement bytes indexed by old byte.</code></span>
+<span class="codeline" id="line-437"><code>type byteReplacer [256]byte</code></span>
+<span class="codeline" id="line-438"><code></code></span>
+<span class="codeline" id="line-439"><code>func (r *byteReplacer) Replace(s string) string {</code></span>
+<span class="codeline" id="line-440"><code>	var buf []byte // lazily allocated</code></span>
+<span class="codeline" id="line-441"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-442"><code>		b := s[i]</code></span>
+<span class="codeline" id="line-443"><code>		if r[b] != b {</code></span>
+<span class="codeline" id="line-444"><code>			if buf == nil {</code></span>
+<span class="codeline" id="line-445"><code>				buf = []byte(s)</code></span>
+<span class="codeline" id="line-446"><code>			}</code></span>
+<span class="codeline" id="line-447"><code>			buf[i] = r[b]</code></span>
+<span class="codeline" id="line-448"><code>		}</code></span>
+<span class="codeline" id="line-449"><code>	}</code></span>
+<span class="codeline" id="line-450"><code>	if buf == nil {</code></span>
+<span class="codeline" id="line-451"><code>		return s</code></span>
+<span class="codeline" id="line-452"><code>	}</code></span>
+<span class="codeline" id="line-453"><code>	return string(buf)</code></span>
+<span class="codeline" id="line-454"><code>}</code></span>
+<span class="codeline" id="line-455"><code></code></span>
+<span class="codeline" id="line-456"><code>func (r *byteReplacer) WriteString(w io.Writer, s string) (n int, err error) {</code></span>
+<span class="codeline" id="line-457"><code>	// TODO(bradfitz): use io.WriteString with slices of s, avoiding allocation.</code></span>
+<span class="codeline" id="line-458"><code>	bufsize := 32 &lt;&lt; 10</code></span>
+<span class="codeline" id="line-459"><code>	if len(s) &lt; bufsize {</code></span>
+<span class="codeline" id="line-460"><code>		bufsize = len(s)</code></span>
+<span class="codeline" id="line-461"><code>	}</code></span>
+<span class="codeline" id="line-462"><code>	buf := make([]byte, bufsize)</code></span>
+<span class="codeline" id="line-463"><code></code></span>
+<span class="codeline" id="line-464"><code>	for len(s) &gt; 0 {</code></span>
+<span class="codeline" id="line-465"><code>		ncopy := copy(buf, s)</code></span>
+<span class="codeline" id="line-466"><code>		s = s[ncopy:]</code></span>
+<span class="codeline" id="line-467"><code>		for i, b := range buf[:ncopy] {</code></span>
+<span class="codeline" id="line-468"><code>			buf[i] = r[b]</code></span>
+<span class="codeline" id="line-469"><code>		}</code></span>
+<span class="codeline" id="line-470"><code>		wn, err := w.Write(buf[:ncopy])</code></span>
+<span class="codeline" id="line-471"><code>		n += wn</code></span>
+<span class="codeline" id="line-472"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-473"><code>			return n, err</code></span>
+<span class="codeline" id="line-474"><code>		}</code></span>
+<span class="codeline" id="line-475"><code>	}</code></span>
+<span class="codeline" id="line-476"><code>	return n, nil</code></span>
+<span class="codeline" id="line-477"><code>}</code></span>
+<span class="codeline" id="line-478"><code></code></span>
+<span class="codeline" id="line-479"><code>// byteStringReplacer is the implementation that's used when all the</code></span>
+<span class="codeline" id="line-480"><code>// "old" values are single ASCII bytes but the "new" values vary in size.</code></span>
+<span class="codeline" id="line-481"><code>type byteStringReplacer struct {</code></span>
+<span class="codeline" id="line-482"><code>	// replacements contains replacement byte slices indexed by old byte.</code></span>
+<span class="codeline" id="line-483"><code>	// A nil []byte means that the old byte should not be replaced.</code></span>
+<span class="codeline" id="line-484"><code>	replacements [256][]byte</code></span>
+<span class="codeline" id="line-485"><code>	// toReplace keeps a list of bytes to replace. Depending on length of toReplace</code></span>
+<span class="codeline" id="line-486"><code>	// and length of target string it may be faster to use Count, or a plain loop.</code></span>
+<span class="codeline" id="line-487"><code>	// We store single byte as a string, because Count takes a string.</code></span>
+<span class="codeline" id="line-488"><code>	toReplace []string</code></span>
+<span class="codeline" id="line-489"><code>}</code></span>
+<span class="codeline" id="line-490"><code></code></span>
+<span class="codeline" id="line-491"><code>// countCutOff controls the ratio of a string length to a number of replacements</code></span>
+<span class="codeline" id="line-492"><code>// at which (*byteStringReplacer).Replace switches algorithms.</code></span>
+<span class="codeline" id="line-493"><code>// For strings with higher ration of length to replacements than that value,</code></span>
+<span class="codeline" id="line-494"><code>// we call Count, for each replacement from toReplace.</code></span>
+<span class="codeline" id="line-495"><code>// For strings, with a lower ratio we use simple loop, because of Count overhead.</code></span>
+<span class="codeline" id="line-496"><code>// countCutOff is an empirically determined overhead multiplier.</code></span>
+<span class="codeline" id="line-497"><code>// TODO(tocarip) revisit once we have register-based abi/mid-stack inlining.</code></span>
+<span class="codeline" id="line-498"><code>const countCutOff = 8</code></span>
+<span class="codeline" id="line-499"><code></code></span>
+<span class="codeline" id="line-500"><code>func (r *byteStringReplacer) Replace(s string) string {</code></span>
+<span class="codeline" id="line-501"><code>	newSize := len(s)</code></span>
+<span class="codeline" id="line-502"><code>	anyChanges := false</code></span>
+<span class="codeline" id="line-503"><code>	// Is it faster to use Count?</code></span>
+<span class="codeline" id="line-504"><code>	if len(r.toReplace)*countCutOff &lt;= len(s) {</code></span>
+<span class="codeline" id="line-505"><code>		for _, x := range r.toReplace {</code></span>
+<span class="codeline" id="line-506"><code>			if c := Count(s, x); c != 0 {</code></span>
+<span class="codeline" id="line-507"><code>				// The -1 is because we are replacing 1 byte with len(replacements[b]) bytes.</code></span>
+<span class="codeline" id="line-508"><code>				newSize += c * (len(r.replacements[x[0]]) - 1)</code></span>
+<span class="codeline" id="line-509"><code>				anyChanges = true</code></span>
+<span class="codeline" id="line-510"><code>			}</code></span>
+<span class="codeline" id="line-511"><code></code></span>
+<span class="codeline" id="line-512"><code>		}</code></span>
+<span class="codeline" id="line-513"><code>	} else {</code></span>
+<span class="codeline" id="line-514"><code>		for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-515"><code>			b := s[i]</code></span>
+<span class="codeline" id="line-516"><code>			if r.replacements[b] != nil {</code></span>
+<span class="codeline" id="line-517"><code>				// See above for explanation of -1</code></span>
+<span class="codeline" id="line-518"><code>				newSize += len(r.replacements[b]) - 1</code></span>
+<span class="codeline" id="line-519"><code>				anyChanges = true</code></span>
+<span class="codeline" id="line-520"><code>			}</code></span>
+<span class="codeline" id="line-521"><code>		}</code></span>
+<span class="codeline" id="line-522"><code>	}</code></span>
+<span class="codeline" id="line-523"><code>	if !anyChanges {</code></span>
+<span class="codeline" id="line-524"><code>		return s</code></span>
+<span class="codeline" id="line-525"><code>	}</code></span>
+<span class="codeline" id="line-526"><code>	buf := make([]byte, newSize)</code></span>
+<span class="codeline" id="line-527"><code>	j := 0</code></span>
+<span class="codeline" id="line-528"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-529"><code>		b := s[i]</code></span>
+<span class="codeline" id="line-530"><code>		if r.replacements[b] != nil {</code></span>
+<span class="codeline" id="line-531"><code>			j += copy(buf[j:], r.replacements[b])</code></span>
+<span class="codeline" id="line-532"><code>		} else {</code></span>
+<span class="codeline" id="line-533"><code>			buf[j] = b</code></span>
+<span class="codeline" id="line-534"><code>			j++</code></span>
+<span class="codeline" id="line-535"><code>		}</code></span>
+<span class="codeline" id="line-536"><code>	}</code></span>
+<span class="codeline" id="line-537"><code>	return string(buf)</code></span>
+<span class="codeline" id="line-538"><code>}</code></span>
+<span class="codeline" id="line-539"><code></code></span>
+<span class="codeline" id="line-540"><code>func (r *byteStringReplacer) WriteString(w io.Writer, s string) (n int, err error) {</code></span>
+<span class="codeline" id="line-541"><code>	sw := getStringWriter(w)</code></span>
+<span class="codeline" id="line-542"><code>	last := 0</code></span>
+<span class="codeline" id="line-543"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-544"><code>		b := s[i]</code></span>
+<span class="codeline" id="line-545"><code>		if r.replacements[b] == nil {</code></span>
+<span class="codeline" id="line-546"><code>			continue</code></span>
+<span class="codeline" id="line-547"><code>		}</code></span>
+<span class="codeline" id="line-548"><code>		if last != i {</code></span>
+<span class="codeline" id="line-549"><code>			nw, err := sw.WriteString(s[last:i])</code></span>
+<span class="codeline" id="line-550"><code>			n += nw</code></span>
+<span class="codeline" id="line-551"><code>			if err != nil {</code></span>
+<span class="codeline" id="line-552"><code>				return n, err</code></span>
+<span class="codeline" id="line-553"><code>			}</code></span>
+<span class="codeline" id="line-554"><code>		}</code></span>
+<span class="codeline" id="line-555"><code>		last = i + 1</code></span>
+<span class="codeline" id="line-556"><code>		nw, err := w.Write(r.replacements[b])</code></span>
+<span class="codeline" id="line-557"><code>		n += nw</code></span>
+<span class="codeline" id="line-558"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-559"><code>			return n, err</code></span>
+<span class="codeline" id="line-560"><code>		}</code></span>
+<span class="codeline" id="line-561"><code>	}</code></span>
+<span class="codeline" id="line-562"><code>	if last != len(s) {</code></span>
+<span class="codeline" id="line-563"><code>		var nw int</code></span>
+<span class="codeline" id="line-564"><code>		nw, err = sw.WriteString(s[last:])</code></span>
+<span class="codeline" id="line-565"><code>		n += nw</code></span>
+<span class="codeline" id="line-566"><code>	}</code></span>
+<span class="codeline" id="line-567"><code>	return</code></span>
+<span class="codeline" id="line-568"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: doc.go in package sync/atomic</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	doc.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/sync/atomic.html">sync/atomic</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package atomic provides low-level atomic memory primitives</code></span>
+<span class="codeline" id="line-6"><code>// useful for implementing synchronization algorithms.</code></span>
+<span class="codeline" id="line-7"><code>//</code></span>
+<span class="codeline" id="line-8"><code>// These functions require great care to be used correctly.</code></span>
+<span class="codeline" id="line-9"><code>// Except for special, low-level applications, synchronization is better</code></span>
+<span class="codeline" id="line-10"><code>// done with channels or the facilities of the sync package.</code></span>
+<span class="codeline" id="line-11"><code>// Share memory by communicating;</code></span>
+<span class="codeline" id="line-12"><code>// don't communicate by sharing memory.</code></span>
+<span class="codeline" id="line-13"><code>//</code></span>
+<span class="codeline" id="line-14"><code>// The swap operation, implemented by the SwapT functions, is the atomic</code></span>
+<span class="codeline" id="line-15"><code>// equivalent of:</code></span>
+<span class="codeline" id="line-16"><code>//</code></span>
+<span class="codeline" id="line-17"><code>//	old = *addr</code></span>
+<span class="codeline" id="line-18"><code>//	*addr = new</code></span>
+<span class="codeline" id="line-19"><code>//	return old</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// The compare-and-swap operation, implemented by the CompareAndSwapT</code></span>
+<span class="codeline" id="line-22"><code>// functions, is the atomic equivalent of:</code></span>
+<span class="codeline" id="line-23"><code>//</code></span>
+<span class="codeline" id="line-24"><code>//	if *addr == old {</code></span>
+<span class="codeline" id="line-25"><code>//		*addr = new</code></span>
+<span class="codeline" id="line-26"><code>//		return true</code></span>
+<span class="codeline" id="line-27"><code>//	}</code></span>
+<span class="codeline" id="line-28"><code>//	return false</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>// The add operation, implemented by the AddT functions, is the atomic</code></span>
+<span class="codeline" id="line-31"><code>// equivalent of:</code></span>
+<span class="codeline" id="line-32"><code>//</code></span>
+<span class="codeline" id="line-33"><code>//	*addr += delta</code></span>
+<span class="codeline" id="line-34"><code>//	return *addr</code></span>
+<span class="codeline" id="line-35"><code>//</code></span>
+<span class="codeline" id="line-36"><code>// The load and store operations, implemented by the LoadT and StoreT</code></span>
+<span class="codeline" id="line-37"><code>// functions, are the atomic equivalents of "return *addr" and</code></span>
+<span class="codeline" id="line-38"><code>// "*addr = val".</code></span>
+<span class="codeline" id="line-39"><code>//</code></span></div><span class="codeline" id="line-40"><code>package atomic</code></span>
+<span class="codeline" id="line-41"><code></code></span>
+<span class="codeline" id="line-42"><code>import (</code></span>
+<span class="codeline" id="line-43"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-44"><code>)</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>// BUG(rsc): On 386, the 64-bit functions use instructions unavailable before the Pentium MMX.</code></span>
+<span class="codeline" id="line-47"><code>//</code></span>
+<span class="codeline" id="line-48"><code>// On non-Linux ARM, the 64-bit functions use instructions unavailable before the ARMv6k core.</code></span>
+<span class="codeline" id="line-49"><code>//</code></span>
+<span class="codeline" id="line-50"><code>// On ARM, 386, and 32-bit MIPS, it is the caller's responsibility</code></span>
+<span class="codeline" id="line-51"><code>// to arrange for 64-bit alignment of 64-bit words accessed atomically.</code></span>
+<span class="codeline" id="line-52"><code>// The first word in a variable or in an allocated struct, array, or slice can</code></span>
+<span class="codeline" id="line-53"><code>// be relied upon to be 64-bit aligned.</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>// SwapInt32 atomically stores new into *addr and returns the previous *addr value.</code></span>
+<span class="codeline" id="line-56"><code>func SwapInt32(addr *int32, new int32) (old int32)</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>// SwapInt64 atomically stores new into *addr and returns the previous *addr value.</code></span>
+<span class="codeline" id="line-59"><code>func SwapInt64(addr *int64, new int64) (old int64)</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>// SwapUint32 atomically stores new into *addr and returns the previous *addr value.</code></span>
+<span class="codeline" id="line-62"><code>func SwapUint32(addr *uint32, new uint32) (old uint32)</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>// SwapUint64 atomically stores new into *addr and returns the previous *addr value.</code></span>
+<span class="codeline" id="line-65"><code>func SwapUint64(addr *uint64, new uint64) (old uint64)</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>// SwapUintptr atomically stores new into *addr and returns the previous *addr value.</code></span>
+<span class="codeline" id="line-68"><code>func SwapUintptr(addr *uintptr, new uintptr) (old uintptr)</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>// SwapPointer atomically stores new into *addr and returns the previous *addr value.</code></span>
+<span class="codeline" id="line-71"><code>func SwapPointer(addr *unsafe.Pointer, new unsafe.Pointer) (old unsafe.Pointer)</code></span>
+<span class="codeline" id="line-72"><code></code></span>
+<span class="codeline" id="line-73"><code>// CompareAndSwapInt32 executes the compare-and-swap operation for an int32 value.</code></span>
+<span class="codeline" id="line-74"><code>func CompareAndSwapInt32(addr *int32, old, new int32) (swapped bool)</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>// CompareAndSwapInt64 executes the compare-and-swap operation for an int64 value.</code></span>
+<span class="codeline" id="line-77"><code>func CompareAndSwapInt64(addr *int64, old, new int64) (swapped bool)</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>// CompareAndSwapUint32 executes the compare-and-swap operation for a uint32 value.</code></span>
+<span class="codeline" id="line-80"><code>func CompareAndSwapUint32(addr *uint32, old, new uint32) (swapped bool)</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>// CompareAndSwapUint64 executes the compare-and-swap operation for a uint64 value.</code></span>
+<span class="codeline" id="line-83"><code>func CompareAndSwapUint64(addr *uint64, old, new uint64) (swapped bool)</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>// CompareAndSwapUintptr executes the compare-and-swap operation for a uintptr value.</code></span>
+<span class="codeline" id="line-86"><code>func CompareAndSwapUintptr(addr *uintptr, old, new uintptr) (swapped bool)</code></span>
+<span class="codeline" id="line-87"><code></code></span>
+<span class="codeline" id="line-88"><code>// CompareAndSwapPointer executes the compare-and-swap operation for a unsafe.Pointer value.</code></span>
+<span class="codeline" id="line-89"><code>func CompareAndSwapPointer(addr *unsafe.Pointer, old, new unsafe.Pointer) (swapped bool)</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>// AddInt32 atomically adds delta to *addr and returns the new value.</code></span>
+<span class="codeline" id="line-92"><code>func AddInt32(addr *int32, delta int32) (new int32)</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>// AddUint32 atomically adds delta to *addr and returns the new value.</code></span>
+<span class="codeline" id="line-95"><code>// To subtract a signed positive constant value c from x, do AddUint32(&amp;x, ^uint32(c-1)).</code></span>
+<span class="codeline" id="line-96"><code>// In particular, to decrement x, do AddUint32(&amp;x, ^uint32(0)).</code></span>
+<span class="codeline" id="line-97"><code>func AddUint32(addr *uint32, delta uint32) (new uint32)</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>// AddInt64 atomically adds delta to *addr and returns the new value.</code></span>
+<span class="codeline" id="line-100"><code>func AddInt64(addr *int64, delta int64) (new int64)</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>// AddUint64 atomically adds delta to *addr and returns the new value.</code></span>
+<span class="codeline" id="line-103"><code>// To subtract a signed positive constant value c from x, do AddUint64(&amp;x, ^uint64(c-1)).</code></span>
+<span class="codeline" id="line-104"><code>// In particular, to decrement x, do AddUint64(&amp;x, ^uint64(0)).</code></span>
+<span class="codeline" id="line-105"><code>func AddUint64(addr *uint64, delta uint64) (new uint64)</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>// AddUintptr atomically adds delta to *addr and returns the new value.</code></span>
+<span class="codeline" id="line-108"><code>func AddUintptr(addr *uintptr, delta uintptr) (new uintptr)</code></span>
+<span class="codeline" id="line-109"><code></code></span>
+<span class="codeline" id="line-110"><code>// LoadInt32 atomically loads *addr.</code></span>
+<span class="codeline" id="line-111"><code>func LoadInt32(addr *int32) (val int32)</code></span>
+<span class="codeline" id="line-112"><code></code></span>
+<span class="codeline" id="line-113"><code>// LoadInt64 atomically loads *addr.</code></span>
+<span class="codeline" id="line-114"><code>func LoadInt64(addr *int64) (val int64)</code></span>
+<span class="codeline" id="line-115"><code></code></span>
+<span class="codeline" id="line-116"><code>// LoadUint32 atomically loads *addr.</code></span>
+<span class="codeline" id="line-117"><code>func LoadUint32(addr *uint32) (val uint32)</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>// LoadUint64 atomically loads *addr.</code></span>
+<span class="codeline" id="line-120"><code>func LoadUint64(addr *uint64) (val uint64)</code></span>
+<span class="codeline" id="line-121"><code></code></span>
+<span class="codeline" id="line-122"><code>// LoadUintptr atomically loads *addr.</code></span>
+<span class="codeline" id="line-123"><code>func LoadUintptr(addr *uintptr) (val uintptr)</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>// LoadPointer atomically loads *addr.</code></span>
+<span class="codeline" id="line-126"><code>func LoadPointer(addr *unsafe.Pointer) (val unsafe.Pointer)</code></span>
+<span class="codeline" id="line-127"><code></code></span>
+<span class="codeline" id="line-128"><code>// StoreInt32 atomically stores val into *addr.</code></span>
+<span class="codeline" id="line-129"><code>func StoreInt32(addr *int32, val int32)</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>// StoreInt64 atomically stores val into *addr.</code></span>
+<span class="codeline" id="line-132"><code>func StoreInt64(addr *int64, val int64)</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>// StoreUint32 atomically stores val into *addr.</code></span>
+<span class="codeline" id="line-135"><code>func StoreUint32(addr *uint32, val uint32)</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>// StoreUint64 atomically stores val into *addr.</code></span>
+<span class="codeline" id="line-138"><code>func StoreUint64(addr *uint64, val uint64)</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>// StoreUintptr atomically stores val into *addr.</code></span>
+<span class="codeline" id="line-141"><code>func StoreUintptr(addr *uintptr, val uintptr)</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>// StorePointer atomically stores val into *addr.</code></span>
+<span class="codeline" id="line-144"><code>func StorePointer(addr *unsafe.Pointer, val unsafe.Pointer)</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

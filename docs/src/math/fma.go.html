@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: fma.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	fma.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2019 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "math/bits"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>func zero(x uint64) uint64 {</code></span>
+<span class="codeline" id="line-10"><code>	if x == 0 {</code></span>
+<span class="codeline" id="line-11"><code>		return 1</code></span>
+<span class="codeline" id="line-12"><code>	}</code></span>
+<span class="codeline" id="line-13"><code>	return 0</code></span>
+<span class="codeline" id="line-14"><code>	// branchless:</code></span>
+<span class="codeline" id="line-15"><code>	// return ((x&gt;&gt;1 | x&amp;1) - 1) &gt;&gt; 63</code></span>
+<span class="codeline" id="line-16"><code>}</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>func nonzero(x uint64) uint64 {</code></span>
+<span class="codeline" id="line-19"><code>	if x != 0 {</code></span>
+<span class="codeline" id="line-20"><code>		return 1</code></span>
+<span class="codeline" id="line-21"><code>	}</code></span>
+<span class="codeline" id="line-22"><code>	return 0</code></span>
+<span class="codeline" id="line-23"><code>	// branchless:</code></span>
+<span class="codeline" id="line-24"><code>	// return 1 - ((x&gt;&gt;1|x&amp;1)-1)&gt;&gt;63</code></span>
+<span class="codeline" id="line-25"><code>}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>func shl(u1, u2 uint64, n uint) (r1, r2 uint64) {</code></span>
+<span class="codeline" id="line-28"><code>	r1 = u1&lt;&lt;n | u2&gt;&gt;(64-n) | u2&lt;&lt;(n-64)</code></span>
+<span class="codeline" id="line-29"><code>	r2 = u2 &lt;&lt; n</code></span>
+<span class="codeline" id="line-30"><code>	return</code></span>
+<span class="codeline" id="line-31"><code>}</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>func shr(u1, u2 uint64, n uint) (r1, r2 uint64) {</code></span>
+<span class="codeline" id="line-34"><code>	r2 = u2&gt;&gt;n | u1&lt;&lt;(64-n) | u1&gt;&gt;(n-64)</code></span>
+<span class="codeline" id="line-35"><code>	r1 = u1 &gt;&gt; n</code></span>
+<span class="codeline" id="line-36"><code>	return</code></span>
+<span class="codeline" id="line-37"><code>}</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>// shrcompress compresses the bottom n+1 bits of the two-word</code></span>
+<span class="codeline" id="line-40"><code>// value into a single bit. the result is equal to the value</code></span>
+<span class="codeline" id="line-41"><code>// shifted to the right by n, except the result's 0th bit is</code></span>
+<span class="codeline" id="line-42"><code>// set to the bitwise OR of the bottom n+1 bits.</code></span>
+<span class="codeline" id="line-43"><code>func shrcompress(u1, u2 uint64, n uint) (r1, r2 uint64) {</code></span>
+<span class="codeline" id="line-44"><code>	// TODO: Performance here is really sensitive to the</code></span>
+<span class="codeline" id="line-45"><code>	// order/placement of these branches. n == 0 is common</code></span>
+<span class="codeline" id="line-46"><code>	// enough to be in the fast path. Perhaps more measurement</code></span>
+<span class="codeline" id="line-47"><code>	// needs to be done to find the optimal order/placement?</code></span>
+<span class="codeline" id="line-48"><code>	switch {</code></span>
+<span class="codeline" id="line-49"><code>	case n == 0:</code></span>
+<span class="codeline" id="line-50"><code>		return u1, u2</code></span>
+<span class="codeline" id="line-51"><code>	case n == 64:</code></span>
+<span class="codeline" id="line-52"><code>		return 0, u1 | nonzero(u2)</code></span>
+<span class="codeline" id="line-53"><code>	case n &gt;= 128:</code></span>
+<span class="codeline" id="line-54"><code>		return 0, nonzero(u1 | u2)</code></span>
+<span class="codeline" id="line-55"><code>	case n &lt; 64:</code></span>
+<span class="codeline" id="line-56"><code>		r1, r2 = shr(u1, u2, n)</code></span>
+<span class="codeline" id="line-57"><code>		r2 |= nonzero(u2 &amp; (1&lt;&lt;n - 1))</code></span>
+<span class="codeline" id="line-58"><code>	case n &lt; 128:</code></span>
+<span class="codeline" id="line-59"><code>		r1, r2 = shr(u1, u2, n)</code></span>
+<span class="codeline" id="line-60"><code>		r2 |= nonzero(u1&amp;(1&lt;&lt;(n-64)-1) | u2)</code></span>
+<span class="codeline" id="line-61"><code>	}</code></span>
+<span class="codeline" id="line-62"><code>	return</code></span>
+<span class="codeline" id="line-63"><code>}</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>func lz(u1, u2 uint64) (l int32) {</code></span>
+<span class="codeline" id="line-66"><code>	l = int32(bits.LeadingZeros64(u1))</code></span>
+<span class="codeline" id="line-67"><code>	if l == 64 {</code></span>
+<span class="codeline" id="line-68"><code>		l += int32(bits.LeadingZeros64(u2))</code></span>
+<span class="codeline" id="line-69"><code>	}</code></span>
+<span class="codeline" id="line-70"><code>	return l</code></span>
+<span class="codeline" id="line-71"><code>}</code></span>
+<span class="codeline" id="line-72"><code></code></span>
+<span class="codeline" id="line-73"><code>// split splits b into sign, biased exponent, and mantissa.</code></span>
+<span class="codeline" id="line-74"><code>// It adds the implicit 1 bit to the mantissa for normal values,</code></span>
+<span class="codeline" id="line-75"><code>// and normalizes subnormal values.</code></span>
+<span class="codeline" id="line-76"><code>func split(b uint64) (sign uint32, exp int32, mantissa uint64) {</code></span>
+<span class="codeline" id="line-77"><code>	sign = uint32(b &gt;&gt; 63)</code></span>
+<span class="codeline" id="line-78"><code>	exp = int32(b&gt;&gt;52) &amp; mask</code></span>
+<span class="codeline" id="line-79"><code>	mantissa = b &amp; fracMask</code></span>
+<span class="codeline" id="line-80"><code></code></span>
+<span class="codeline" id="line-81"><code>	if exp == 0 {</code></span>
+<span class="codeline" id="line-82"><code>		// Normalize value if subnormal.</code></span>
+<span class="codeline" id="line-83"><code>		shift := uint(bits.LeadingZeros64(mantissa) - 11)</code></span>
+<span class="codeline" id="line-84"><code>		mantissa &lt;&lt;= shift</code></span>
+<span class="codeline" id="line-85"><code>		exp = 1 - int32(shift)</code></span>
+<span class="codeline" id="line-86"><code>	} else {</code></span>
+<span class="codeline" id="line-87"><code>		// Add implicit 1 bit</code></span>
+<span class="codeline" id="line-88"><code>		mantissa |= 1 &lt;&lt; 52</code></span>
+<span class="codeline" id="line-89"><code>	}</code></span>
+<span class="codeline" id="line-90"><code>	return</code></span>
+<span class="codeline" id="line-91"><code>}</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>// FMA returns x * y + z, computed with only one rounding.</code></span>
+<span class="codeline" id="line-94"><code>// (That is, FMA returns the fused multiply-add of x, y, and z.)</code></span>
+<span class="codeline" id="line-95"><code>func FMA(x, y, z float64) float64 {</code></span>
+<span class="codeline" id="line-96"><code>	bx, by, bz := Float64bits(x), Float64bits(y), Float64bits(z)</code></span>
+<span class="codeline" id="line-97"><code></code></span>
+<span class="codeline" id="line-98"><code>	// Inf or NaN or zero involved. At most one rounding will occur.</code></span>
+<span class="codeline" id="line-99"><code>	if x == 0.0 || y == 0.0 || z == 0.0 || bx&amp;uvinf == uvinf || by&amp;uvinf == uvinf {</code></span>
+<span class="codeline" id="line-100"><code>		return x*y + z</code></span>
+<span class="codeline" id="line-101"><code>	}</code></span>
+<span class="codeline" id="line-102"><code>	// Handle non-finite z separately. Evaluating x*y+z where</code></span>
+<span class="codeline" id="line-103"><code>	// x and y are finite, but z is infinite, should always result in z.</code></span>
+<span class="codeline" id="line-104"><code>	if bz&amp;uvinf == uvinf {</code></span>
+<span class="codeline" id="line-105"><code>		return z</code></span>
+<span class="codeline" id="line-106"><code>	}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>	// Inputs are (sub)normal.</code></span>
+<span class="codeline" id="line-109"><code>	// Split x, y, z into sign, exponent, mantissa.</code></span>
+<span class="codeline" id="line-110"><code>	xs, xe, xm := split(bx)</code></span>
+<span class="codeline" id="line-111"><code>	ys, ye, ym := split(by)</code></span>
+<span class="codeline" id="line-112"><code>	zs, ze, zm := split(bz)</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>	// Compute product p = x*y as sign, exponent, two-word mantissa.</code></span>
+<span class="codeline" id="line-115"><code>	// Start with exponent. "is normal" bit isn't subtracted yet.</code></span>
+<span class="codeline" id="line-116"><code>	pe := xe + ye - bias + 1</code></span>
+<span class="codeline" id="line-117"><code></code></span>
+<span class="codeline" id="line-118"><code>	// pm1:pm2 is the double-word mantissa for the product p.</code></span>
+<span class="codeline" id="line-119"><code>	// Shift left to leave top bit in product. Effectively</code></span>
+<span class="codeline" id="line-120"><code>	// shifts the 106-bit product to the left by 21.</code></span>
+<span class="codeline" id="line-121"><code>	pm1, pm2 := bits.Mul64(xm&lt;&lt;10, ym&lt;&lt;11)</code></span>
+<span class="codeline" id="line-122"><code>	zm1, zm2 := zm&lt;&lt;10, uint64(0)</code></span>
+<span class="codeline" id="line-123"><code>	ps := xs ^ ys // product sign</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>	// normalize to 62nd bit</code></span>
+<span class="codeline" id="line-126"><code>	is62zero := uint((^pm1 &gt;&gt; 62) &amp; 1)</code></span>
+<span class="codeline" id="line-127"><code>	pm1, pm2 = shl(pm1, pm2, is62zero)</code></span>
+<span class="codeline" id="line-128"><code>	pe -= int32(is62zero)</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	// Swap addition operands so |p| &gt;= |z|</code></span>
+<span class="codeline" id="line-131"><code>	if pe &lt; ze || (pe == ze &amp;&amp; (pm1 &lt; zm1 || (pm1 == zm1 &amp;&amp; pm2 &lt; zm2))) {</code></span>
+<span class="codeline" id="line-132"><code>		ps, pe, pm1, pm2, zs, ze, zm1, zm2 = zs, ze, zm1, zm2, ps, pe, pm1, pm2</code></span>
+<span class="codeline" id="line-133"><code>	}</code></span>
+<span class="codeline" id="line-134"><code></code></span>
+<span class="codeline" id="line-135"><code>	// Align significands</code></span>
+<span class="codeline" id="line-136"><code>	zm1, zm2 = shrcompress(zm1, zm2, uint(pe-ze))</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>	// Compute resulting significands, normalizing if necessary.</code></span>
+<span class="codeline" id="line-139"><code>	var m, c uint64</code></span>
+<span class="codeline" id="line-140"><code>	if ps == zs {</code></span>
+<span class="codeline" id="line-141"><code>		// Adding (pm1:pm2) + (zm1:zm2)</code></span>
+<span class="codeline" id="line-142"><code>		pm2, c = bits.Add64(pm2, zm2, 0)</code></span>
+<span class="codeline" id="line-143"><code>		pm1, _ = bits.Add64(pm1, zm1, c)</code></span>
+<span class="codeline" id="line-144"><code>		pe -= int32(^pm1 &gt;&gt; 63)</code></span>
+<span class="codeline" id="line-145"><code>		pm1, m = shrcompress(pm1, pm2, uint(64+pm1&gt;&gt;63))</code></span>
+<span class="codeline" id="line-146"><code>	} else {</code></span>
+<span class="codeline" id="line-147"><code>		// Subtracting (pm1:pm2) - (zm1:zm2)</code></span>
+<span class="codeline" id="line-148"><code>		// TODO: should we special-case cancellation?</code></span>
+<span class="codeline" id="line-149"><code>		pm2, c = bits.Sub64(pm2, zm2, 0)</code></span>
+<span class="codeline" id="line-150"><code>		pm1, _ = bits.Sub64(pm1, zm1, c)</code></span>
+<span class="codeline" id="line-151"><code>		nz := lz(pm1, pm2)</code></span>
+<span class="codeline" id="line-152"><code>		pe -= nz</code></span>
+<span class="codeline" id="line-153"><code>		m, pm2 = shl(pm1, pm2, uint(nz-1))</code></span>
+<span class="codeline" id="line-154"><code>		m |= nonzero(pm2)</code></span>
+<span class="codeline" id="line-155"><code>	}</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>	// Round and break ties to even</code></span>
+<span class="codeline" id="line-158"><code>	if pe &gt; 1022+bias || pe == 1022+bias &amp;&amp; (m+1&lt;&lt;9)&gt;&gt;63 == 1 {</code></span>
+<span class="codeline" id="line-159"><code>		// rounded value overflows exponent range</code></span>
+<span class="codeline" id="line-160"><code>		return Float64frombits(uint64(ps)&lt;&lt;63 | uvinf)</code></span>
+<span class="codeline" id="line-161"><code>	}</code></span>
+<span class="codeline" id="line-162"><code>	if pe &lt; 0 {</code></span>
+<span class="codeline" id="line-163"><code>		n := uint(-pe)</code></span>
+<span class="codeline" id="line-164"><code>		m = m&gt;&gt;n | nonzero(m&amp;(1&lt;&lt;n-1))</code></span>
+<span class="codeline" id="line-165"><code>		pe = 0</code></span>
+<span class="codeline" id="line-166"><code>	}</code></span>
+<span class="codeline" id="line-167"><code>	m = ((m + 1&lt;&lt;9) &gt;&gt; 10) &amp; ^zero((m&amp;(1&lt;&lt;10-1))^1&lt;&lt;9)</code></span>
+<span class="codeline" id="line-168"><code>	pe &amp;= -int32(nonzero(m))</code></span>
+<span class="codeline" id="line-169"><code>	return Float64frombits(uint64(ps)&lt;&lt;63 + uint64(pe)&lt;&lt;52 + m)</code></span>
+<span class="codeline" id="line-170"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

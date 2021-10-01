@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: string.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	string.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/bytealg"</code></span>
+<span class="codeline" id="line-9"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-10"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// The constant is known to the compiler.</code></span>
+<span class="codeline" id="line-14"><code>// There is no fundamental theory behind this number.</code></span>
+<span class="codeline" id="line-15"><code>const tmpStringBufSize = 32</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>type tmpBuf [tmpStringBufSize]byte</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>// concatstrings implements a Go string concatenation x+y+z+...</code></span>
+<span class="codeline" id="line-20"><code>// The operands are passed in the slice a.</code></span>
+<span class="codeline" id="line-21"><code>// If buf != nil, the compiler has determined that the result does not</code></span>
+<span class="codeline" id="line-22"><code>// escape the calling function, so the string data can be stored in buf</code></span>
+<span class="codeline" id="line-23"><code>// if small enough.</code></span>
+<span class="codeline" id="line-24"><code>func concatstrings(buf *tmpBuf, a []string) string {</code></span>
+<span class="codeline" id="line-25"><code>	idx := 0</code></span>
+<span class="codeline" id="line-26"><code>	l := 0</code></span>
+<span class="codeline" id="line-27"><code>	count := 0</code></span>
+<span class="codeline" id="line-28"><code>	for i, x := range a {</code></span>
+<span class="codeline" id="line-29"><code>		n := len(x)</code></span>
+<span class="codeline" id="line-30"><code>		if n == 0 {</code></span>
+<span class="codeline" id="line-31"><code>			continue</code></span>
+<span class="codeline" id="line-32"><code>		}</code></span>
+<span class="codeline" id="line-33"><code>		if l+n &lt; l {</code></span>
+<span class="codeline" id="line-34"><code>			throw("string concatenation too long")</code></span>
+<span class="codeline" id="line-35"><code>		}</code></span>
+<span class="codeline" id="line-36"><code>		l += n</code></span>
+<span class="codeline" id="line-37"><code>		count++</code></span>
+<span class="codeline" id="line-38"><code>		idx = i</code></span>
+<span class="codeline" id="line-39"><code>	}</code></span>
+<span class="codeline" id="line-40"><code>	if count == 0 {</code></span>
+<span class="codeline" id="line-41"><code>		return ""</code></span>
+<span class="codeline" id="line-42"><code>	}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	// If there is just one string and either it is not on the stack</code></span>
+<span class="codeline" id="line-45"><code>	// or our result does not escape the calling frame (buf != nil),</code></span>
+<span class="codeline" id="line-46"><code>	// then we can return that string directly.</code></span>
+<span class="codeline" id="line-47"><code>	if count == 1 &amp;&amp; (buf != nil || !stringDataOnStack(a[idx])) {</code></span>
+<span class="codeline" id="line-48"><code>		return a[idx]</code></span>
+<span class="codeline" id="line-49"><code>	}</code></span>
+<span class="codeline" id="line-50"><code>	s, b := rawstringtmp(buf, l)</code></span>
+<span class="codeline" id="line-51"><code>	for _, x := range a {</code></span>
+<span class="codeline" id="line-52"><code>		copy(b, x)</code></span>
+<span class="codeline" id="line-53"><code>		b = b[len(x):]</code></span>
+<span class="codeline" id="line-54"><code>	}</code></span>
+<span class="codeline" id="line-55"><code>	return s</code></span>
+<span class="codeline" id="line-56"><code>}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>func concatstring2(buf *tmpBuf, a [2]string) string {</code></span>
+<span class="codeline" id="line-59"><code>	return concatstrings(buf, a[:])</code></span>
+<span class="codeline" id="line-60"><code>}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>func concatstring3(buf *tmpBuf, a [3]string) string {</code></span>
+<span class="codeline" id="line-63"><code>	return concatstrings(buf, a[:])</code></span>
+<span class="codeline" id="line-64"><code>}</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>func concatstring4(buf *tmpBuf, a [4]string) string {</code></span>
+<span class="codeline" id="line-67"><code>	return concatstrings(buf, a[:])</code></span>
+<span class="codeline" id="line-68"><code>}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>func concatstring5(buf *tmpBuf, a [5]string) string {</code></span>
+<span class="codeline" id="line-71"><code>	return concatstrings(buf, a[:])</code></span>
+<span class="codeline" id="line-72"><code>}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>// slicebytetostring converts a byte slice to a string.</code></span>
+<span class="codeline" id="line-75"><code>// It is inserted by the compiler into generated code.</code></span>
+<span class="codeline" id="line-76"><code>// ptr is a pointer to the first element of the slice;</code></span>
+<span class="codeline" id="line-77"><code>// n is the length of the slice.</code></span>
+<span class="codeline" id="line-78"><code>// Buf is a fixed-size buffer for the result,</code></span>
+<span class="codeline" id="line-79"><code>// it is not nil if the result does not escape.</code></span>
+<span class="codeline" id="line-80"><code>func slicebytetostring(buf *tmpBuf, ptr *byte, n int) (str string) {</code></span>
+<span class="codeline" id="line-81"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-82"><code>		// Turns out to be a relatively common case.</code></span>
+<span class="codeline" id="line-83"><code>		// Consider that you want to parse out data between parens in "foo()bar",</code></span>
+<span class="codeline" id="line-84"><code>		// you find the indices and convert the subslice to string.</code></span>
+<span class="codeline" id="line-85"><code>		return ""</code></span>
+<span class="codeline" id="line-86"><code>	}</code></span>
+<span class="codeline" id="line-87"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-88"><code>		racereadrangepc(unsafe.Pointer(ptr),</code></span>
+<span class="codeline" id="line-89"><code>			uintptr(n),</code></span>
+<span class="codeline" id="line-90"><code>			getcallerpc(),</code></span>
+<span class="codeline" id="line-91"><code>			funcPC(slicebytetostring))</code></span>
+<span class="codeline" id="line-92"><code>	}</code></span>
+<span class="codeline" id="line-93"><code>	if msanenabled {</code></span>
+<span class="codeline" id="line-94"><code>		msanread(unsafe.Pointer(ptr), uintptr(n))</code></span>
+<span class="codeline" id="line-95"><code>	}</code></span>
+<span class="codeline" id="line-96"><code>	if n == 1 {</code></span>
+<span class="codeline" id="line-97"><code>		p := unsafe.Pointer(&amp;staticuint64s[*ptr])</code></span>
+<span class="codeline" id="line-98"><code>		if sys.BigEndian {</code></span>
+<span class="codeline" id="line-99"><code>			p = add(p, 7)</code></span>
+<span class="codeline" id="line-100"><code>		}</code></span>
+<span class="codeline" id="line-101"><code>		stringStructOf(&amp;str).str = p</code></span>
+<span class="codeline" id="line-102"><code>		stringStructOf(&amp;str).len = 1</code></span>
+<span class="codeline" id="line-103"><code>		return</code></span>
+<span class="codeline" id="line-104"><code>	}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>	var p unsafe.Pointer</code></span>
+<span class="codeline" id="line-107"><code>	if buf != nil &amp;&amp; n &lt;= len(buf) {</code></span>
+<span class="codeline" id="line-108"><code>		p = unsafe.Pointer(buf)</code></span>
+<span class="codeline" id="line-109"><code>	} else {</code></span>
+<span class="codeline" id="line-110"><code>		p = mallocgc(uintptr(n), nil, false)</code></span>
+<span class="codeline" id="line-111"><code>	}</code></span>
+<span class="codeline" id="line-112"><code>	stringStructOf(&amp;str).str = p</code></span>
+<span class="codeline" id="line-113"><code>	stringStructOf(&amp;str).len = n</code></span>
+<span class="codeline" id="line-114"><code>	memmove(p, unsafe.Pointer(ptr), uintptr(n))</code></span>
+<span class="codeline" id="line-115"><code>	return</code></span>
+<span class="codeline" id="line-116"><code>}</code></span>
+<span class="codeline" id="line-117"><code></code></span>
+<span class="codeline" id="line-118"><code>// stringDataOnStack reports whether the string's data is</code></span>
+<span class="codeline" id="line-119"><code>// stored on the current goroutine's stack.</code></span>
+<span class="codeline" id="line-120"><code>func stringDataOnStack(s string) bool {</code></span>
+<span class="codeline" id="line-121"><code>	ptr := uintptr(stringStructOf(&amp;s).str)</code></span>
+<span class="codeline" id="line-122"><code>	stk := getg().stack</code></span>
+<span class="codeline" id="line-123"><code>	return stk.lo &lt;= ptr &amp;&amp; ptr &lt; stk.hi</code></span>
+<span class="codeline" id="line-124"><code>}</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>func rawstringtmp(buf *tmpBuf, l int) (s string, b []byte) {</code></span>
+<span class="codeline" id="line-127"><code>	if buf != nil &amp;&amp; l &lt;= len(buf) {</code></span>
+<span class="codeline" id="line-128"><code>		b = buf[:l]</code></span>
+<span class="codeline" id="line-129"><code>		s = slicebytetostringtmp(&amp;b[0], len(b))</code></span>
+<span class="codeline" id="line-130"><code>	} else {</code></span>
+<span class="codeline" id="line-131"><code>		s, b = rawstring(l)</code></span>
+<span class="codeline" id="line-132"><code>	}</code></span>
+<span class="codeline" id="line-133"><code>	return</code></span>
+<span class="codeline" id="line-134"><code>}</code></span>
+<span class="codeline" id="line-135"><code></code></span>
+<span class="codeline" id="line-136"><code>// slicebytetostringtmp returns a "string" referring to the actual []byte bytes.</code></span>
+<span class="codeline" id="line-137"><code>//</code></span>
+<span class="codeline" id="line-138"><code>// Callers need to ensure that the returned string will not be used after</code></span>
+<span class="codeline" id="line-139"><code>// the calling goroutine modifies the original slice or synchronizes with</code></span>
+<span class="codeline" id="line-140"><code>// another goroutine.</code></span>
+<span class="codeline" id="line-141"><code>//</code></span>
+<span class="codeline" id="line-142"><code>// The function is only called when instrumenting</code></span>
+<span class="codeline" id="line-143"><code>// and otherwise intrinsified by the compiler.</code></span>
+<span class="codeline" id="line-144"><code>//</code></span>
+<span class="codeline" id="line-145"><code>// Some internal compiler optimizations use this function.</code></span>
+<span class="codeline" id="line-146"><code>// - Used for m[T1{... Tn{..., string(k), ...} ...}] and m[string(k)]</code></span>
+<span class="codeline" id="line-147"><code>//   where k is []byte, T1 to Tn is a nesting of struct and array literals.</code></span>
+<span class="codeline" id="line-148"><code>// - Used for "&lt;"+string(b)+"&gt;" concatenation where b is []byte.</code></span>
+<span class="codeline" id="line-149"><code>// - Used for string(b)=="foo" comparison where b is []byte.</code></span>
+<span class="codeline" id="line-150"><code>func slicebytetostringtmp(ptr *byte, n int) (str string) {</code></span>
+<span class="codeline" id="line-151"><code>	if raceenabled &amp;&amp; n &gt; 0 {</code></span>
+<span class="codeline" id="line-152"><code>		racereadrangepc(unsafe.Pointer(ptr),</code></span>
+<span class="codeline" id="line-153"><code>			uintptr(n),</code></span>
+<span class="codeline" id="line-154"><code>			getcallerpc(),</code></span>
+<span class="codeline" id="line-155"><code>			funcPC(slicebytetostringtmp))</code></span>
+<span class="codeline" id="line-156"><code>	}</code></span>
+<span class="codeline" id="line-157"><code>	if msanenabled &amp;&amp; n &gt; 0 {</code></span>
+<span class="codeline" id="line-158"><code>		msanread(unsafe.Pointer(ptr), uintptr(n))</code></span>
+<span class="codeline" id="line-159"><code>	}</code></span>
+<span class="codeline" id="line-160"><code>	stringStructOf(&amp;str).str = unsafe.Pointer(ptr)</code></span>
+<span class="codeline" id="line-161"><code>	stringStructOf(&amp;str).len = n</code></span>
+<span class="codeline" id="line-162"><code>	return</code></span>
+<span class="codeline" id="line-163"><code>}</code></span>
+<span class="codeline" id="line-164"><code></code></span>
+<span class="codeline" id="line-165"><code>func stringtoslicebyte(buf *tmpBuf, s string) []byte {</code></span>
+<span class="codeline" id="line-166"><code>	var b []byte</code></span>
+<span class="codeline" id="line-167"><code>	if buf != nil &amp;&amp; len(s) &lt;= len(buf) {</code></span>
+<span class="codeline" id="line-168"><code>		*buf = tmpBuf{}</code></span>
+<span class="codeline" id="line-169"><code>		b = buf[:len(s)]</code></span>
+<span class="codeline" id="line-170"><code>	} else {</code></span>
+<span class="codeline" id="line-171"><code>		b = rawbyteslice(len(s))</code></span>
+<span class="codeline" id="line-172"><code>	}</code></span>
+<span class="codeline" id="line-173"><code>	copy(b, s)</code></span>
+<span class="codeline" id="line-174"><code>	return b</code></span>
+<span class="codeline" id="line-175"><code>}</code></span>
+<span class="codeline" id="line-176"><code></code></span>
+<span class="codeline" id="line-177"><code>func stringtoslicerune(buf *[tmpStringBufSize]rune, s string) []rune {</code></span>
+<span class="codeline" id="line-178"><code>	// two passes.</code></span>
+<span class="codeline" id="line-179"><code>	// unlike slicerunetostring, no race because strings are immutable.</code></span>
+<span class="codeline" id="line-180"><code>	n := 0</code></span>
+<span class="codeline" id="line-181"><code>	for range s {</code></span>
+<span class="codeline" id="line-182"><code>		n++</code></span>
+<span class="codeline" id="line-183"><code>	}</code></span>
+<span class="codeline" id="line-184"><code></code></span>
+<span class="codeline" id="line-185"><code>	var a []rune</code></span>
+<span class="codeline" id="line-186"><code>	if buf != nil &amp;&amp; n &lt;= len(buf) {</code></span>
+<span class="codeline" id="line-187"><code>		*buf = [tmpStringBufSize]rune{}</code></span>
+<span class="codeline" id="line-188"><code>		a = buf[:n]</code></span>
+<span class="codeline" id="line-189"><code>	} else {</code></span>
+<span class="codeline" id="line-190"><code>		a = rawruneslice(n)</code></span>
+<span class="codeline" id="line-191"><code>	}</code></span>
+<span class="codeline" id="line-192"><code></code></span>
+<span class="codeline" id="line-193"><code>	n = 0</code></span>
+<span class="codeline" id="line-194"><code>	for _, r := range s {</code></span>
+<span class="codeline" id="line-195"><code>		a[n] = r</code></span>
+<span class="codeline" id="line-196"><code>		n++</code></span>
+<span class="codeline" id="line-197"><code>	}</code></span>
+<span class="codeline" id="line-198"><code>	return a</code></span>
+<span class="codeline" id="line-199"><code>}</code></span>
+<span class="codeline" id="line-200"><code></code></span>
+<span class="codeline" id="line-201"><code>func slicerunetostring(buf *tmpBuf, a []rune) string {</code></span>
+<span class="codeline" id="line-202"><code>	if raceenabled &amp;&amp; len(a) &gt; 0 {</code></span>
+<span class="codeline" id="line-203"><code>		racereadrangepc(unsafe.Pointer(&amp;a[0]),</code></span>
+<span class="codeline" id="line-204"><code>			uintptr(len(a))*unsafe.Sizeof(a[0]),</code></span>
+<span class="codeline" id="line-205"><code>			getcallerpc(),</code></span>
+<span class="codeline" id="line-206"><code>			funcPC(slicerunetostring))</code></span>
+<span class="codeline" id="line-207"><code>	}</code></span>
+<span class="codeline" id="line-208"><code>	if msanenabled &amp;&amp; len(a) &gt; 0 {</code></span>
+<span class="codeline" id="line-209"><code>		msanread(unsafe.Pointer(&amp;a[0]), uintptr(len(a))*unsafe.Sizeof(a[0]))</code></span>
+<span class="codeline" id="line-210"><code>	}</code></span>
+<span class="codeline" id="line-211"><code>	var dum [4]byte</code></span>
+<span class="codeline" id="line-212"><code>	size1 := 0</code></span>
+<span class="codeline" id="line-213"><code>	for _, r := range a {</code></span>
+<span class="codeline" id="line-214"><code>		size1 += encoderune(dum[:], r)</code></span>
+<span class="codeline" id="line-215"><code>	}</code></span>
+<span class="codeline" id="line-216"><code>	s, b := rawstringtmp(buf, size1+3)</code></span>
+<span class="codeline" id="line-217"><code>	size2 := 0</code></span>
+<span class="codeline" id="line-218"><code>	for _, r := range a {</code></span>
+<span class="codeline" id="line-219"><code>		// check for race</code></span>
+<span class="codeline" id="line-220"><code>		if size2 &gt;= size1 {</code></span>
+<span class="codeline" id="line-221"><code>			break</code></span>
+<span class="codeline" id="line-222"><code>		}</code></span>
+<span class="codeline" id="line-223"><code>		size2 += encoderune(b[size2:], r)</code></span>
+<span class="codeline" id="line-224"><code>	}</code></span>
+<span class="codeline" id="line-225"><code>	return s[:size2]</code></span>
+<span class="codeline" id="line-226"><code>}</code></span>
+<span class="codeline" id="line-227"><code></code></span>
+<span class="codeline" id="line-228"><code>type stringStruct struct {</code></span>
+<span class="codeline" id="line-229"><code>	str unsafe.Pointer</code></span>
+<span class="codeline" id="line-230"><code>	len int</code></span>
+<span class="codeline" id="line-231"><code>}</code></span>
+<span class="codeline" id="line-232"><code></code></span>
+<span class="codeline" id="line-233"><code>// Variant with *byte pointer type for DWARF debugging.</code></span>
+<span class="codeline" id="line-234"><code>type stringStructDWARF struct {</code></span>
+<span class="codeline" id="line-235"><code>	str *byte</code></span>
+<span class="codeline" id="line-236"><code>	len int</code></span>
+<span class="codeline" id="line-237"><code>}</code></span>
+<span class="codeline" id="line-238"><code></code></span>
+<span class="codeline" id="line-239"><code>func stringStructOf(sp *string) *stringStruct {</code></span>
+<span class="codeline" id="line-240"><code>	return (*stringStruct)(unsafe.Pointer(sp))</code></span>
+<span class="codeline" id="line-241"><code>}</code></span>
+<span class="codeline" id="line-242"><code></code></span>
+<span class="codeline" id="line-243"><code>func intstring(buf *[4]byte, v int64) (s string) {</code></span>
+<span class="codeline" id="line-244"><code>	var b []byte</code></span>
+<span class="codeline" id="line-245"><code>	if buf != nil {</code></span>
+<span class="codeline" id="line-246"><code>		b = buf[:]</code></span>
+<span class="codeline" id="line-247"><code>		s = slicebytetostringtmp(&amp;b[0], len(b))</code></span>
+<span class="codeline" id="line-248"><code>	} else {</code></span>
+<span class="codeline" id="line-249"><code>		s, b = rawstring(4)</code></span>
+<span class="codeline" id="line-250"><code>	}</code></span>
+<span class="codeline" id="line-251"><code>	if int64(rune(v)) != v {</code></span>
+<span class="codeline" id="line-252"><code>		v = runeError</code></span>
+<span class="codeline" id="line-253"><code>	}</code></span>
+<span class="codeline" id="line-254"><code>	n := encoderune(b, rune(v))</code></span>
+<span class="codeline" id="line-255"><code>	return s[:n]</code></span>
+<span class="codeline" id="line-256"><code>}</code></span>
+<span class="codeline" id="line-257"><code></code></span>
+<span class="codeline" id="line-258"><code>// rawstring allocates storage for a new string. The returned</code></span>
+<span class="codeline" id="line-259"><code>// string and byte slice both refer to the same storage.</code></span>
+<span class="codeline" id="line-260"><code>// The storage is not zeroed. Callers should use</code></span>
+<span class="codeline" id="line-261"><code>// b to set the string contents and then drop b.</code></span>
+<span class="codeline" id="line-262"><code>func rawstring(size int) (s string, b []byte) {</code></span>
+<span class="codeline" id="line-263"><code>	p := mallocgc(uintptr(size), nil, false)</code></span>
+<span class="codeline" id="line-264"><code></code></span>
+<span class="codeline" id="line-265"><code>	stringStructOf(&amp;s).str = p</code></span>
+<span class="codeline" id="line-266"><code>	stringStructOf(&amp;s).len = size</code></span>
+<span class="codeline" id="line-267"><code></code></span>
+<span class="codeline" id="line-268"><code>	*(*slice)(unsafe.Pointer(&amp;b)) = slice{p, size, size}</code></span>
+<span class="codeline" id="line-269"><code></code></span>
+<span class="codeline" id="line-270"><code>	return</code></span>
+<span class="codeline" id="line-271"><code>}</code></span>
+<span class="codeline" id="line-272"><code></code></span>
+<span class="codeline" id="line-273"><code>// rawbyteslice allocates a new byte slice. The byte slice is not zeroed.</code></span>
+<span class="codeline" id="line-274"><code>func rawbyteslice(size int) (b []byte) {</code></span>
+<span class="codeline" id="line-275"><code>	cap := roundupsize(uintptr(size))</code></span>
+<span class="codeline" id="line-276"><code>	p := mallocgc(cap, nil, false)</code></span>
+<span class="codeline" id="line-277"><code>	if cap != uintptr(size) {</code></span>
+<span class="codeline" id="line-278"><code>		memclrNoHeapPointers(add(p, uintptr(size)), cap-uintptr(size))</code></span>
+<span class="codeline" id="line-279"><code>	}</code></span>
+<span class="codeline" id="line-280"><code></code></span>
+<span class="codeline" id="line-281"><code>	*(*slice)(unsafe.Pointer(&amp;b)) = slice{p, size, int(cap)}</code></span>
+<span class="codeline" id="line-282"><code>	return</code></span>
+<span class="codeline" id="line-283"><code>}</code></span>
+<span class="codeline" id="line-284"><code></code></span>
+<span class="codeline" id="line-285"><code>// rawruneslice allocates a new rune slice. The rune slice is not zeroed.</code></span>
+<span class="codeline" id="line-286"><code>func rawruneslice(size int) (b []rune) {</code></span>
+<span class="codeline" id="line-287"><code>	if uintptr(size) &gt; maxAlloc/4 {</code></span>
+<span class="codeline" id="line-288"><code>		throw("out of memory")</code></span>
+<span class="codeline" id="line-289"><code>	}</code></span>
+<span class="codeline" id="line-290"><code>	mem := roundupsize(uintptr(size) * 4)</code></span>
+<span class="codeline" id="line-291"><code>	p := mallocgc(mem, nil, false)</code></span>
+<span class="codeline" id="line-292"><code>	if mem != uintptr(size)*4 {</code></span>
+<span class="codeline" id="line-293"><code>		memclrNoHeapPointers(add(p, uintptr(size)*4), mem-uintptr(size)*4)</code></span>
+<span class="codeline" id="line-294"><code>	}</code></span>
+<span class="codeline" id="line-295"><code></code></span>
+<span class="codeline" id="line-296"><code>	*(*slice)(unsafe.Pointer(&amp;b)) = slice{p, size, int(mem / 4)}</code></span>
+<span class="codeline" id="line-297"><code>	return</code></span>
+<span class="codeline" id="line-298"><code>}</code></span>
+<span class="codeline" id="line-299"><code></code></span>
+<span class="codeline" id="line-300"><code>// used by cmd/cgo</code></span>
+<span class="codeline" id="line-301"><code>func gobytes(p *byte, n int) (b []byte) {</code></span>
+<span class="codeline" id="line-302"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-303"><code>		return make([]byte, 0)</code></span>
+<span class="codeline" id="line-304"><code>	}</code></span>
+<span class="codeline" id="line-305"><code></code></span>
+<span class="codeline" id="line-306"><code>	if n &lt; 0 || uintptr(n) &gt; maxAlloc {</code></span>
+<span class="codeline" id="line-307"><code>		panic(errorString("gobytes: length out of range"))</code></span>
+<span class="codeline" id="line-308"><code>	}</code></span>
+<span class="codeline" id="line-309"><code></code></span>
+<span class="codeline" id="line-310"><code>	bp := mallocgc(uintptr(n), nil, false)</code></span>
+<span class="codeline" id="line-311"><code>	memmove(bp, unsafe.Pointer(p), uintptr(n))</code></span>
+<span class="codeline" id="line-312"><code></code></span>
+<span class="codeline" id="line-313"><code>	*(*slice)(unsafe.Pointer(&amp;b)) = slice{bp, n, n}</code></span>
+<span class="codeline" id="line-314"><code>	return</code></span>
+<span class="codeline" id="line-315"><code>}</code></span>
+<span class="codeline" id="line-316"><code></code></span>
+<span class="codeline" id="line-317"><code>// This is exported via linkname to assembly in syscall (for Plan9).</code></span>
+<span class="codeline" id="line-318"><code>//go:linkname gostring</code></span>
+<span class="codeline" id="line-319"><code>func gostring(p *byte) string {</code></span>
+<span class="codeline" id="line-320"><code>	l := findnull(p)</code></span>
+<span class="codeline" id="line-321"><code>	if l == 0 {</code></span>
+<span class="codeline" id="line-322"><code>		return ""</code></span>
+<span class="codeline" id="line-323"><code>	}</code></span>
+<span class="codeline" id="line-324"><code>	s, b := rawstring(l)</code></span>
+<span class="codeline" id="line-325"><code>	memmove(unsafe.Pointer(&amp;b[0]), unsafe.Pointer(p), uintptr(l))</code></span>
+<span class="codeline" id="line-326"><code>	return s</code></span>
+<span class="codeline" id="line-327"><code>}</code></span>
+<span class="codeline" id="line-328"><code></code></span>
+<span class="codeline" id="line-329"><code>func gostringn(p *byte, l int) string {</code></span>
+<span class="codeline" id="line-330"><code>	if l == 0 {</code></span>
+<span class="codeline" id="line-331"><code>		return ""</code></span>
+<span class="codeline" id="line-332"><code>	}</code></span>
+<span class="codeline" id="line-333"><code>	s, b := rawstring(l)</code></span>
+<span class="codeline" id="line-334"><code>	memmove(unsafe.Pointer(&amp;b[0]), unsafe.Pointer(p), uintptr(l))</code></span>
+<span class="codeline" id="line-335"><code>	return s</code></span>
+<span class="codeline" id="line-336"><code>}</code></span>
+<span class="codeline" id="line-337"><code></code></span>
+<span class="codeline" id="line-338"><code>func hasPrefix(s, prefix string) bool {</code></span>
+<span class="codeline" id="line-339"><code>	return len(s) &gt;= len(prefix) &amp;&amp; s[:len(prefix)] == prefix</code></span>
+<span class="codeline" id="line-340"><code>}</code></span>
+<span class="codeline" id="line-341"><code></code></span>
+<span class="codeline" id="line-342"><code>const (</code></span>
+<span class="codeline" id="line-343"><code>	maxUint = ^uint(0)</code></span>
+<span class="codeline" id="line-344"><code>	maxInt  = int(maxUint &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-345"><code>)</code></span>
+<span class="codeline" id="line-346"><code></code></span>
+<span class="codeline" id="line-347"><code>// atoi parses an int from a string s.</code></span>
+<span class="codeline" id="line-348"><code>// The bool result reports whether s is a number</code></span>
+<span class="codeline" id="line-349"><code>// representable by a value of type int.</code></span>
+<span class="codeline" id="line-350"><code>func atoi(s string) (int, bool) {</code></span>
+<span class="codeline" id="line-351"><code>	if s == "" {</code></span>
+<span class="codeline" id="line-352"><code>		return 0, false</code></span>
+<span class="codeline" id="line-353"><code>	}</code></span>
+<span class="codeline" id="line-354"><code></code></span>
+<span class="codeline" id="line-355"><code>	neg := false</code></span>
+<span class="codeline" id="line-356"><code>	if s[0] == '-' {</code></span>
+<span class="codeline" id="line-357"><code>		neg = true</code></span>
+<span class="codeline" id="line-358"><code>		s = s[1:]</code></span>
+<span class="codeline" id="line-359"><code>	}</code></span>
+<span class="codeline" id="line-360"><code></code></span>
+<span class="codeline" id="line-361"><code>	un := uint(0)</code></span>
+<span class="codeline" id="line-362"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-363"><code>		c := s[i]</code></span>
+<span class="codeline" id="line-364"><code>		if c &lt; '0' || c &gt; '9' {</code></span>
+<span class="codeline" id="line-365"><code>			return 0, false</code></span>
+<span class="codeline" id="line-366"><code>		}</code></span>
+<span class="codeline" id="line-367"><code>		if un &gt; maxUint/10 {</code></span>
+<span class="codeline" id="line-368"><code>			// overflow</code></span>
+<span class="codeline" id="line-369"><code>			return 0, false</code></span>
+<span class="codeline" id="line-370"><code>		}</code></span>
+<span class="codeline" id="line-371"><code>		un *= 10</code></span>
+<span class="codeline" id="line-372"><code>		un1 := un + uint(c) - '0'</code></span>
+<span class="codeline" id="line-373"><code>		if un1 &lt; un {</code></span>
+<span class="codeline" id="line-374"><code>			// overflow</code></span>
+<span class="codeline" id="line-375"><code>			return 0, false</code></span>
+<span class="codeline" id="line-376"><code>		}</code></span>
+<span class="codeline" id="line-377"><code>		un = un1</code></span>
+<span class="codeline" id="line-378"><code>	}</code></span>
+<span class="codeline" id="line-379"><code></code></span>
+<span class="codeline" id="line-380"><code>	if !neg &amp;&amp; un &gt; uint(maxInt) {</code></span>
+<span class="codeline" id="line-381"><code>		return 0, false</code></span>
+<span class="codeline" id="line-382"><code>	}</code></span>
+<span class="codeline" id="line-383"><code>	if neg &amp;&amp; un &gt; uint(maxInt)+1 {</code></span>
+<span class="codeline" id="line-384"><code>		return 0, false</code></span>
+<span class="codeline" id="line-385"><code>	}</code></span>
+<span class="codeline" id="line-386"><code></code></span>
+<span class="codeline" id="line-387"><code>	n := int(un)</code></span>
+<span class="codeline" id="line-388"><code>	if neg {</code></span>
+<span class="codeline" id="line-389"><code>		n = -n</code></span>
+<span class="codeline" id="line-390"><code>	}</code></span>
+<span class="codeline" id="line-391"><code></code></span>
+<span class="codeline" id="line-392"><code>	return n, true</code></span>
+<span class="codeline" id="line-393"><code>}</code></span>
+<span class="codeline" id="line-394"><code></code></span>
+<span class="codeline" id="line-395"><code>// atoi32 is like atoi but for integers</code></span>
+<span class="codeline" id="line-396"><code>// that fit into an int32.</code></span>
+<span class="codeline" id="line-397"><code>func atoi32(s string) (int32, bool) {</code></span>
+<span class="codeline" id="line-398"><code>	if n, ok := atoi(s); n == int(int32(n)) {</code></span>
+<span class="codeline" id="line-399"><code>		return int32(n), ok</code></span>
+<span class="codeline" id="line-400"><code>	}</code></span>
+<span class="codeline" id="line-401"><code>	return 0, false</code></span>
+<span class="codeline" id="line-402"><code>}</code></span>
+<span class="codeline" id="line-403"><code></code></span>
+<span class="codeline" id="line-404"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-405"><code>func findnull(s *byte) int {</code></span>
+<span class="codeline" id="line-406"><code>	if s == nil {</code></span>
+<span class="codeline" id="line-407"><code>		return 0</code></span>
+<span class="codeline" id="line-408"><code>	}</code></span>
+<span class="codeline" id="line-409"><code></code></span>
+<span class="codeline" id="line-410"><code>	// Avoid IndexByteString on Plan 9 because it uses SSE instructions</code></span>
+<span class="codeline" id="line-411"><code>	// on x86 machines, and those are classified as floating point instructions,</code></span>
+<span class="codeline" id="line-412"><code>	// which are illegal in a note handler.</code></span>
+<span class="codeline" id="line-413"><code>	if GOOS == "plan9" {</code></span>
+<span class="codeline" id="line-414"><code>		p := (*[maxAlloc/2 - 1]byte)(unsafe.Pointer(s))</code></span>
+<span class="codeline" id="line-415"><code>		l := 0</code></span>
+<span class="codeline" id="line-416"><code>		for p[l] != 0 {</code></span>
+<span class="codeline" id="line-417"><code>			l++</code></span>
+<span class="codeline" id="line-418"><code>		}</code></span>
+<span class="codeline" id="line-419"><code>		return l</code></span>
+<span class="codeline" id="line-420"><code>	}</code></span>
+<span class="codeline" id="line-421"><code></code></span>
+<span class="codeline" id="line-422"><code>	// pageSize is the unit we scan at a time looking for NULL.</code></span>
+<span class="codeline" id="line-423"><code>	// It must be the minimum page size for any architecture Go</code></span>
+<span class="codeline" id="line-424"><code>	// runs on. It's okay (just a minor performance loss) if the</code></span>
+<span class="codeline" id="line-425"><code>	// actual system page size is larger than this value.</code></span>
+<span class="codeline" id="line-426"><code>	const pageSize = 4096</code></span>
+<span class="codeline" id="line-427"><code></code></span>
+<span class="codeline" id="line-428"><code>	offset := 0</code></span>
+<span class="codeline" id="line-429"><code>	ptr := unsafe.Pointer(s)</code></span>
+<span class="codeline" id="line-430"><code>	// IndexByteString uses wide reads, so we need to be careful</code></span>
+<span class="codeline" id="line-431"><code>	// with page boundaries. Call IndexByteString on</code></span>
+<span class="codeline" id="line-432"><code>	// [ptr, endOfPage) interval.</code></span>
+<span class="codeline" id="line-433"><code>	safeLen := int(pageSize - uintptr(ptr)%pageSize)</code></span>
+<span class="codeline" id="line-434"><code></code></span>
+<span class="codeline" id="line-435"><code>	for {</code></span>
+<span class="codeline" id="line-436"><code>		t := *(*string)(unsafe.Pointer(&amp;stringStruct{ptr, safeLen}))</code></span>
+<span class="codeline" id="line-437"><code>		// Check one page at a time.</code></span>
+<span class="codeline" id="line-438"><code>		if i := bytealg.IndexByteString(t, 0); i != -1 {</code></span>
+<span class="codeline" id="line-439"><code>			return offset + i</code></span>
+<span class="codeline" id="line-440"><code>		}</code></span>
+<span class="codeline" id="line-441"><code>		// Move to next page</code></span>
+<span class="codeline" id="line-442"><code>		ptr = unsafe.Pointer(uintptr(ptr) + uintptr(safeLen))</code></span>
+<span class="codeline" id="line-443"><code>		offset += safeLen</code></span>
+<span class="codeline" id="line-444"><code>		safeLen = pageSize</code></span>
+<span class="codeline" id="line-445"><code>	}</code></span>
+<span class="codeline" id="line-446"><code>}</code></span>
+<span class="codeline" id="line-447"><code></code></span>
+<span class="codeline" id="line-448"><code>func findnullw(s *uint16) int {</code></span>
+<span class="codeline" id="line-449"><code>	if s == nil {</code></span>
+<span class="codeline" id="line-450"><code>		return 0</code></span>
+<span class="codeline" id="line-451"><code>	}</code></span>
+<span class="codeline" id="line-452"><code>	p := (*[maxAlloc/2/2 - 1]uint16)(unsafe.Pointer(s))</code></span>
+<span class="codeline" id="line-453"><code>	l := 0</code></span>
+<span class="codeline" id="line-454"><code>	for p[l] != 0 {</code></span>
+<span class="codeline" id="line-455"><code>		l++</code></span>
+<span class="codeline" id="line-456"><code>	}</code></span>
+<span class="codeline" id="line-457"><code>	return l</code></span>
+<span class="codeline" id="line-458"><code>}</code></span>
+<span class="codeline" id="line-459"><code></code></span>
+<span class="codeline" id="line-460"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-461"><code>func gostringnocopy(str *byte) string {</code></span>
+<span class="codeline" id="line-462"><code>	ss := stringStruct{str: unsafe.Pointer(str), len: findnull(str)}</code></span>
+<span class="codeline" id="line-463"><code>	s := *(*string)(unsafe.Pointer(&amp;ss))</code></span>
+<span class="codeline" id="line-464"><code>	return s</code></span>
+<span class="codeline" id="line-465"><code>}</code></span>
+<span class="codeline" id="line-466"><code></code></span>
+<span class="codeline" id="line-467"><code>func gostringw(strw *uint16) string {</code></span>
+<span class="codeline" id="line-468"><code>	var buf [8]byte</code></span>
+<span class="codeline" id="line-469"><code>	str := (*[maxAlloc/2/2 - 1]uint16)(unsafe.Pointer(strw))</code></span>
+<span class="codeline" id="line-470"><code>	n1 := 0</code></span>
+<span class="codeline" id="line-471"><code>	for i := 0; str[i] != 0; i++ {</code></span>
+<span class="codeline" id="line-472"><code>		n1 += encoderune(buf[:], rune(str[i]))</code></span>
+<span class="codeline" id="line-473"><code>	}</code></span>
+<span class="codeline" id="line-474"><code>	s, b := rawstring(n1 + 4)</code></span>
+<span class="codeline" id="line-475"><code>	n2 := 0</code></span>
+<span class="codeline" id="line-476"><code>	for i := 0; str[i] != 0; i++ {</code></span>
+<span class="codeline" id="line-477"><code>		// check for race</code></span>
+<span class="codeline" id="line-478"><code>		if n2 &gt;= n1 {</code></span>
+<span class="codeline" id="line-479"><code>			break</code></span>
+<span class="codeline" id="line-480"><code>		}</code></span>
+<span class="codeline" id="line-481"><code>		n2 += encoderune(b[n2:], rune(str[i]))</code></span>
+<span class="codeline" id="line-482"><code>	}</code></span>
+<span class="codeline" id="line-483"><code>	b[n2] = 0 // for luck</code></span>
+<span class="codeline" id="line-484"><code>	return s[:n2]</code></span>
+<span class="codeline" id="line-485"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: dim.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	dim.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Dim returns the maximum of x-y or 0.</code></span>
+<span class="codeline" id="line-8"><code>//</code></span>
+<span class="codeline" id="line-9"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-10"><code>//	Dim(+Inf, +Inf) = NaN</code></span>
+<span class="codeline" id="line-11"><code>//	Dim(-Inf, -Inf) = NaN</code></span>
+<span class="codeline" id="line-12"><code>//	Dim(x, NaN) = Dim(NaN, x) = NaN</code></span>
+<span class="codeline" id="line-13"><code>func Dim(x, y float64) float64 {</code></span>
+<span class="codeline" id="line-14"><code>	// The special cases result in NaN after the subtraction:</code></span>
+<span class="codeline" id="line-15"><code>	//      +Inf - +Inf = NaN</code></span>
+<span class="codeline" id="line-16"><code>	//      -Inf - -Inf = NaN</code></span>
+<span class="codeline" id="line-17"><code>	//       NaN - y    = NaN</code></span>
+<span class="codeline" id="line-18"><code>	//         x - NaN  = NaN</code></span>
+<span class="codeline" id="line-19"><code>	v := x - y</code></span>
+<span class="codeline" id="line-20"><code>	if v &lt;= 0 {</code></span>
+<span class="codeline" id="line-21"><code>		// v is negative or 0</code></span>
+<span class="codeline" id="line-22"><code>		return 0</code></span>
+<span class="codeline" id="line-23"><code>	}</code></span>
+<span class="codeline" id="line-24"><code>	// v is positive or NaN</code></span>
+<span class="codeline" id="line-25"><code>	return v</code></span>
+<span class="codeline" id="line-26"><code>}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>// Max returns the larger of x or y.</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-31"><code>//	Max(x, +Inf) = Max(+Inf, x) = +Inf</code></span>
+<span class="codeline" id="line-32"><code>//	Max(x, NaN) = Max(NaN, x) = NaN</code></span>
+<span class="codeline" id="line-33"><code>//	Max(+0, ±0) = Max(±0, +0) = +0</code></span>
+<span class="codeline" id="line-34"><code>//	Max(-0, -0) = -0</code></span>
+<span class="codeline" id="line-35"><code>func Max(x, y float64) float64</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>func max(x, y float64) float64 {</code></span>
+<span class="codeline" id="line-38"><code>	// special cases</code></span>
+<span class="codeline" id="line-39"><code>	switch {</code></span>
+<span class="codeline" id="line-40"><code>	case IsInf(x, 1) || IsInf(y, 1):</code></span>
+<span class="codeline" id="line-41"><code>		return Inf(1)</code></span>
+<span class="codeline" id="line-42"><code>	case IsNaN(x) || IsNaN(y):</code></span>
+<span class="codeline" id="line-43"><code>		return NaN()</code></span>
+<span class="codeline" id="line-44"><code>	case x == 0 &amp;&amp; x == y:</code></span>
+<span class="codeline" id="line-45"><code>		if Signbit(x) {</code></span>
+<span class="codeline" id="line-46"><code>			return y</code></span>
+<span class="codeline" id="line-47"><code>		}</code></span>
+<span class="codeline" id="line-48"><code>		return x</code></span>
+<span class="codeline" id="line-49"><code>	}</code></span>
+<span class="codeline" id="line-50"><code>	if x &gt; y {</code></span>
+<span class="codeline" id="line-51"><code>		return x</code></span>
+<span class="codeline" id="line-52"><code>	}</code></span>
+<span class="codeline" id="line-53"><code>	return y</code></span>
+<span class="codeline" id="line-54"><code>}</code></span>
+<span class="codeline" id="line-55"><code></code></span>
+<span class="codeline" id="line-56"><code>// Min returns the smaller of x or y.</code></span>
+<span class="codeline" id="line-57"><code>//</code></span>
+<span class="codeline" id="line-58"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-59"><code>//	Min(x, -Inf) = Min(-Inf, x) = -Inf</code></span>
+<span class="codeline" id="line-60"><code>//	Min(x, NaN) = Min(NaN, x) = NaN</code></span>
+<span class="codeline" id="line-61"><code>//	Min(-0, ±0) = Min(±0, -0) = -0</code></span>
+<span class="codeline" id="line-62"><code>func Min(x, y float64) float64</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>func min(x, y float64) float64 {</code></span>
+<span class="codeline" id="line-65"><code>	// special cases</code></span>
+<span class="codeline" id="line-66"><code>	switch {</code></span>
+<span class="codeline" id="line-67"><code>	case IsInf(x, -1) || IsInf(y, -1):</code></span>
+<span class="codeline" id="line-68"><code>		return Inf(-1)</code></span>
+<span class="codeline" id="line-69"><code>	case IsNaN(x) || IsNaN(y):</code></span>
+<span class="codeline" id="line-70"><code>		return NaN()</code></span>
+<span class="codeline" id="line-71"><code>	case x == 0 &amp;&amp; x == y:</code></span>
+<span class="codeline" id="line-72"><code>		if Signbit(x) {</code></span>
+<span class="codeline" id="line-73"><code>			return x</code></span>
+<span class="codeline" id="line-74"><code>		}</code></span>
+<span class="codeline" id="line-75"><code>		return y</code></span>
+<span class="codeline" id="line-76"><code>	}</code></span>
+<span class="codeline" id="line-77"><code>	if x &lt; y {</code></span>
+<span class="codeline" id="line-78"><code>		return x</code></span>
+<span class="codeline" id="line-79"><code>	}</code></span>
+<span class="codeline" id="line-80"><code>	return y</code></span>
+<span class="codeline" id="line-81"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

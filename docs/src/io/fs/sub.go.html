@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sub.go in package io/fs</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sub.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/io/fs.html">io/fs</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2020 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package fs</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"errors"</code></span>
+<span class="codeline" id="line-9"><code>	"path"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// A SubFS is a file system with a Sub method.</code></span>
+<span class="codeline" id="line-13"><code>type SubFS interface {</code></span>
+<span class="codeline" id="line-14"><code>	FS</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>	// Sub returns an FS corresponding to the subtree rooted at dir.</code></span>
+<span class="codeline" id="line-17"><code>	Sub(dir string) (FS, error)</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// Sub returns an FS corresponding to the subtree rooted at fsys's dir.</code></span>
+<span class="codeline" id="line-21"><code>//</code></span>
+<span class="codeline" id="line-22"><code>// If fs implements SubFS, Sub calls returns fsys.Sub(dir).</code></span>
+<span class="codeline" id="line-23"><code>// Otherwise, if dir is ".", Sub returns fsys unchanged.</code></span>
+<span class="codeline" id="line-24"><code>// Otherwise, Sub returns a new FS implementation sub that,</code></span>
+<span class="codeline" id="line-25"><code>// in effect, implements sub.Open(dir) as fsys.Open(path.Join(dir, name)).</code></span>
+<span class="codeline" id="line-26"><code>// The implementation also translates calls to ReadDir, ReadFile, and Glob appropriately.</code></span>
+<span class="codeline" id="line-27"><code>//</code></span>
+<span class="codeline" id="line-28"><code>// Note that Sub(os.DirFS("/"), "prefix") is equivalent to os.DirFS("/prefix")</code></span>
+<span class="codeline" id="line-29"><code>// and that neither of them guarantees to avoid operating system</code></span>
+<span class="codeline" id="line-30"><code>// accesses outside "/prefix", because the implementation of os.DirFS</code></span>
+<span class="codeline" id="line-31"><code>// does not check for symbolic links inside "/prefix" that point to</code></span>
+<span class="codeline" id="line-32"><code>// other directories. That is, os.DirFS is not a general substitute for a</code></span>
+<span class="codeline" id="line-33"><code>// chroot-style security mechanism, and Sub does not change that fact.</code></span>
+<span class="codeline" id="line-34"><code>func Sub(fsys FS, dir string) (FS, error) {</code></span>
+<span class="codeline" id="line-35"><code>	if !ValidPath(dir) {</code></span>
+<span class="codeline" id="line-36"><code>		return nil, &amp;PathError{Op: "sub", Path: dir, Err: errors.New("invalid name")}</code></span>
+<span class="codeline" id="line-37"><code>	}</code></span>
+<span class="codeline" id="line-38"><code>	if dir == "." {</code></span>
+<span class="codeline" id="line-39"><code>		return fsys, nil</code></span>
+<span class="codeline" id="line-40"><code>	}</code></span>
+<span class="codeline" id="line-41"><code>	if fsys, ok := fsys.(SubFS); ok {</code></span>
+<span class="codeline" id="line-42"><code>		return fsys.Sub(dir)</code></span>
+<span class="codeline" id="line-43"><code>	}</code></span>
+<span class="codeline" id="line-44"><code>	return &amp;subFS{fsys, dir}, nil</code></span>
+<span class="codeline" id="line-45"><code>}</code></span>
+<span class="codeline" id="line-46"><code></code></span>
+<span class="codeline" id="line-47"><code>type subFS struct {</code></span>
+<span class="codeline" id="line-48"><code>	fsys FS</code></span>
+<span class="codeline" id="line-49"><code>	dir  string</code></span>
+<span class="codeline" id="line-50"><code>}</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>// fullName maps name to the fully-qualified name dir/name.</code></span>
+<span class="codeline" id="line-53"><code>func (f *subFS) fullName(op string, name string) (string, error) {</code></span>
+<span class="codeline" id="line-54"><code>	if !ValidPath(name) {</code></span>
+<span class="codeline" id="line-55"><code>		return "", &amp;PathError{Op: op, Path: name, Err: errors.New("invalid name")}</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code>	return path.Join(f.dir, name), nil</code></span>
+<span class="codeline" id="line-58"><code>}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>// shorten maps name, which should start with f.dir, back to the suffix after f.dir.</code></span>
+<span class="codeline" id="line-61"><code>func (f *subFS) shorten(name string) (rel string, ok bool) {</code></span>
+<span class="codeline" id="line-62"><code>	if name == f.dir {</code></span>
+<span class="codeline" id="line-63"><code>		return ".", true</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code>	if len(name) &gt;= len(f.dir)+2 &amp;&amp; name[len(f.dir)] == '/' &amp;&amp; name[:len(f.dir)] == f.dir {</code></span>
+<span class="codeline" id="line-66"><code>		return name[len(f.dir)+1:], true</code></span>
+<span class="codeline" id="line-67"><code>	}</code></span>
+<span class="codeline" id="line-68"><code>	return "", false</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>// fixErr shortens any reported names in PathErrors by stripping dir.</code></span>
+<span class="codeline" id="line-72"><code>func (f *subFS) fixErr(err error) error {</code></span>
+<span class="codeline" id="line-73"><code>	if e, ok := err.(*PathError); ok {</code></span>
+<span class="codeline" id="line-74"><code>		if short, ok := f.shorten(e.Path); ok {</code></span>
+<span class="codeline" id="line-75"><code>			e.Path = short</code></span>
+<span class="codeline" id="line-76"><code>		}</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>	return err</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+<span class="codeline" id="line-80"><code></code></span>
+<span class="codeline" id="line-81"><code>func (f *subFS) Open(name string) (File, error) {</code></span>
+<span class="codeline" id="line-82"><code>	full, err := f.fullName("open", name)</code></span>
+<span class="codeline" id="line-83"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-84"><code>		return nil, err</code></span>
+<span class="codeline" id="line-85"><code>	}</code></span>
+<span class="codeline" id="line-86"><code>	file, err := f.fsys.Open(full)</code></span>
+<span class="codeline" id="line-87"><code>	return file, f.fixErr(err)</code></span>
+<span class="codeline" id="line-88"><code>}</code></span>
+<span class="codeline" id="line-89"><code></code></span>
+<span class="codeline" id="line-90"><code>func (f *subFS) ReadDir(name string) ([]DirEntry, error) {</code></span>
+<span class="codeline" id="line-91"><code>	full, err := f.fullName("read", name)</code></span>
+<span class="codeline" id="line-92"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-93"><code>		return nil, err</code></span>
+<span class="codeline" id="line-94"><code>	}</code></span>
+<span class="codeline" id="line-95"><code>	dir, err := ReadDir(f.fsys, full)</code></span>
+<span class="codeline" id="line-96"><code>	return dir, f.fixErr(err)</code></span>
+<span class="codeline" id="line-97"><code>}</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>func (f *subFS) ReadFile(name string) ([]byte, error) {</code></span>
+<span class="codeline" id="line-100"><code>	full, err := f.fullName("read", name)</code></span>
+<span class="codeline" id="line-101"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-102"><code>		return nil, err</code></span>
+<span class="codeline" id="line-103"><code>	}</code></span>
+<span class="codeline" id="line-104"><code>	data, err := ReadFile(f.fsys, full)</code></span>
+<span class="codeline" id="line-105"><code>	return data, f.fixErr(err)</code></span>
+<span class="codeline" id="line-106"><code>}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>func (f *subFS) Glob(pattern string) ([]string, error) {</code></span>
+<span class="codeline" id="line-109"><code>	// Check pattern is well-formed.</code></span>
+<span class="codeline" id="line-110"><code>	if _, err := path.Match(pattern, ""); err != nil {</code></span>
+<span class="codeline" id="line-111"><code>		return nil, err</code></span>
+<span class="codeline" id="line-112"><code>	}</code></span>
+<span class="codeline" id="line-113"><code>	if pattern == "." {</code></span>
+<span class="codeline" id="line-114"><code>		return []string{"."}, nil</code></span>
+<span class="codeline" id="line-115"><code>	}</code></span>
+<span class="codeline" id="line-116"><code></code></span>
+<span class="codeline" id="line-117"><code>	full := f.dir + "/" + pattern</code></span>
+<span class="codeline" id="line-118"><code>	list, err := Glob(f.fsys, full)</code></span>
+<span class="codeline" id="line-119"><code>	for i, name := range list {</code></span>
+<span class="codeline" id="line-120"><code>		name, ok := f.shorten(name)</code></span>
+<span class="codeline" id="line-121"><code>		if !ok {</code></span>
+<span class="codeline" id="line-122"><code>			return nil, errors.New("invalid result from inner fsys Glob: " + name + " not in " + f.dir) // can't use fmt in this package</code></span>
+<span class="codeline" id="line-123"><code>		}</code></span>
+<span class="codeline" id="line-124"><code>		list[i] = name</code></span>
+<span class="codeline" id="line-125"><code>	}</code></span>
+<span class="codeline" id="line-126"><code>	return list, f.fixErr(err)</code></span>
+<span class="codeline" id="line-127"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: os_linux.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	os_linux.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-9"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>type mOS struct{}</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>//go:noescape</code></span>
+<span class="codeline" id="line-15"><code>func futex(addr unsafe.Pointer, op int32, val uint32, ts, addr2 unsafe.Pointer, val3 uint32) int32</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// Linux futex.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>//	futexsleep(uint32 *addr, uint32 val)</code></span>
+<span class="codeline" id="line-20"><code>//	futexwakeup(uint32 *addr)</code></span>
+<span class="codeline" id="line-21"><code>//</code></span>
+<span class="codeline" id="line-22"><code>// Futexsleep atomically checks if *addr == val and if so, sleeps on addr.</code></span>
+<span class="codeline" id="line-23"><code>// Futexwakeup wakes up threads sleeping on addr.</code></span>
+<span class="codeline" id="line-24"><code>// Futexsleep is allowed to wake up spuriously.</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>const (</code></span>
+<span class="codeline" id="line-27"><code>	_FUTEX_PRIVATE_FLAG = 128</code></span>
+<span class="codeline" id="line-28"><code>	_FUTEX_WAIT_PRIVATE = 0 | _FUTEX_PRIVATE_FLAG</code></span>
+<span class="codeline" id="line-29"><code>	_FUTEX_WAKE_PRIVATE = 1 | _FUTEX_PRIVATE_FLAG</code></span>
+<span class="codeline" id="line-30"><code>)</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>// Atomically,</code></span>
+<span class="codeline" id="line-33"><code>//	if(*addr == val) sleep</code></span>
+<span class="codeline" id="line-34"><code>// Might be woken up spuriously; that's allowed.</code></span>
+<span class="codeline" id="line-35"><code>// Don't sleep longer than ns; ns &lt; 0 means forever.</code></span>
+<span class="codeline" id="line-36"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-37"><code>func futexsleep(addr *uint32, val uint32, ns int64) {</code></span>
+<span class="codeline" id="line-38"><code>	// Some Linux kernels have a bug where futex of</code></span>
+<span class="codeline" id="line-39"><code>	// FUTEX_WAIT returns an internal error code</code></span>
+<span class="codeline" id="line-40"><code>	// as an errno. Libpthread ignores the return value</code></span>
+<span class="codeline" id="line-41"><code>	// here, and so can we: as it says a few lines up,</code></span>
+<span class="codeline" id="line-42"><code>	// spurious wakeups are allowed.</code></span>
+<span class="codeline" id="line-43"><code>	if ns &lt; 0 {</code></span>
+<span class="codeline" id="line-44"><code>		futex(unsafe.Pointer(addr), _FUTEX_WAIT_PRIVATE, val, nil, nil, 0)</code></span>
+<span class="codeline" id="line-45"><code>		return</code></span>
+<span class="codeline" id="line-46"><code>	}</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>	var ts timespec</code></span>
+<span class="codeline" id="line-49"><code>	ts.setNsec(ns)</code></span>
+<span class="codeline" id="line-50"><code>	futex(unsafe.Pointer(addr), _FUTEX_WAIT_PRIVATE, val, unsafe.Pointer(&amp;ts), nil, 0)</code></span>
+<span class="codeline" id="line-51"><code>}</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>// If any procs are sleeping on addr, wake up at most cnt.</code></span>
+<span class="codeline" id="line-54"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-55"><code>func futexwakeup(addr *uint32, cnt uint32) {</code></span>
+<span class="codeline" id="line-56"><code>	ret := futex(unsafe.Pointer(addr), _FUTEX_WAKE_PRIVATE, cnt, nil, nil, 0)</code></span>
+<span class="codeline" id="line-57"><code>	if ret &gt;= 0 {</code></span>
+<span class="codeline" id="line-58"><code>		return</code></span>
+<span class="codeline" id="line-59"><code>	}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>	// I don't know that futex wakeup can return</code></span>
+<span class="codeline" id="line-62"><code>	// EAGAIN or EINTR, but if it does, it would be</code></span>
+<span class="codeline" id="line-63"><code>	// safe to loop and call futex again.</code></span>
+<span class="codeline" id="line-64"><code>	systemstack(func() {</code></span>
+<span class="codeline" id="line-65"><code>		print("futexwakeup addr=", addr, " returned ", ret, "\n")</code></span>
+<span class="codeline" id="line-66"><code>	})</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>	*(*int32)(unsafe.Pointer(uintptr(0x1006))) = 0x1006</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>func getproccount() int32 {</code></span>
+<span class="codeline" id="line-72"><code>	// This buffer is huge (8 kB) but we are on the system stack</code></span>
+<span class="codeline" id="line-73"><code>	// and there should be plenty of space (64 kB).</code></span>
+<span class="codeline" id="line-74"><code>	// Also this is a leaf, so we're not holding up the memory for long.</code></span>
+<span class="codeline" id="line-75"><code>	// See golang.org/issue/11823.</code></span>
+<span class="codeline" id="line-76"><code>	// The suggested behavior here is to keep trying with ever-larger</code></span>
+<span class="codeline" id="line-77"><code>	// buffers, but we don't have a dynamic memory allocator at the</code></span>
+<span class="codeline" id="line-78"><code>	// moment, so that's a bit tricky and seems like overkill.</code></span>
+<span class="codeline" id="line-79"><code>	const maxCPUs = 64 * 1024</code></span>
+<span class="codeline" id="line-80"><code>	var buf [maxCPUs / 8]byte</code></span>
+<span class="codeline" id="line-81"><code>	r := sched_getaffinity(0, unsafe.Sizeof(buf), &amp;buf[0])</code></span>
+<span class="codeline" id="line-82"><code>	if r &lt; 0 {</code></span>
+<span class="codeline" id="line-83"><code>		return 1</code></span>
+<span class="codeline" id="line-84"><code>	}</code></span>
+<span class="codeline" id="line-85"><code>	n := int32(0)</code></span>
+<span class="codeline" id="line-86"><code>	for _, v := range buf[:r] {</code></span>
+<span class="codeline" id="line-87"><code>		for v != 0 {</code></span>
+<span class="codeline" id="line-88"><code>			n += int32(v &amp; 1)</code></span>
+<span class="codeline" id="line-89"><code>			v &gt;&gt;= 1</code></span>
+<span class="codeline" id="line-90"><code>		}</code></span>
+<span class="codeline" id="line-91"><code>	}</code></span>
+<span class="codeline" id="line-92"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-93"><code>		n = 1</code></span>
+<span class="codeline" id="line-94"><code>	}</code></span>
+<span class="codeline" id="line-95"><code>	return n</code></span>
+<span class="codeline" id="line-96"><code>}</code></span>
+<span class="codeline" id="line-97"><code></code></span>
+<span class="codeline" id="line-98"><code>// Clone, the Linux rfork.</code></span>
+<span class="codeline" id="line-99"><code>const (</code></span>
+<span class="codeline" id="line-100"><code>	_CLONE_VM             = 0x100</code></span>
+<span class="codeline" id="line-101"><code>	_CLONE_FS             = 0x200</code></span>
+<span class="codeline" id="line-102"><code>	_CLONE_FILES          = 0x400</code></span>
+<span class="codeline" id="line-103"><code>	_CLONE_SIGHAND        = 0x800</code></span>
+<span class="codeline" id="line-104"><code>	_CLONE_PTRACE         = 0x2000</code></span>
+<span class="codeline" id="line-105"><code>	_CLONE_VFORK          = 0x4000</code></span>
+<span class="codeline" id="line-106"><code>	_CLONE_PARENT         = 0x8000</code></span>
+<span class="codeline" id="line-107"><code>	_CLONE_THREAD         = 0x10000</code></span>
+<span class="codeline" id="line-108"><code>	_CLONE_NEWNS          = 0x20000</code></span>
+<span class="codeline" id="line-109"><code>	_CLONE_SYSVSEM        = 0x40000</code></span>
+<span class="codeline" id="line-110"><code>	_CLONE_SETTLS         = 0x80000</code></span>
+<span class="codeline" id="line-111"><code>	_CLONE_PARENT_SETTID  = 0x100000</code></span>
+<span class="codeline" id="line-112"><code>	_CLONE_CHILD_CLEARTID = 0x200000</code></span>
+<span class="codeline" id="line-113"><code>	_CLONE_UNTRACED       = 0x800000</code></span>
+<span class="codeline" id="line-114"><code>	_CLONE_CHILD_SETTID   = 0x1000000</code></span>
+<span class="codeline" id="line-115"><code>	_CLONE_STOPPED        = 0x2000000</code></span>
+<span class="codeline" id="line-116"><code>	_CLONE_NEWUTS         = 0x4000000</code></span>
+<span class="codeline" id="line-117"><code>	_CLONE_NEWIPC         = 0x8000000</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>	// As of QEMU 2.8.0 (5ea2fc84d), user emulation requires all six of these</code></span>
+<span class="codeline" id="line-120"><code>	// flags to be set when creating a thread; attempts to share the other</code></span>
+<span class="codeline" id="line-121"><code>	// five but leave SYSVSEM unshared will fail with -EINVAL.</code></span>
+<span class="codeline" id="line-122"><code>	//</code></span>
+<span class="codeline" id="line-123"><code>	// In non-QEMU environments CLONE_SYSVSEM is inconsequential as we do not</code></span>
+<span class="codeline" id="line-124"><code>	// use System V semaphores.</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>	cloneFlags = _CLONE_VM | /* share memory */</code></span>
+<span class="codeline" id="line-127"><code>		_CLONE_FS | /* share cwd, etc */</code></span>
+<span class="codeline" id="line-128"><code>		_CLONE_FILES | /* share fd table */</code></span>
+<span class="codeline" id="line-129"><code>		_CLONE_SIGHAND | /* share sig handler table */</code></span>
+<span class="codeline" id="line-130"><code>		_CLONE_SYSVSEM | /* share SysV semaphore undo lists (see issue #20763) */</code></span>
+<span class="codeline" id="line-131"><code>		_CLONE_THREAD /* revisit - okay for now */</code></span>
+<span class="codeline" id="line-132"><code>)</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>//go:noescape</code></span>
+<span class="codeline" id="line-135"><code>func clone(flags int32, stk, mp, gp, fn unsafe.Pointer) int32</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>// May run with m.p==nil, so write barriers are not allowed.</code></span>
+<span class="codeline" id="line-138"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-139"><code>func newosproc(mp *m) {</code></span>
+<span class="codeline" id="line-140"><code>	stk := unsafe.Pointer(mp.g0.stack.hi)</code></span>
+<span class="codeline" id="line-141"><code>	/*</code></span>
+<span class="codeline" id="line-142"><code>	 * note: strace gets confused if we use CLONE_PTRACE here.</code></span>
+<span class="codeline" id="line-143"><code>	 */</code></span>
+<span class="codeline" id="line-144"><code>	if false {</code></span>
+<span class="codeline" id="line-145"><code>		print("newosproc stk=", stk, " m=", mp, " g=", mp.g0, " clone=", funcPC(clone), " id=", mp.id, " ostk=", &amp;mp, "\n")</code></span>
+<span class="codeline" id="line-146"><code>	}</code></span>
+<span class="codeline" id="line-147"><code></code></span>
+<span class="codeline" id="line-148"><code>	// Disable signals during clone, so that the new thread starts</code></span>
+<span class="codeline" id="line-149"><code>	// with signals disabled. It will enable them in minit.</code></span>
+<span class="codeline" id="line-150"><code>	var oset sigset</code></span>
+<span class="codeline" id="line-151"><code>	sigprocmask(_SIG_SETMASK, &amp;sigset_all, &amp;oset)</code></span>
+<span class="codeline" id="line-152"><code>	ret := clone(cloneFlags, stk, unsafe.Pointer(mp), unsafe.Pointer(mp.g0), unsafe.Pointer(funcPC(mstart)))</code></span>
+<span class="codeline" id="line-153"><code>	sigprocmask(_SIG_SETMASK, &amp;oset, nil)</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>	if ret &lt; 0 {</code></span>
+<span class="codeline" id="line-156"><code>		print("runtime: failed to create new OS thread (have ", mcount(), " already; errno=", -ret, ")\n")</code></span>
+<span class="codeline" id="line-157"><code>		if ret == -_EAGAIN {</code></span>
+<span class="codeline" id="line-158"><code>			println("runtime: may need to increase max user processes (ulimit -u)")</code></span>
+<span class="codeline" id="line-159"><code>		}</code></span>
+<span class="codeline" id="line-160"><code>		throw("newosproc")</code></span>
+<span class="codeline" id="line-161"><code>	}</code></span>
+<span class="codeline" id="line-162"><code>}</code></span>
+<span class="codeline" id="line-163"><code></code></span>
+<span class="codeline" id="line-164"><code>// Version of newosproc that doesn't require a valid G.</code></span>
+<span class="codeline" id="line-165"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-166"><code>func newosproc0(stacksize uintptr, fn unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-167"><code>	stack := sysAlloc(stacksize, &amp;memstats.stacks_sys)</code></span>
+<span class="codeline" id="line-168"><code>	if stack == nil {</code></span>
+<span class="codeline" id="line-169"><code>		write(2, unsafe.Pointer(&amp;failallocatestack[0]), int32(len(failallocatestack)))</code></span>
+<span class="codeline" id="line-170"><code>		exit(1)</code></span>
+<span class="codeline" id="line-171"><code>	}</code></span>
+<span class="codeline" id="line-172"><code>	ret := clone(cloneFlags, unsafe.Pointer(uintptr(stack)+stacksize), nil, nil, fn)</code></span>
+<span class="codeline" id="line-173"><code>	if ret &lt; 0 {</code></span>
+<span class="codeline" id="line-174"><code>		write(2, unsafe.Pointer(&amp;failthreadcreate[0]), int32(len(failthreadcreate)))</code></span>
+<span class="codeline" id="line-175"><code>		exit(1)</code></span>
+<span class="codeline" id="line-176"><code>	}</code></span>
+<span class="codeline" id="line-177"><code>}</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>var failallocatestack = []byte("runtime: failed to allocate stack for the new OS thread\n")</code></span>
+<span class="codeline" id="line-180"><code>var failthreadcreate = []byte("runtime: failed to create new OS thread\n")</code></span>
+<span class="codeline" id="line-181"><code></code></span>
+<span class="codeline" id="line-182"><code>const (</code></span>
+<span class="codeline" id="line-183"><code>	_AT_NULL   = 0  // End of vector</code></span>
+<span class="codeline" id="line-184"><code>	_AT_PAGESZ = 6  // System physical page size</code></span>
+<span class="codeline" id="line-185"><code>	_AT_HWCAP  = 16 // hardware capability bit vector</code></span>
+<span class="codeline" id="line-186"><code>	_AT_RANDOM = 25 // introduced in 2.6.29</code></span>
+<span class="codeline" id="line-187"><code>	_AT_HWCAP2 = 26 // hardware capability bit vector 2</code></span>
+<span class="codeline" id="line-188"><code>)</code></span>
+<span class="codeline" id="line-189"><code></code></span>
+<span class="codeline" id="line-190"><code>var procAuxv = []byte("/proc/self/auxv\x00")</code></span>
+<span class="codeline" id="line-191"><code></code></span>
+<span class="codeline" id="line-192"><code>var addrspace_vec [1]byte</code></span>
+<span class="codeline" id="line-193"><code></code></span>
+<span class="codeline" id="line-194"><code>func mincore(addr unsafe.Pointer, n uintptr, dst *byte) int32</code></span>
+<span class="codeline" id="line-195"><code></code></span>
+<span class="codeline" id="line-196"><code>func sysargs(argc int32, argv **byte) {</code></span>
+<span class="codeline" id="line-197"><code>	n := argc + 1</code></span>
+<span class="codeline" id="line-198"><code></code></span>
+<span class="codeline" id="line-199"><code>	// skip over argv, envp to get to auxv</code></span>
+<span class="codeline" id="line-200"><code>	for argv_index(argv, n) != nil {</code></span>
+<span class="codeline" id="line-201"><code>		n++</code></span>
+<span class="codeline" id="line-202"><code>	}</code></span>
+<span class="codeline" id="line-203"><code></code></span>
+<span class="codeline" id="line-204"><code>	// skip NULL separator</code></span>
+<span class="codeline" id="line-205"><code>	n++</code></span>
+<span class="codeline" id="line-206"><code></code></span>
+<span class="codeline" id="line-207"><code>	// now argv+n is auxv</code></span>
+<span class="codeline" id="line-208"><code>	auxv := (*[1 &lt;&lt; 28]uintptr)(add(unsafe.Pointer(argv), uintptr(n)*sys.PtrSize))</code></span>
+<span class="codeline" id="line-209"><code>	if sysauxv(auxv[:]) != 0 {</code></span>
+<span class="codeline" id="line-210"><code>		return</code></span>
+<span class="codeline" id="line-211"><code>	}</code></span>
+<span class="codeline" id="line-212"><code>	// In some situations we don't get a loader-provided</code></span>
+<span class="codeline" id="line-213"><code>	// auxv, such as when loaded as a library on Android.</code></span>
+<span class="codeline" id="line-214"><code>	// Fall back to /proc/self/auxv.</code></span>
+<span class="codeline" id="line-215"><code>	fd := open(&amp;procAuxv[0], 0 /* O_RDONLY */, 0)</code></span>
+<span class="codeline" id="line-216"><code>	if fd &lt; 0 {</code></span>
+<span class="codeline" id="line-217"><code>		// On Android, /proc/self/auxv might be unreadable (issue 9229), so we fallback to</code></span>
+<span class="codeline" id="line-218"><code>		// try using mincore to detect the physical page size.</code></span>
+<span class="codeline" id="line-219"><code>		// mincore should return EINVAL when address is not a multiple of system page size.</code></span>
+<span class="codeline" id="line-220"><code>		const size = 256 &lt;&lt; 10 // size of memory region to allocate</code></span>
+<span class="codeline" id="line-221"><code>		p, err := mmap(nil, size, _PROT_READ|_PROT_WRITE, _MAP_ANON|_MAP_PRIVATE, -1, 0)</code></span>
+<span class="codeline" id="line-222"><code>		if err != 0 {</code></span>
+<span class="codeline" id="line-223"><code>			return</code></span>
+<span class="codeline" id="line-224"><code>		}</code></span>
+<span class="codeline" id="line-225"><code>		var n uintptr</code></span>
+<span class="codeline" id="line-226"><code>		for n = 4 &lt;&lt; 10; n &lt; size; n &lt;&lt;= 1 {</code></span>
+<span class="codeline" id="line-227"><code>			err := mincore(unsafe.Pointer(uintptr(p)+n), 1, &amp;addrspace_vec[0])</code></span>
+<span class="codeline" id="line-228"><code>			if err == 0 {</code></span>
+<span class="codeline" id="line-229"><code>				physPageSize = n</code></span>
+<span class="codeline" id="line-230"><code>				break</code></span>
+<span class="codeline" id="line-231"><code>			}</code></span>
+<span class="codeline" id="line-232"><code>		}</code></span>
+<span class="codeline" id="line-233"><code>		if physPageSize == 0 {</code></span>
+<span class="codeline" id="line-234"><code>			physPageSize = size</code></span>
+<span class="codeline" id="line-235"><code>		}</code></span>
+<span class="codeline" id="line-236"><code>		munmap(p, size)</code></span>
+<span class="codeline" id="line-237"><code>		return</code></span>
+<span class="codeline" id="line-238"><code>	}</code></span>
+<span class="codeline" id="line-239"><code>	var buf [128]uintptr</code></span>
+<span class="codeline" id="line-240"><code>	n = read(fd, noescape(unsafe.Pointer(&amp;buf[0])), int32(unsafe.Sizeof(buf)))</code></span>
+<span class="codeline" id="line-241"><code>	closefd(fd)</code></span>
+<span class="codeline" id="line-242"><code>	if n &lt; 0 {</code></span>
+<span class="codeline" id="line-243"><code>		return</code></span>
+<span class="codeline" id="line-244"><code>	}</code></span>
+<span class="codeline" id="line-245"><code>	// Make sure buf is terminated, even if we didn't read</code></span>
+<span class="codeline" id="line-246"><code>	// the whole file.</code></span>
+<span class="codeline" id="line-247"><code>	buf[len(buf)-2] = _AT_NULL</code></span>
+<span class="codeline" id="line-248"><code>	sysauxv(buf[:])</code></span>
+<span class="codeline" id="line-249"><code>}</code></span>
+<span class="codeline" id="line-250"><code></code></span>
+<span class="codeline" id="line-251"><code>// startupRandomData holds random bytes initialized at startup. These come from</code></span>
+<span class="codeline" id="line-252"><code>// the ELF AT_RANDOM auxiliary vector.</code></span>
+<span class="codeline" id="line-253"><code>var startupRandomData []byte</code></span>
+<span class="codeline" id="line-254"><code></code></span>
+<span class="codeline" id="line-255"><code>func sysauxv(auxv []uintptr) int {</code></span>
+<span class="codeline" id="line-256"><code>	var i int</code></span>
+<span class="codeline" id="line-257"><code>	for ; auxv[i] != _AT_NULL; i += 2 {</code></span>
+<span class="codeline" id="line-258"><code>		tag, val := auxv[i], auxv[i+1]</code></span>
+<span class="codeline" id="line-259"><code>		switch tag {</code></span>
+<span class="codeline" id="line-260"><code>		case _AT_RANDOM:</code></span>
+<span class="codeline" id="line-261"><code>			// The kernel provides a pointer to 16-bytes</code></span>
+<span class="codeline" id="line-262"><code>			// worth of random data.</code></span>
+<span class="codeline" id="line-263"><code>			startupRandomData = (*[16]byte)(unsafe.Pointer(val))[:]</code></span>
+<span class="codeline" id="line-264"><code></code></span>
+<span class="codeline" id="line-265"><code>		case _AT_PAGESZ:</code></span>
+<span class="codeline" id="line-266"><code>			physPageSize = val</code></span>
+<span class="codeline" id="line-267"><code>		}</code></span>
+<span class="codeline" id="line-268"><code></code></span>
+<span class="codeline" id="line-269"><code>		archauxv(tag, val)</code></span>
+<span class="codeline" id="line-270"><code>		vdsoauxv(tag, val)</code></span>
+<span class="codeline" id="line-271"><code>	}</code></span>
+<span class="codeline" id="line-272"><code>	return i / 2</code></span>
+<span class="codeline" id="line-273"><code>}</code></span>
+<span class="codeline" id="line-274"><code></code></span>
+<span class="codeline" id="line-275"><code>var sysTHPSizePath = []byte("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\x00")</code></span>
+<span class="codeline" id="line-276"><code></code></span>
+<span class="codeline" id="line-277"><code>func getHugePageSize() uintptr {</code></span>
+<span class="codeline" id="line-278"><code>	var numbuf [20]byte</code></span>
+<span class="codeline" id="line-279"><code>	fd := open(&amp;sysTHPSizePath[0], 0 /* O_RDONLY */, 0)</code></span>
+<span class="codeline" id="line-280"><code>	if fd &lt; 0 {</code></span>
+<span class="codeline" id="line-281"><code>		return 0</code></span>
+<span class="codeline" id="line-282"><code>	}</code></span>
+<span class="codeline" id="line-283"><code>	ptr := noescape(unsafe.Pointer(&amp;numbuf[0]))</code></span>
+<span class="codeline" id="line-284"><code>	n := read(fd, ptr, int32(len(numbuf)))</code></span>
+<span class="codeline" id="line-285"><code>	closefd(fd)</code></span>
+<span class="codeline" id="line-286"><code>	if n &lt;= 0 {</code></span>
+<span class="codeline" id="line-287"><code>		return 0</code></span>
+<span class="codeline" id="line-288"><code>	}</code></span>
+<span class="codeline" id="line-289"><code>	n-- // remove trailing newline</code></span>
+<span class="codeline" id="line-290"><code>	v, ok := atoi(slicebytetostringtmp((*byte)(ptr), int(n)))</code></span>
+<span class="codeline" id="line-291"><code>	if !ok || v &lt; 0 {</code></span>
+<span class="codeline" id="line-292"><code>		v = 0</code></span>
+<span class="codeline" id="line-293"><code>	}</code></span>
+<span class="codeline" id="line-294"><code>	if v&amp;(v-1) != 0 {</code></span>
+<span class="codeline" id="line-295"><code>		// v is not a power of 2</code></span>
+<span class="codeline" id="line-296"><code>		return 0</code></span>
+<span class="codeline" id="line-297"><code>	}</code></span>
+<span class="codeline" id="line-298"><code>	return uintptr(v)</code></span>
+<span class="codeline" id="line-299"><code>}</code></span>
+<span class="codeline" id="line-300"><code></code></span>
+<span class="codeline" id="line-301"><code>func osinit() {</code></span>
+<span class="codeline" id="line-302"><code>	ncpu = getproccount()</code></span>
+<span class="codeline" id="line-303"><code>	physHugePageSize = getHugePageSize()</code></span>
+<span class="codeline" id="line-304"><code>	if iscgo {</code></span>
+<span class="codeline" id="line-305"><code>		// #42494 glibc and musl reserve some signals for</code></span>
+<span class="codeline" id="line-306"><code>		// internal use and require they not be blocked by</code></span>
+<span class="codeline" id="line-307"><code>		// the rest of a normal C runtime. When the go runtime</code></span>
+<span class="codeline" id="line-308"><code>		// blocks...unblocks signals, temporarily, the blocked</code></span>
+<span class="codeline" id="line-309"><code>		// interval of time is generally very short. As such,</code></span>
+<span class="codeline" id="line-310"><code>		// these expectations of *libc code are mostly met by</code></span>
+<span class="codeline" id="line-311"><code>		// the combined go+cgo system of threads. However,</code></span>
+<span class="codeline" id="line-312"><code>		// when go causes a thread to exit, via a return from</code></span>
+<span class="codeline" id="line-313"><code>		// mstart(), the combined runtime can deadlock if</code></span>
+<span class="codeline" id="line-314"><code>		// these signals are blocked. Thus, don't block these</code></span>
+<span class="codeline" id="line-315"><code>		// signals when exiting threads.</code></span>
+<span class="codeline" id="line-316"><code>		// - glibc: SIGCANCEL (32), SIGSETXID (33)</code></span>
+<span class="codeline" id="line-317"><code>		// - musl: SIGTIMER (32), SIGCANCEL (33), SIGSYNCCALL (34)</code></span>
+<span class="codeline" id="line-318"><code>		sigdelset(&amp;sigsetAllExiting, 32)</code></span>
+<span class="codeline" id="line-319"><code>		sigdelset(&amp;sigsetAllExiting, 33)</code></span>
+<span class="codeline" id="line-320"><code>		sigdelset(&amp;sigsetAllExiting, 34)</code></span>
+<span class="codeline" id="line-321"><code>	}</code></span>
+<span class="codeline" id="line-322"><code>	osArchInit()</code></span>
+<span class="codeline" id="line-323"><code>}</code></span>
+<span class="codeline" id="line-324"><code></code></span>
+<span class="codeline" id="line-325"><code>var urandom_dev = []byte("/dev/urandom\x00")</code></span>
+<span class="codeline" id="line-326"><code></code></span>
+<span class="codeline" id="line-327"><code>func getRandomData(r []byte) {</code></span>
+<span class="codeline" id="line-328"><code>	if startupRandomData != nil {</code></span>
+<span class="codeline" id="line-329"><code>		n := copy(r, startupRandomData)</code></span>
+<span class="codeline" id="line-330"><code>		extendRandom(r, n)</code></span>
+<span class="codeline" id="line-331"><code>		return</code></span>
+<span class="codeline" id="line-332"><code>	}</code></span>
+<span class="codeline" id="line-333"><code>	fd := open(&amp;urandom_dev[0], 0 /* O_RDONLY */, 0)</code></span>
+<span class="codeline" id="line-334"><code>	n := read(fd, unsafe.Pointer(&amp;r[0]), int32(len(r)))</code></span>
+<span class="codeline" id="line-335"><code>	closefd(fd)</code></span>
+<span class="codeline" id="line-336"><code>	extendRandom(r, int(n))</code></span>
+<span class="codeline" id="line-337"><code>}</code></span>
+<span class="codeline" id="line-338"><code></code></span>
+<span class="codeline" id="line-339"><code>func goenvs() {</code></span>
+<span class="codeline" id="line-340"><code>	goenvs_unix()</code></span>
+<span class="codeline" id="line-341"><code>}</code></span>
+<span class="codeline" id="line-342"><code></code></span>
+<span class="codeline" id="line-343"><code>// Called to do synchronous initialization of Go code built with</code></span>
+<span class="codeline" id="line-344"><code>// -buildmode=c-archive or -buildmode=c-shared.</code></span>
+<span class="codeline" id="line-345"><code>// None of the Go runtime is initialized.</code></span>
+<span class="codeline" id="line-346"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-347"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-348"><code>func libpreinit() {</code></span>
+<span class="codeline" id="line-349"><code>	initsig(true)</code></span>
+<span class="codeline" id="line-350"><code>}</code></span>
+<span class="codeline" id="line-351"><code></code></span>
+<span class="codeline" id="line-352"><code>// Called to initialize a new m (including the bootstrap m).</code></span>
+<span class="codeline" id="line-353"><code>// Called on the parent thread (main thread in case of bootstrap), can allocate memory.</code></span>
+<span class="codeline" id="line-354"><code>func mpreinit(mp *m) {</code></span>
+<span class="codeline" id="line-355"><code>	mp.gsignal = malg(32 * 1024) // Linux wants &gt;= 2K</code></span>
+<span class="codeline" id="line-356"><code>	mp.gsignal.m = mp</code></span>
+<span class="codeline" id="line-357"><code>}</code></span>
+<span class="codeline" id="line-358"><code></code></span>
+<span class="codeline" id="line-359"><code>func gettid() uint32</code></span>
+<span class="codeline" id="line-360"><code></code></span>
+<span class="codeline" id="line-361"><code>// Called to initialize a new m (including the bootstrap m).</code></span>
+<span class="codeline" id="line-362"><code>// Called on the new thread, cannot allocate memory.</code></span>
+<span class="codeline" id="line-363"><code>func minit() {</code></span>
+<span class="codeline" id="line-364"><code>	minitSignals()</code></span>
+<span class="codeline" id="line-365"><code></code></span>
+<span class="codeline" id="line-366"><code>	// Cgo-created threads and the bootstrap m are missing a</code></span>
+<span class="codeline" id="line-367"><code>	// procid. We need this for asynchronous preemption and it's</code></span>
+<span class="codeline" id="line-368"><code>	// useful in debuggers.</code></span>
+<span class="codeline" id="line-369"><code>	getg().m.procid = uint64(gettid())</code></span>
+<span class="codeline" id="line-370"><code>}</code></span>
+<span class="codeline" id="line-371"><code></code></span>
+<span class="codeline" id="line-372"><code>// Called from dropm to undo the effect of an minit.</code></span>
+<span class="codeline" id="line-373"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-374"><code>func unminit() {</code></span>
+<span class="codeline" id="line-375"><code>	unminitSignals()</code></span>
+<span class="codeline" id="line-376"><code>}</code></span>
+<span class="codeline" id="line-377"><code></code></span>
+<span class="codeline" id="line-378"><code>// Called from exitm, but not from drop, to undo the effect of thread-owned</code></span>
+<span class="codeline" id="line-379"><code>// resources in minit, semacreate, or elsewhere. Do not take locks after calling this.</code></span>
+<span class="codeline" id="line-380"><code>func mdestroy(mp *m) {</code></span>
+<span class="codeline" id="line-381"><code>}</code></span>
+<span class="codeline" id="line-382"><code></code></span>
+<span class="codeline" id="line-383"><code>//#ifdef GOARCH_386</code></span>
+<span class="codeline" id="line-384"><code>//#define sa_handler k_sa_handler</code></span>
+<span class="codeline" id="line-385"><code>//#endif</code></span>
+<span class="codeline" id="line-386"><code></code></span>
+<span class="codeline" id="line-387"><code>func sigreturn()</code></span>
+<span class="codeline" id="line-388"><code>func sigtramp(sig uint32, info *siginfo, ctx unsafe.Pointer)</code></span>
+<span class="codeline" id="line-389"><code>func cgoSigtramp()</code></span>
+<span class="codeline" id="line-390"><code></code></span>
+<span class="codeline" id="line-391"><code>//go:noescape</code></span>
+<span class="codeline" id="line-392"><code>func sigaltstack(new, old *stackt)</code></span>
+<span class="codeline" id="line-393"><code></code></span>
+<span class="codeline" id="line-394"><code>//go:noescape</code></span>
+<span class="codeline" id="line-395"><code>func setitimer(mode int32, new, old *itimerval)</code></span>
+<span class="codeline" id="line-396"><code></code></span>
+<span class="codeline" id="line-397"><code>//go:noescape</code></span>
+<span class="codeline" id="line-398"><code>func rtsigprocmask(how int32, new, old *sigset, size int32)</code></span>
+<span class="codeline" id="line-399"><code></code></span>
+<span class="codeline" id="line-400"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-401"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-402"><code>func sigprocmask(how int32, new, old *sigset) {</code></span>
+<span class="codeline" id="line-403"><code>	rtsigprocmask(how, new, old, int32(unsafe.Sizeof(*new)))</code></span>
+<span class="codeline" id="line-404"><code>}</code></span>
+<span class="codeline" id="line-405"><code></code></span>
+<span class="codeline" id="line-406"><code>func raise(sig uint32)</code></span>
+<span class="codeline" id="line-407"><code>func raiseproc(sig uint32)</code></span>
+<span class="codeline" id="line-408"><code></code></span>
+<span class="codeline" id="line-409"><code>//go:noescape</code></span>
+<span class="codeline" id="line-410"><code>func sched_getaffinity(pid, len uintptr, buf *byte) int32</code></span>
+<span class="codeline" id="line-411"><code>func osyield()</code></span>
+<span class="codeline" id="line-412"><code></code></span>
+<span class="codeline" id="line-413"><code>func pipe() (r, w int32, errno int32)</code></span>
+<span class="codeline" id="line-414"><code>func pipe2(flags int32) (r, w int32, errno int32)</code></span>
+<span class="codeline" id="line-415"><code>func setNonblock(fd int32)</code></span>
+<span class="codeline" id="line-416"><code></code></span>
+<span class="codeline" id="line-417"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-418"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-419"><code>func setsig(i uint32, fn uintptr) {</code></span>
+<span class="codeline" id="line-420"><code>	var sa sigactiont</code></span>
+<span class="codeline" id="line-421"><code>	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK | _SA_RESTORER | _SA_RESTART</code></span>
+<span class="codeline" id="line-422"><code>	sigfillset(&amp;sa.sa_mask)</code></span>
+<span class="codeline" id="line-423"><code>	// Although Linux manpage says "sa_restorer element is obsolete and</code></span>
+<span class="codeline" id="line-424"><code>	// should not be used". x86_64 kernel requires it. Only use it on</code></span>
+<span class="codeline" id="line-425"><code>	// x86.</code></span>
+<span class="codeline" id="line-426"><code>	if GOARCH == "386" || GOARCH == "amd64" {</code></span>
+<span class="codeline" id="line-427"><code>		sa.sa_restorer = funcPC(sigreturn)</code></span>
+<span class="codeline" id="line-428"><code>	}</code></span>
+<span class="codeline" id="line-429"><code>	if fn == funcPC(sighandler) {</code></span>
+<span class="codeline" id="line-430"><code>		if iscgo {</code></span>
+<span class="codeline" id="line-431"><code>			fn = funcPC(cgoSigtramp)</code></span>
+<span class="codeline" id="line-432"><code>		} else {</code></span>
+<span class="codeline" id="line-433"><code>			fn = funcPC(sigtramp)</code></span>
+<span class="codeline" id="line-434"><code>		}</code></span>
+<span class="codeline" id="line-435"><code>	}</code></span>
+<span class="codeline" id="line-436"><code>	sa.sa_handler = fn</code></span>
+<span class="codeline" id="line-437"><code>	sigaction(i, &amp;sa, nil)</code></span>
+<span class="codeline" id="line-438"><code>}</code></span>
+<span class="codeline" id="line-439"><code></code></span>
+<span class="codeline" id="line-440"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-441"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-442"><code>func setsigstack(i uint32) {</code></span>
+<span class="codeline" id="line-443"><code>	var sa sigactiont</code></span>
+<span class="codeline" id="line-444"><code>	sigaction(i, nil, &amp;sa)</code></span>
+<span class="codeline" id="line-445"><code>	if sa.sa_flags&amp;_SA_ONSTACK != 0 {</code></span>
+<span class="codeline" id="line-446"><code>		return</code></span>
+<span class="codeline" id="line-447"><code>	}</code></span>
+<span class="codeline" id="line-448"><code>	sa.sa_flags |= _SA_ONSTACK</code></span>
+<span class="codeline" id="line-449"><code>	sigaction(i, &amp;sa, nil)</code></span>
+<span class="codeline" id="line-450"><code>}</code></span>
+<span class="codeline" id="line-451"><code></code></span>
+<span class="codeline" id="line-452"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-453"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-454"><code>func getsig(i uint32) uintptr {</code></span>
+<span class="codeline" id="line-455"><code>	var sa sigactiont</code></span>
+<span class="codeline" id="line-456"><code>	sigaction(i, nil, &amp;sa)</code></span>
+<span class="codeline" id="line-457"><code>	return sa.sa_handler</code></span>
+<span class="codeline" id="line-458"><code>}</code></span>
+<span class="codeline" id="line-459"><code></code></span>
+<span class="codeline" id="line-460"><code>// setSignaltstackSP sets the ss_sp field of a stackt.</code></span>
+<span class="codeline" id="line-461"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-462"><code>func setSignalstackSP(s *stackt, sp uintptr) {</code></span>
+<span class="codeline" id="line-463"><code>	*(*uintptr)(unsafe.Pointer(&amp;s.ss_sp)) = sp</code></span>
+<span class="codeline" id="line-464"><code>}</code></span>
+<span class="codeline" id="line-465"><code></code></span>
+<span class="codeline" id="line-466"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-467"><code>func (c *sigctxt) fixsigcode(sig uint32) {</code></span>
+<span class="codeline" id="line-468"><code>}</code></span>
+<span class="codeline" id="line-469"><code></code></span>
+<span class="codeline" id="line-470"><code>// sysSigaction calls the rt_sigaction system call.</code></span>
+<span class="codeline" id="line-471"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-472"><code>func sysSigaction(sig uint32, new, old *sigactiont) {</code></span>
+<span class="codeline" id="line-473"><code>	if rt_sigaction(uintptr(sig), new, old, unsafe.Sizeof(sigactiont{}.sa_mask)) != 0 {</code></span>
+<span class="codeline" id="line-474"><code>		// Workaround for bugs in QEMU user mode emulation.</code></span>
+<span class="codeline" id="line-475"><code>		//</code></span>
+<span class="codeline" id="line-476"><code>		// QEMU turns calls to the sigaction system call into</code></span>
+<span class="codeline" id="line-477"><code>		// calls to the C library sigaction call; the C</code></span>
+<span class="codeline" id="line-478"><code>		// library call rejects attempts to call sigaction for</code></span>
+<span class="codeline" id="line-479"><code>		// SIGCANCEL (32) or SIGSETXID (33).</code></span>
+<span class="codeline" id="line-480"><code>		//</code></span>
+<span class="codeline" id="line-481"><code>		// QEMU rejects calling sigaction on SIGRTMAX (64).</code></span>
+<span class="codeline" id="line-482"><code>		//</code></span>
+<span class="codeline" id="line-483"><code>		// Just ignore the error in these case. There isn't</code></span>
+<span class="codeline" id="line-484"><code>		// anything we can do about it anyhow.</code></span>
+<span class="codeline" id="line-485"><code>		if sig != 32 &amp;&amp; sig != 33 &amp;&amp; sig != 64 {</code></span>
+<span class="codeline" id="line-486"><code>			// Use system stack to avoid split stack overflow on ppc64/ppc64le.</code></span>
+<span class="codeline" id="line-487"><code>			systemstack(func() {</code></span>
+<span class="codeline" id="line-488"><code>				throw("sigaction failed")</code></span>
+<span class="codeline" id="line-489"><code>			})</code></span>
+<span class="codeline" id="line-490"><code>		}</code></span>
+<span class="codeline" id="line-491"><code>	}</code></span>
+<span class="codeline" id="line-492"><code>}</code></span>
+<span class="codeline" id="line-493"><code></code></span>
+<span class="codeline" id="line-494"><code>// rt_sigaction is implemented in assembly.</code></span>
+<span class="codeline" id="line-495"><code>//go:noescape</code></span>
+<span class="codeline" id="line-496"><code>func rt_sigaction(sig uintptr, new, old *sigactiont, size uintptr) int32</code></span>
+<span class="codeline" id="line-497"><code></code></span>
+<span class="codeline" id="line-498"><code>func getpid() int</code></span>
+<span class="codeline" id="line-499"><code>func tgkill(tgid, tid, sig int)</code></span>
+<span class="codeline" id="line-500"><code></code></span>
+<span class="codeline" id="line-501"><code>// signalM sends a signal to mp.</code></span>
+<span class="codeline" id="line-502"><code>func signalM(mp *m, sig int) {</code></span>
+<span class="codeline" id="line-503"><code>	tgkill(getpid(), int(mp.procid), sig)</code></span>
+<span class="codeline" id="line-504"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: makefunc.go in package reflect</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	makefunc.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/reflect.html">reflect</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2012 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// MakeFunc implementation.</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package reflect</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// makeFuncImpl is the closure value implementing the function</code></span>
+<span class="codeline" id="line-14"><code>// returned by MakeFunc.</code></span>
+<span class="codeline" id="line-15"><code>// The first three words of this type must be kept in sync with</code></span>
+<span class="codeline" id="line-16"><code>// methodValue and runtime.reflectMethodValue.</code></span>
+<span class="codeline" id="line-17"><code>// Any changes should be reflected in all three.</code></span>
+<span class="codeline" id="line-18"><code>type makeFuncImpl struct {</code></span>
+<span class="codeline" id="line-19"><code>	code   uintptr</code></span>
+<span class="codeline" id="line-20"><code>	stack  *bitVector // ptrmap for both args and results</code></span>
+<span class="codeline" id="line-21"><code>	argLen uintptr    // just args</code></span>
+<span class="codeline" id="line-22"><code>	ftyp   *funcType</code></span>
+<span class="codeline" id="line-23"><code>	fn     func([]Value) []Value</code></span>
+<span class="codeline" id="line-24"><code>}</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>// MakeFunc returns a new function of the given Type</code></span>
+<span class="codeline" id="line-27"><code>// that wraps the function fn. When called, that new function</code></span>
+<span class="codeline" id="line-28"><code>// does the following:</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>//	- converts its arguments to a slice of Values.</code></span>
+<span class="codeline" id="line-31"><code>//	- runs results := fn(args).</code></span>
+<span class="codeline" id="line-32"><code>//	- returns the results as a slice of Values, one per formal result.</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>// The implementation fn can assume that the argument Value slice</code></span>
+<span class="codeline" id="line-35"><code>// has the number and type of arguments given by typ.</code></span>
+<span class="codeline" id="line-36"><code>// If typ describes a variadic function, the final Value is itself</code></span>
+<span class="codeline" id="line-37"><code>// a slice representing the variadic arguments, as in the</code></span>
+<span class="codeline" id="line-38"><code>// body of a variadic function. The result Value slice returned by fn</code></span>
+<span class="codeline" id="line-39"><code>// must have the number and type of results given by typ.</code></span>
+<span class="codeline" id="line-40"><code>//</code></span>
+<span class="codeline" id="line-41"><code>// The Value.Call method allows the caller to invoke a typed function</code></span>
+<span class="codeline" id="line-42"><code>// in terms of Values; in contrast, MakeFunc allows the caller to implement</code></span>
+<span class="codeline" id="line-43"><code>// a typed function in terms of Values.</code></span>
+<span class="codeline" id="line-44"><code>//</code></span>
+<span class="codeline" id="line-45"><code>// The Examples section of the documentation includes an illustration</code></span>
+<span class="codeline" id="line-46"><code>// of how to use MakeFunc to build a swap function for different types.</code></span>
+<span class="codeline" id="line-47"><code>//</code></span>
+<span class="codeline" id="line-48"><code>func MakeFunc(typ Type, fn func(args []Value) (results []Value)) Value {</code></span>
+<span class="codeline" id="line-49"><code>	if typ.Kind() != Func {</code></span>
+<span class="codeline" id="line-50"><code>		panic("reflect: call of MakeFunc with non-Func type")</code></span>
+<span class="codeline" id="line-51"><code>	}</code></span>
+<span class="codeline" id="line-52"><code></code></span>
+<span class="codeline" id="line-53"><code>	t := typ.common()</code></span>
+<span class="codeline" id="line-54"><code>	ftyp := (*funcType)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-55"><code></code></span>
+<span class="codeline" id="line-56"><code>	// Indirect Go func value (dummy) to obtain</code></span>
+<span class="codeline" id="line-57"><code>	// actual code address. (A Go func value is a pointer</code></span>
+<span class="codeline" id="line-58"><code>	// to a C function pointer. https://golang.org/s/go11func.)</code></span>
+<span class="codeline" id="line-59"><code>	dummy := makeFuncStub</code></span>
+<span class="codeline" id="line-60"><code>	code := **(**uintptr)(unsafe.Pointer(&amp;dummy))</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>	// makeFuncImpl contains a stack map for use by the runtime</code></span>
+<span class="codeline" id="line-63"><code>	_, argLen, _, stack, _ := funcLayout(ftyp, nil)</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>	impl := &amp;makeFuncImpl{code: code, stack: stack, argLen: argLen, ftyp: ftyp, fn: fn}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>	return Value{t, unsafe.Pointer(impl), flag(Func)}</code></span>
+<span class="codeline" id="line-68"><code>}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>// makeFuncStub is an assembly function that is the code half of</code></span>
+<span class="codeline" id="line-71"><code>// the function returned from MakeFunc. It expects a *callReflectFunc</code></span>
+<span class="codeline" id="line-72"><code>// as its context register, and its job is to invoke callReflect(ctxt, frame)</code></span>
+<span class="codeline" id="line-73"><code>// where ctxt is the context register and frame is a pointer to the first</code></span>
+<span class="codeline" id="line-74"><code>// word in the passed-in argument frame.</code></span>
+<span class="codeline" id="line-75"><code>func makeFuncStub()</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>// The first 3 words of this type must be kept in sync with</code></span>
+<span class="codeline" id="line-78"><code>// makeFuncImpl and runtime.reflectMethodValue.</code></span>
+<span class="codeline" id="line-79"><code>// Any changes should be reflected in all three.</code></span>
+<span class="codeline" id="line-80"><code>type methodValue struct {</code></span>
+<span class="codeline" id="line-81"><code>	fn     uintptr</code></span>
+<span class="codeline" id="line-82"><code>	stack  *bitVector // ptrmap for both args and results</code></span>
+<span class="codeline" id="line-83"><code>	argLen uintptr    // just args</code></span>
+<span class="codeline" id="line-84"><code>	method int</code></span>
+<span class="codeline" id="line-85"><code>	rcvr   Value</code></span>
+<span class="codeline" id="line-86"><code>}</code></span>
+<span class="codeline" id="line-87"><code></code></span>
+<span class="codeline" id="line-88"><code>// makeMethodValue converts v from the rcvr+method index representation</code></span>
+<span class="codeline" id="line-89"><code>// of a method value to an actual method func value, which is</code></span>
+<span class="codeline" id="line-90"><code>// basically the receiver value with a special bit set, into a true</code></span>
+<span class="codeline" id="line-91"><code>// func value - a value holding an actual func. The output is</code></span>
+<span class="codeline" id="line-92"><code>// semantically equivalent to the input as far as the user of package</code></span>
+<span class="codeline" id="line-93"><code>// reflect can tell, but the true func representation can be handled</code></span>
+<span class="codeline" id="line-94"><code>// by code like Convert and Interface and Assign.</code></span>
+<span class="codeline" id="line-95"><code>func makeMethodValue(op string, v Value) Value {</code></span>
+<span class="codeline" id="line-96"><code>	if v.flag&amp;flagMethod == 0 {</code></span>
+<span class="codeline" id="line-97"><code>		panic("reflect: internal error: invalid use of makeMethodValue")</code></span>
+<span class="codeline" id="line-98"><code>	}</code></span>
+<span class="codeline" id="line-99"><code></code></span>
+<span class="codeline" id="line-100"><code>	// Ignoring the flagMethod bit, v describes the receiver, not the method type.</code></span>
+<span class="codeline" id="line-101"><code>	fl := v.flag &amp; (flagRO | flagAddr | flagIndir)</code></span>
+<span class="codeline" id="line-102"><code>	fl |= flag(v.typ.Kind())</code></span>
+<span class="codeline" id="line-103"><code>	rcvr := Value{v.typ, v.ptr, fl}</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>	// v.Type returns the actual type of the method value.</code></span>
+<span class="codeline" id="line-106"><code>	ftyp := (*funcType)(unsafe.Pointer(v.Type().(*rtype)))</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>	// Indirect Go func value (dummy) to obtain</code></span>
+<span class="codeline" id="line-109"><code>	// actual code address. (A Go func value is a pointer</code></span>
+<span class="codeline" id="line-110"><code>	// to a C function pointer. https://golang.org/s/go11func.)</code></span>
+<span class="codeline" id="line-111"><code>	dummy := methodValueCall</code></span>
+<span class="codeline" id="line-112"><code>	code := **(**uintptr)(unsafe.Pointer(&amp;dummy))</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>	// methodValue contains a stack map for use by the runtime</code></span>
+<span class="codeline" id="line-115"><code>	_, argLen, _, stack, _ := funcLayout(ftyp, nil)</code></span>
+<span class="codeline" id="line-116"><code></code></span>
+<span class="codeline" id="line-117"><code>	fv := &amp;methodValue{</code></span>
+<span class="codeline" id="line-118"><code>		fn:     code,</code></span>
+<span class="codeline" id="line-119"><code>		stack:  stack,</code></span>
+<span class="codeline" id="line-120"><code>		argLen: argLen,</code></span>
+<span class="codeline" id="line-121"><code>		method: int(v.flag) &gt;&gt; flagMethodShift,</code></span>
+<span class="codeline" id="line-122"><code>		rcvr:   rcvr,</code></span>
+<span class="codeline" id="line-123"><code>	}</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>	// Cause panic if method is not appropriate.</code></span>
+<span class="codeline" id="line-126"><code>	// The panic would still happen during the call if we omit this,</code></span>
+<span class="codeline" id="line-127"><code>	// but we want Interface() and other operations to fail early.</code></span>
+<span class="codeline" id="line-128"><code>	methodReceiver(op, fv.rcvr, fv.method)</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	return Value{&amp;ftyp.rtype, unsafe.Pointer(fv), v.flag&amp;flagRO | flag(Func)}</code></span>
+<span class="codeline" id="line-131"><code>}</code></span>
+<span class="codeline" id="line-132"><code></code></span>
+<span class="codeline" id="line-133"><code>// methodValueCall is an assembly function that is the code half of</code></span>
+<span class="codeline" id="line-134"><code>// the function returned from makeMethodValue. It expects a *methodValue</code></span>
+<span class="codeline" id="line-135"><code>// as its context register, and its job is to invoke callMethod(ctxt, frame)</code></span>
+<span class="codeline" id="line-136"><code>// where ctxt is the context register and frame is a pointer to the first</code></span>
+<span class="codeline" id="line-137"><code>// word in the passed-in argument frame.</code></span>
+<span class="codeline" id="line-138"><code>func methodValueCall()</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

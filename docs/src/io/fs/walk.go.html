@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: walk.go in package io/fs</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	walk.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/io/fs.html">io/fs</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2020 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package fs</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"errors"</code></span>
+<span class="codeline" id="line-9"><code>	"path"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// SkipDir is used as a return value from WalkDirFuncs to indicate that</code></span>
+<span class="codeline" id="line-13"><code>// the directory named in the call is to be skipped. It is not returned</code></span>
+<span class="codeline" id="line-14"><code>// as an error by any function.</code></span>
+<span class="codeline" id="line-15"><code>var SkipDir = errors.New("skip this directory")</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// WalkDirFunc is the type of the function called by WalkDir to visit</code></span>
+<span class="codeline" id="line-18"><code>// each file or directory.</code></span>
+<span class="codeline" id="line-19"><code>//</code></span>
+<span class="codeline" id="line-20"><code>// The path argument contains the argument to WalkDir as a prefix.</code></span>
+<span class="codeline" id="line-21"><code>// That is, if WalkDir is called with root argument "dir" and finds a file</code></span>
+<span class="codeline" id="line-22"><code>// named "a" in that directory, the walk function will be called with</code></span>
+<span class="codeline" id="line-23"><code>// argument "dir/a".</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>// The d argument is the fs.DirEntry for the named path.</code></span>
+<span class="codeline" id="line-26"><code>//</code></span>
+<span class="codeline" id="line-27"><code>// The error result returned by the function controls how WalkDir</code></span>
+<span class="codeline" id="line-28"><code>// continues. If the function returns the special value SkipDir, WalkDir</code></span>
+<span class="codeline" id="line-29"><code>// skips the current directory (path if d.IsDir() is true, otherwise</code></span>
+<span class="codeline" id="line-30"><code>// path's parent directory). Otherwise, if the function returns a non-nil</code></span>
+<span class="codeline" id="line-31"><code>// error, WalkDir stops entirely and returns that error.</code></span>
+<span class="codeline" id="line-32"><code>//</code></span>
+<span class="codeline" id="line-33"><code>// The err argument reports an error related to path, signaling that</code></span>
+<span class="codeline" id="line-34"><code>// WalkDir will not walk into that directory. The function can decide how</code></span>
+<span class="codeline" id="line-35"><code>// to handle that error; as described earlier, returning the error will</code></span>
+<span class="codeline" id="line-36"><code>// cause WalkDir to stop walking the entire tree.</code></span>
+<span class="codeline" id="line-37"><code>//</code></span>
+<span class="codeline" id="line-38"><code>// WalkDir calls the function with a non-nil err argument in two cases.</code></span>
+<span class="codeline" id="line-39"><code>//</code></span>
+<span class="codeline" id="line-40"><code>// First, if the initial fs.Stat on the root directory fails, WalkDir</code></span>
+<span class="codeline" id="line-41"><code>// calls the function with path set to root, d set to nil, and err set to</code></span>
+<span class="codeline" id="line-42"><code>// the error from fs.Stat.</code></span>
+<span class="codeline" id="line-43"><code>//</code></span>
+<span class="codeline" id="line-44"><code>// Second, if a directory's ReadDir method fails, WalkDir calls the</code></span>
+<span class="codeline" id="line-45"><code>// function with path set to the directory's path, d set to an</code></span>
+<span class="codeline" id="line-46"><code>// fs.DirEntry describing the directory, and err set to the error from</code></span>
+<span class="codeline" id="line-47"><code>// ReadDir. In this second case, the function is called twice with the</code></span>
+<span class="codeline" id="line-48"><code>// path of the directory: the first call is before the directory read is</code></span>
+<span class="codeline" id="line-49"><code>// attempted and has err set to nil, giving the function a chance to</code></span>
+<span class="codeline" id="line-50"><code>// return SkipDir and avoid the ReadDir entirely. The second call is</code></span>
+<span class="codeline" id="line-51"><code>// after a failed ReadDir and reports the error from ReadDir.</code></span>
+<span class="codeline" id="line-52"><code>// (If ReadDir succeeds, there is no second call.)</code></span>
+<span class="codeline" id="line-53"><code>//</code></span>
+<span class="codeline" id="line-54"><code>// The differences between WalkDirFunc compared to filepath.WalkFunc are:</code></span>
+<span class="codeline" id="line-55"><code>//</code></span>
+<span class="codeline" id="line-56"><code>//   - The second argument has type fs.DirEntry instead of fs.FileInfo.</code></span>
+<span class="codeline" id="line-57"><code>//   - The function is called before reading a directory, to allow SkipDir</code></span>
+<span class="codeline" id="line-58"><code>//     to bypass the directory read entirely.</code></span>
+<span class="codeline" id="line-59"><code>//   - If a directory read fails, the function is called a second time</code></span>
+<span class="codeline" id="line-60"><code>//     for that directory to report the error.</code></span>
+<span class="codeline" id="line-61"><code>//</code></span>
+<span class="codeline" id="line-62"><code>type WalkDirFunc func(path string, d DirEntry, err error) error</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>// walkDir recursively descends path, calling walkDirFn.</code></span>
+<span class="codeline" id="line-65"><code>func walkDir(fsys FS, name string, d DirEntry, walkDirFn WalkDirFunc) error {</code></span>
+<span class="codeline" id="line-66"><code>	if err := walkDirFn(name, d, nil); err != nil || !d.IsDir() {</code></span>
+<span class="codeline" id="line-67"><code>		if err == SkipDir &amp;&amp; d.IsDir() {</code></span>
+<span class="codeline" id="line-68"><code>			// Successfully skipped directory.</code></span>
+<span class="codeline" id="line-69"><code>			err = nil</code></span>
+<span class="codeline" id="line-70"><code>		}</code></span>
+<span class="codeline" id="line-71"><code>		return err</code></span>
+<span class="codeline" id="line-72"><code>	}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>	dirs, err := ReadDir(fsys, name)</code></span>
+<span class="codeline" id="line-75"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-76"><code>		// Second call, to report ReadDir error.</code></span>
+<span class="codeline" id="line-77"><code>		err = walkDirFn(name, d, err)</code></span>
+<span class="codeline" id="line-78"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-79"><code>			return err</code></span>
+<span class="codeline" id="line-80"><code>		}</code></span>
+<span class="codeline" id="line-81"><code>	}</code></span>
+<span class="codeline" id="line-82"><code></code></span>
+<span class="codeline" id="line-83"><code>	for _, d1 := range dirs {</code></span>
+<span class="codeline" id="line-84"><code>		name1 := path.Join(name, d1.Name())</code></span>
+<span class="codeline" id="line-85"><code>		if err := walkDir(fsys, name1, d1, walkDirFn); err != nil {</code></span>
+<span class="codeline" id="line-86"><code>			if err == SkipDir {</code></span>
+<span class="codeline" id="line-87"><code>				break</code></span>
+<span class="codeline" id="line-88"><code>			}</code></span>
+<span class="codeline" id="line-89"><code>			return err</code></span>
+<span class="codeline" id="line-90"><code>		}</code></span>
+<span class="codeline" id="line-91"><code>	}</code></span>
+<span class="codeline" id="line-92"><code>	return nil</code></span>
+<span class="codeline" id="line-93"><code>}</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>// WalkDir walks the file tree rooted at root, calling fn for each file or</code></span>
+<span class="codeline" id="line-96"><code>// directory in the tree, including root.</code></span>
+<span class="codeline" id="line-97"><code>//</code></span>
+<span class="codeline" id="line-98"><code>// All errors that arise visiting files and directories are filtered by fn:</code></span>
+<span class="codeline" id="line-99"><code>// see the fs.WalkDirFunc documentation for details.</code></span>
+<span class="codeline" id="line-100"><code>//</code></span>
+<span class="codeline" id="line-101"><code>// The files are walked in lexical order, which makes the output deterministic</code></span>
+<span class="codeline" id="line-102"><code>// but requires WalkDir to read an entire directory into memory before proceeding</code></span>
+<span class="codeline" id="line-103"><code>// to walk that directory.</code></span>
+<span class="codeline" id="line-104"><code>//</code></span>
+<span class="codeline" id="line-105"><code>// WalkDir does not follow symbolic links found in directories,</code></span>
+<span class="codeline" id="line-106"><code>// but if root itself is a symbolic link, its target will be walked.</code></span>
+<span class="codeline" id="line-107"><code>func WalkDir(fsys FS, root string, fn WalkDirFunc) error {</code></span>
+<span class="codeline" id="line-108"><code>	info, err := Stat(fsys, root)</code></span>
+<span class="codeline" id="line-109"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-110"><code>		err = fn(root, nil, err)</code></span>
+<span class="codeline" id="line-111"><code>	} else {</code></span>
+<span class="codeline" id="line-112"><code>		err = walkDir(fsys, root, &amp;statDirEntry{info}, fn)</code></span>
+<span class="codeline" id="line-113"><code>	}</code></span>
+<span class="codeline" id="line-114"><code>	if err == SkipDir {</code></span>
+<span class="codeline" id="line-115"><code>		return nil</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code>	return err</code></span>
+<span class="codeline" id="line-118"><code>}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>type statDirEntry struct {</code></span>
+<span class="codeline" id="line-121"><code>	info FileInfo</code></span>
+<span class="codeline" id="line-122"><code>}</code></span>
+<span class="codeline" id="line-123"><code></code></span>
+<span class="codeline" id="line-124"><code>func (d *statDirEntry) Name() string            { return d.info.Name() }</code></span>
+<span class="codeline" id="line-125"><code>func (d *statDirEntry) IsDir() bool             { return d.info.IsDir() }</code></span>
+<span class="codeline" id="line-126"><code>func (d *statDirEntry) Type() FileMode          { return d.info.Mode().Type() }</code></span>
+<span class="codeline" id="line-127"><code>func (d *statDirEntry) Info() (FileInfo, error) { return d.info, nil }</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

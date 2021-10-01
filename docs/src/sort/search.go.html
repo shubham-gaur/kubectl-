@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: search.go in package sort</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	search.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/sort.html">sort</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// This file implements binary search.</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package sort</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// Search uses binary search to find and return the smallest index i</code></span>
+<span class="codeline" id="line-10"><code>// in [0, n) at which f(i) is true, assuming that on the range [0, n),</code></span>
+<span class="codeline" id="line-11"><code>// f(i) == true implies f(i+1) == true. That is, Search requires that</code></span>
+<span class="codeline" id="line-12"><code>// f is false for some (possibly empty) prefix of the input range [0, n)</code></span>
+<span class="codeline" id="line-13"><code>// and then true for the (possibly empty) remainder; Search returns</code></span>
+<span class="codeline" id="line-14"><code>// the first true index. If there is no such index, Search returns n.</code></span>
+<span class="codeline" id="line-15"><code>// (Note that the "not found" return value is not -1 as in, for instance,</code></span>
+<span class="codeline" id="line-16"><code>// strings.Index.)</code></span>
+<span class="codeline" id="line-17"><code>// Search calls f(i) only for i in the range [0, n).</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// A common use of Search is to find the index i for a value x in</code></span>
+<span class="codeline" id="line-20"><code>// a sorted, indexable data structure such as an array or slice.</code></span>
+<span class="codeline" id="line-21"><code>// In this case, the argument f, typically a closure, captures the value</code></span>
+<span class="codeline" id="line-22"><code>// to be searched for, and how the data structure is indexed and</code></span>
+<span class="codeline" id="line-23"><code>// ordered.</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>// For instance, given a slice data sorted in ascending order,</code></span>
+<span class="codeline" id="line-26"><code>// the call Search(len(data), func(i int) bool { return data[i] &gt;= 23 })</code></span>
+<span class="codeline" id="line-27"><code>// returns the smallest index i such that data[i] &gt;= 23. If the caller</code></span>
+<span class="codeline" id="line-28"><code>// wants to find whether 23 is in the slice, it must test data[i] == 23</code></span>
+<span class="codeline" id="line-29"><code>// separately.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// Searching data sorted in descending order would use the &lt;=</code></span>
+<span class="codeline" id="line-32"><code>// operator instead of the &gt;= operator.</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>// To complete the example above, the following code tries to find the value</code></span>
+<span class="codeline" id="line-35"><code>// x in an integer slice data sorted in ascending order:</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>//	x := 23</code></span>
+<span class="codeline" id="line-38"><code>//	i := sort.Search(len(data), func(i int) bool { return data[i] &gt;= x })</code></span>
+<span class="codeline" id="line-39"><code>//	if i &lt; len(data) &amp;&amp; data[i] == x {</code></span>
+<span class="codeline" id="line-40"><code>//		// x is present at data[i]</code></span>
+<span class="codeline" id="line-41"><code>//	} else {</code></span>
+<span class="codeline" id="line-42"><code>//		// x is not present in data,</code></span>
+<span class="codeline" id="line-43"><code>//		// but i is the index where it would be inserted.</code></span>
+<span class="codeline" id="line-44"><code>//	}</code></span>
+<span class="codeline" id="line-45"><code>//</code></span>
+<span class="codeline" id="line-46"><code>// As a more whimsical example, this program guesses your number:</code></span>
+<span class="codeline" id="line-47"><code>//</code></span>
+<span class="codeline" id="line-48"><code>//	func GuessingGame() {</code></span>
+<span class="codeline" id="line-49"><code>//		var s string</code></span>
+<span class="codeline" id="line-50"><code>//		fmt.Printf("Pick an integer from 0 to 100.\n")</code></span>
+<span class="codeline" id="line-51"><code>//		answer := sort.Search(100, func(i int) bool {</code></span>
+<span class="codeline" id="line-52"><code>//			fmt.Printf("Is your number &lt;= %d? ", i)</code></span>
+<span class="codeline" id="line-53"><code>//			fmt.Scanf("%s", &amp;s)</code></span>
+<span class="codeline" id="line-54"><code>//			return s != "" &amp;&amp; s[0] == 'y'</code></span>
+<span class="codeline" id="line-55"><code>//		})</code></span>
+<span class="codeline" id="line-56"><code>//		fmt.Printf("Your number is %d.\n", answer)</code></span>
+<span class="codeline" id="line-57"><code>//	}</code></span>
+<span class="codeline" id="line-58"><code>//</code></span>
+<span class="codeline" id="line-59"><code>func Search(n int, f func(int) bool) int {</code></span>
+<span class="codeline" id="line-60"><code>	// Define f(-1) == false and f(n) == true.</code></span>
+<span class="codeline" id="line-61"><code>	// Invariant: f(i-1) == false, f(j) == true.</code></span>
+<span class="codeline" id="line-62"><code>	i, j := 0, n</code></span>
+<span class="codeline" id="line-63"><code>	for i &lt; j {</code></span>
+<span class="codeline" id="line-64"><code>		h := int(uint(i+j) &gt;&gt; 1) // avoid overflow when computing h</code></span>
+<span class="codeline" id="line-65"><code>		// i ≤ h &lt; j</code></span>
+<span class="codeline" id="line-66"><code>		if !f(h) {</code></span>
+<span class="codeline" id="line-67"><code>			i = h + 1 // preserves f(i-1) == false</code></span>
+<span class="codeline" id="line-68"><code>		} else {</code></span>
+<span class="codeline" id="line-69"><code>			j = h // preserves f(j) == true</code></span>
+<span class="codeline" id="line-70"><code>		}</code></span>
+<span class="codeline" id="line-71"><code>	}</code></span>
+<span class="codeline" id="line-72"><code>	// i == j, f(i-1) == false, and f(j) (= f(i)) == true  =&gt;  answer is i.</code></span>
+<span class="codeline" id="line-73"><code>	return i</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>// Convenience wrappers for common cases.</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>// SearchInts searches for x in a sorted slice of ints and returns the index</code></span>
+<span class="codeline" id="line-79"><code>// as specified by Search. The return value is the index to insert x if x is</code></span>
+<span class="codeline" id="line-80"><code>// not present (it could be len(a)).</code></span>
+<span class="codeline" id="line-81"><code>// The slice must be sorted in ascending order.</code></span>
+<span class="codeline" id="line-82"><code>//</code></span>
+<span class="codeline" id="line-83"><code>func SearchInts(a []int, x int) int {</code></span>
+<span class="codeline" id="line-84"><code>	return Search(len(a), func(i int) bool { return a[i] &gt;= x })</code></span>
+<span class="codeline" id="line-85"><code>}</code></span>
+<span class="codeline" id="line-86"><code></code></span>
+<span class="codeline" id="line-87"><code>// SearchFloat64s searches for x in a sorted slice of float64s and returns the index</code></span>
+<span class="codeline" id="line-88"><code>// as specified by Search. The return value is the index to insert x if x is not</code></span>
+<span class="codeline" id="line-89"><code>// present (it could be len(a)).</code></span>
+<span class="codeline" id="line-90"><code>// The slice must be sorted in ascending order.</code></span>
+<span class="codeline" id="line-91"><code>//</code></span>
+<span class="codeline" id="line-92"><code>func SearchFloat64s(a []float64, x float64) int {</code></span>
+<span class="codeline" id="line-93"><code>	return Search(len(a), func(i int) bool { return a[i] &gt;= x })</code></span>
+<span class="codeline" id="line-94"><code>}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>// SearchStrings searches for x in a sorted slice of strings and returns the index</code></span>
+<span class="codeline" id="line-97"><code>// as specified by Search. The return value is the index to insert x if x is not</code></span>
+<span class="codeline" id="line-98"><code>// present (it could be len(a)).</code></span>
+<span class="codeline" id="line-99"><code>// The slice must be sorted in ascending order.</code></span>
+<span class="codeline" id="line-100"><code>//</code></span>
+<span class="codeline" id="line-101"><code>func SearchStrings(a []string, x string) int {</code></span>
+<span class="codeline" id="line-102"><code>	return Search(len(a), func(i int) bool { return a[i] &gt;= x })</code></span>
+<span class="codeline" id="line-103"><code>}</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>// Search returns the result of applying SearchInts to the receiver and x.</code></span>
+<span class="codeline" id="line-106"><code>func (p IntSlice) Search(x int) int { return SearchInts(p, x) }</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>// Search returns the result of applying SearchFloat64s to the receiver and x.</code></span>
+<span class="codeline" id="line-109"><code>func (p Float64Slice) Search(x float64) int { return SearchFloat64s(p, x) }</code></span>
+<span class="codeline" id="line-110"><code></code></span>
+<span class="codeline" id="line-111"><code>// Search returns the result of applying SearchStrings to the receiver and x.</code></span>
+<span class="codeline" id="line-112"><code>func (p StringSlice) Search(x string) int { return SearchStrings(p, x) }</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: value.go in package sync/atomic</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	value.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/sync/atomic.html">sync/atomic</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package atomic</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// A Value provides an atomic load and store of a consistently typed value.</code></span>
+<span class="codeline" id="line-12"><code>// The zero value for a Value returns nil from Load.</code></span>
+<span class="codeline" id="line-13"><code>// Once Store has been called, a Value must not be copied.</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// A Value must not be copied after first use.</code></span>
+<span class="codeline" id="line-16"><code>type Value struct {</code></span>
+<span class="codeline" id="line-17"><code>	v interface{}</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// ifaceWords is interface{} internal representation.</code></span>
+<span class="codeline" id="line-21"><code>type ifaceWords struct {</code></span>
+<span class="codeline" id="line-22"><code>	typ  unsafe.Pointer</code></span>
+<span class="codeline" id="line-23"><code>	data unsafe.Pointer</code></span>
+<span class="codeline" id="line-24"><code>}</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>// Load returns the value set by the most recent Store.</code></span>
+<span class="codeline" id="line-27"><code>// It returns nil if there has been no call to Store for this Value.</code></span>
+<span class="codeline" id="line-28"><code>func (v *Value) Load() (x interface{}) {</code></span>
+<span class="codeline" id="line-29"><code>	vp := (*ifaceWords)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-30"><code>	typ := LoadPointer(&amp;vp.typ)</code></span>
+<span class="codeline" id="line-31"><code>	if typ == nil || uintptr(typ) == ^uintptr(0) {</code></span>
+<span class="codeline" id="line-32"><code>		// First store not yet completed.</code></span>
+<span class="codeline" id="line-33"><code>		return nil</code></span>
+<span class="codeline" id="line-34"><code>	}</code></span>
+<span class="codeline" id="line-35"><code>	data := LoadPointer(&amp;vp.data)</code></span>
+<span class="codeline" id="line-36"><code>	xp := (*ifaceWords)(unsafe.Pointer(&amp;x))</code></span>
+<span class="codeline" id="line-37"><code>	xp.typ = typ</code></span>
+<span class="codeline" id="line-38"><code>	xp.data = data</code></span>
+<span class="codeline" id="line-39"><code>	return</code></span>
+<span class="codeline" id="line-40"><code>}</code></span>
+<span class="codeline" id="line-41"><code></code></span>
+<span class="codeline" id="line-42"><code>// Store sets the value of the Value to x.</code></span>
+<span class="codeline" id="line-43"><code>// All calls to Store for a given Value must use values of the same concrete type.</code></span>
+<span class="codeline" id="line-44"><code>// Store of an inconsistent type panics, as does Store(nil).</code></span>
+<span class="codeline" id="line-45"><code>func (v *Value) Store(x interface{}) {</code></span>
+<span class="codeline" id="line-46"><code>	if x == nil {</code></span>
+<span class="codeline" id="line-47"><code>		panic("sync/atomic: store of nil value into Value")</code></span>
+<span class="codeline" id="line-48"><code>	}</code></span>
+<span class="codeline" id="line-49"><code>	vp := (*ifaceWords)(unsafe.Pointer(v))</code></span>
+<span class="codeline" id="line-50"><code>	xp := (*ifaceWords)(unsafe.Pointer(&amp;x))</code></span>
+<span class="codeline" id="line-51"><code>	for {</code></span>
+<span class="codeline" id="line-52"><code>		typ := LoadPointer(&amp;vp.typ)</code></span>
+<span class="codeline" id="line-53"><code>		if typ == nil {</code></span>
+<span class="codeline" id="line-54"><code>			// Attempt to start first store.</code></span>
+<span class="codeline" id="line-55"><code>			// Disable preemption so that other goroutines can use</code></span>
+<span class="codeline" id="line-56"><code>			// active spin wait to wait for completion; and so that</code></span>
+<span class="codeline" id="line-57"><code>			// GC does not see the fake type accidentally.</code></span>
+<span class="codeline" id="line-58"><code>			runtime_procPin()</code></span>
+<span class="codeline" id="line-59"><code>			if !CompareAndSwapPointer(&amp;vp.typ, nil, unsafe.Pointer(^uintptr(0))) {</code></span>
+<span class="codeline" id="line-60"><code>				runtime_procUnpin()</code></span>
+<span class="codeline" id="line-61"><code>				continue</code></span>
+<span class="codeline" id="line-62"><code>			}</code></span>
+<span class="codeline" id="line-63"><code>			// Complete first store.</code></span>
+<span class="codeline" id="line-64"><code>			StorePointer(&amp;vp.data, xp.data)</code></span>
+<span class="codeline" id="line-65"><code>			StorePointer(&amp;vp.typ, xp.typ)</code></span>
+<span class="codeline" id="line-66"><code>			runtime_procUnpin()</code></span>
+<span class="codeline" id="line-67"><code>			return</code></span>
+<span class="codeline" id="line-68"><code>		}</code></span>
+<span class="codeline" id="line-69"><code>		if uintptr(typ) == ^uintptr(0) {</code></span>
+<span class="codeline" id="line-70"><code>			// First store in progress. Wait.</code></span>
+<span class="codeline" id="line-71"><code>			// Since we disable preemption around the first store,</code></span>
+<span class="codeline" id="line-72"><code>			// we can wait with active spinning.</code></span>
+<span class="codeline" id="line-73"><code>			continue</code></span>
+<span class="codeline" id="line-74"><code>		}</code></span>
+<span class="codeline" id="line-75"><code>		// First store completed. Check type and overwrite data.</code></span>
+<span class="codeline" id="line-76"><code>		if typ != xp.typ {</code></span>
+<span class="codeline" id="line-77"><code>			panic("sync/atomic: store of inconsistently typed value into Value")</code></span>
+<span class="codeline" id="line-78"><code>		}</code></span>
+<span class="codeline" id="line-79"><code>		StorePointer(&amp;vp.data, xp.data)</code></span>
+<span class="codeline" id="line-80"><code>		return</code></span>
+<span class="codeline" id="line-81"><code>	}</code></span>
+<span class="codeline" id="line-82"><code>}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>// Disable/enable preemption, implemented in runtime.</code></span>
+<span class="codeline" id="line-85"><code>func runtime_procPin()</code></span>
+<span class="codeline" id="line-86"><code>func runtime_procUnpin()</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

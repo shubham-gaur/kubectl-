@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: error.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	error.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package os</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/oserror"</code></span>
+<span class="codeline" id="line-9"><code>	"internal/poll"</code></span>
+<span class="codeline" id="line-10"><code>	"io/fs"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// Portable analogs of some common system call errors.</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// Errors returned from this package may be tested against these errors</code></span>
+<span class="codeline" id="line-16"><code>// with errors.Is.</code></span>
+<span class="codeline" id="line-17"><code>var (</code></span>
+<span class="codeline" id="line-18"><code>	// ErrInvalid indicates an invalid argument.</code></span>
+<span class="codeline" id="line-19"><code>	// Methods on File will return this error when the receiver is nil.</code></span>
+<span class="codeline" id="line-20"><code>	ErrInvalid = fs.ErrInvalid // "invalid argument"</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>	ErrPermission = fs.ErrPermission // "permission denied"</code></span>
+<span class="codeline" id="line-23"><code>	ErrExist      = fs.ErrExist      // "file already exists"</code></span>
+<span class="codeline" id="line-24"><code>	ErrNotExist   = fs.ErrNotExist   // "file does not exist"</code></span>
+<span class="codeline" id="line-25"><code>	ErrClosed     = fs.ErrClosed     // "file already closed"</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>	ErrNoDeadline       = errNoDeadline()       // "file type does not support deadline"</code></span>
+<span class="codeline" id="line-28"><code>	ErrDeadlineExceeded = errDeadlineExceeded() // "i/o timeout"</code></span>
+<span class="codeline" id="line-29"><code>)</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>func errClosed() error     { return oserror.ErrClosed }</code></span>
+<span class="codeline" id="line-32"><code>func errNoDeadline() error { return poll.ErrNoDeadline }</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>// errDeadlineExceeded returns the value for os.ErrDeadlineExceeded.</code></span>
+<span class="codeline" id="line-35"><code>// This error comes from the internal/poll package, which is also</code></span>
+<span class="codeline" id="line-36"><code>// used by package net. Doing this this way ensures that the net</code></span>
+<span class="codeline" id="line-37"><code>// package will return os.ErrDeadlineExceeded for an exceeded deadline,</code></span>
+<span class="codeline" id="line-38"><code>// as documented by net.Conn.SetDeadline, without requiring any extra</code></span>
+<span class="codeline" id="line-39"><code>// work in the net package and without requiring the internal/poll</code></span>
+<span class="codeline" id="line-40"><code>// package to import os (which it can't, because that would be circular).</code></span>
+<span class="codeline" id="line-41"><code>func errDeadlineExceeded() error { return poll.ErrDeadlineExceeded }</code></span>
+<span class="codeline" id="line-42"><code></code></span>
+<span class="codeline" id="line-43"><code>type timeout interface {</code></span>
+<span class="codeline" id="line-44"><code>	Timeout() bool</code></span>
+<span class="codeline" id="line-45"><code>}</code></span>
+<span class="codeline" id="line-46"><code></code></span>
+<span class="codeline" id="line-47"><code>// PathError records an error and the operation and file path that caused it.</code></span>
+<span class="codeline" id="line-48"><code>type PathError = fs.PathError</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>// SyscallError records an error from a specific system call.</code></span>
+<span class="codeline" id="line-51"><code>type SyscallError struct {</code></span>
+<span class="codeline" id="line-52"><code>	Syscall string</code></span>
+<span class="codeline" id="line-53"><code>	Err     error</code></span>
+<span class="codeline" id="line-54"><code>}</code></span>
+<span class="codeline" id="line-55"><code></code></span>
+<span class="codeline" id="line-56"><code>func (e *SyscallError) Error() string { return e.Syscall + ": " + e.Err.Error() }</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>func (e *SyscallError) Unwrap() error { return e.Err }</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>// Timeout reports whether this error represents a timeout.</code></span>
+<span class="codeline" id="line-61"><code>func (e *SyscallError) Timeout() bool {</code></span>
+<span class="codeline" id="line-62"><code>	t, ok := e.Err.(timeout)</code></span>
+<span class="codeline" id="line-63"><code>	return ok &amp;&amp; t.Timeout()</code></span>
+<span class="codeline" id="line-64"><code>}</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>// NewSyscallError returns, as an error, a new SyscallError</code></span>
+<span class="codeline" id="line-67"><code>// with the given system call name and error details.</code></span>
+<span class="codeline" id="line-68"><code>// As a convenience, if err is nil, NewSyscallError returns nil.</code></span>
+<span class="codeline" id="line-69"><code>func NewSyscallError(syscall string, err error) error {</code></span>
+<span class="codeline" id="line-70"><code>	if err == nil {</code></span>
+<span class="codeline" id="line-71"><code>		return nil</code></span>
+<span class="codeline" id="line-72"><code>	}</code></span>
+<span class="codeline" id="line-73"><code>	return &amp;SyscallError{syscall, err}</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>// IsExist returns a boolean indicating whether the error is known to report</code></span>
+<span class="codeline" id="line-77"><code>// that a file or directory already exists. It is satisfied by ErrExist as</code></span>
+<span class="codeline" id="line-78"><code>// well as some syscall errors.</code></span>
+<span class="codeline" id="line-79"><code>//</code></span>
+<span class="codeline" id="line-80"><code>// This function predates errors.Is. It only supports errors returned by</code></span>
+<span class="codeline" id="line-81"><code>// the os package. New code should use errors.Is(err, os.ErrExist).</code></span>
+<span class="codeline" id="line-82"><code>func IsExist(err error) bool {</code></span>
+<span class="codeline" id="line-83"><code>	return underlyingErrorIs(err, ErrExist)</code></span>
+<span class="codeline" id="line-84"><code>}</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>// IsNotExist returns a boolean indicating whether the error is known to</code></span>
+<span class="codeline" id="line-87"><code>// report that a file or directory does not exist. It is satisfied by</code></span>
+<span class="codeline" id="line-88"><code>// ErrNotExist as well as some syscall errors.</code></span>
+<span class="codeline" id="line-89"><code>//</code></span>
+<span class="codeline" id="line-90"><code>// This function predates errors.Is. It only supports errors returned by</code></span>
+<span class="codeline" id="line-91"><code>// the os package. New code should use errors.Is(err, os.ErrNotExist).</code></span>
+<span class="codeline" id="line-92"><code>func IsNotExist(err error) bool {</code></span>
+<span class="codeline" id="line-93"><code>	return underlyingErrorIs(err, ErrNotExist)</code></span>
+<span class="codeline" id="line-94"><code>}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>// IsPermission returns a boolean indicating whether the error is known to</code></span>
+<span class="codeline" id="line-97"><code>// report that permission is denied. It is satisfied by ErrPermission as well</code></span>
+<span class="codeline" id="line-98"><code>// as some syscall errors.</code></span>
+<span class="codeline" id="line-99"><code>//</code></span>
+<span class="codeline" id="line-100"><code>// This function predates errors.Is. It only supports errors returned by</code></span>
+<span class="codeline" id="line-101"><code>// the os package. New code should use errors.Is(err, os.ErrPermission).</code></span>
+<span class="codeline" id="line-102"><code>func IsPermission(err error) bool {</code></span>
+<span class="codeline" id="line-103"><code>	return underlyingErrorIs(err, ErrPermission)</code></span>
+<span class="codeline" id="line-104"><code>}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>// IsTimeout returns a boolean indicating whether the error is known</code></span>
+<span class="codeline" id="line-107"><code>// to report that a timeout occurred.</code></span>
+<span class="codeline" id="line-108"><code>//</code></span>
+<span class="codeline" id="line-109"><code>// This function predates errors.Is, and the notion of whether an</code></span>
+<span class="codeline" id="line-110"><code>// error indicates a timeout can be ambiguous. For example, the Unix</code></span>
+<span class="codeline" id="line-111"><code>// error EWOULDBLOCK sometimes indicates a timeout and sometimes does not.</code></span>
+<span class="codeline" id="line-112"><code>// New code should use errors.Is with a value appropriate to the call</code></span>
+<span class="codeline" id="line-113"><code>// returning the error, such as os.ErrDeadlineExceeded.</code></span>
+<span class="codeline" id="line-114"><code>func IsTimeout(err error) bool {</code></span>
+<span class="codeline" id="line-115"><code>	terr, ok := underlyingError(err).(timeout)</code></span>
+<span class="codeline" id="line-116"><code>	return ok &amp;&amp; terr.Timeout()</code></span>
+<span class="codeline" id="line-117"><code>}</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>func underlyingErrorIs(err, target error) bool {</code></span>
+<span class="codeline" id="line-120"><code>	// Note that this function is not errors.Is:</code></span>
+<span class="codeline" id="line-121"><code>	// underlyingError only unwraps the specific error-wrapping types</code></span>
+<span class="codeline" id="line-122"><code>	// that it historically did, not all errors implementing Unwrap().</code></span>
+<span class="codeline" id="line-123"><code>	err = underlyingError(err)</code></span>
+<span class="codeline" id="line-124"><code>	if err == target {</code></span>
+<span class="codeline" id="line-125"><code>		return true</code></span>
+<span class="codeline" id="line-126"><code>	}</code></span>
+<span class="codeline" id="line-127"><code>	// To preserve prior behavior, only examine syscall errors.</code></span>
+<span class="codeline" id="line-128"><code>	e, ok := err.(syscallErrorType)</code></span>
+<span class="codeline" id="line-129"><code>	return ok &amp;&amp; e.Is(target)</code></span>
+<span class="codeline" id="line-130"><code>}</code></span>
+<span class="codeline" id="line-131"><code></code></span>
+<span class="codeline" id="line-132"><code>// underlyingError returns the underlying error for known os error types.</code></span>
+<span class="codeline" id="line-133"><code>func underlyingError(err error) error {</code></span>
+<span class="codeline" id="line-134"><code>	switch err := err.(type) {</code></span>
+<span class="codeline" id="line-135"><code>	case *PathError:</code></span>
+<span class="codeline" id="line-136"><code>		return err.Err</code></span>
+<span class="codeline" id="line-137"><code>	case *LinkError:</code></span>
+<span class="codeline" id="line-138"><code>		return err.Err</code></span>
+<span class="codeline" id="line-139"><code>	case *SyscallError:</code></span>
+<span class="codeline" id="line-140"><code>		return err.Err</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>	return err</code></span>
+<span class="codeline" id="line-143"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

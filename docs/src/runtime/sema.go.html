@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sema.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sema.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Semaphore implementation exposed to Go.</code></span>
+<span class="codeline" id="line-6"><code>// Intended use is provide a sleep and wakeup</code></span>
+<span class="codeline" id="line-7"><code>// primitive that can be used in the contended case</code></span>
+<span class="codeline" id="line-8"><code>// of other synchronization primitives.</code></span>
+<span class="codeline" id="line-9"><code>// Thus it targets the same goal as Linux's futex,</code></span>
+<span class="codeline" id="line-10"><code>// but it has much simpler semantics.</code></span>
+<span class="codeline" id="line-11"><code>//</code></span>
+<span class="codeline" id="line-12"><code>// That is, don't think of these as semaphores.</code></span>
+<span class="codeline" id="line-13"><code>// Think of them as a way to implement sleep and wakeup</code></span>
+<span class="codeline" id="line-14"><code>// such that every sleep is paired with a single wakeup,</code></span>
+<span class="codeline" id="line-15"><code>// even if, due to races, the wakeup happens before the sleep.</code></span>
+<span class="codeline" id="line-16"><code>//</code></span>
+<span class="codeline" id="line-17"><code>// See Mullender and Cox, ``Semaphores in Plan 9,''</code></span>
+<span class="codeline" id="line-18"><code>// https://swtch.com/semaphore.pdf</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>package runtime</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>import (</code></span>
+<span class="codeline" id="line-23"><code>	"internal/cpu"</code></span>
+<span class="codeline" id="line-24"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-25"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-26"><code>)</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>// Asynchronous semaphore for sync.Mutex.</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>// A semaRoot holds a balanced tree of sudog with distinct addresses (s.elem).</code></span>
+<span class="codeline" id="line-31"><code>// Each of those sudog may in turn point (through s.waitlink) to a list</code></span>
+<span class="codeline" id="line-32"><code>// of other sudogs waiting on the same address.</code></span>
+<span class="codeline" id="line-33"><code>// The operations on the inner lists of sudogs with the same address</code></span>
+<span class="codeline" id="line-34"><code>// are all O(1). The scanning of the top-level semaRoot list is O(log n),</code></span>
+<span class="codeline" id="line-35"><code>// where n is the number of distinct addresses with goroutines blocked</code></span>
+<span class="codeline" id="line-36"><code>// on them that hash to the given semaRoot.</code></span>
+<span class="codeline" id="line-37"><code>// See golang.org/issue/17953 for a program that worked badly</code></span>
+<span class="codeline" id="line-38"><code>// before we introduced the second level of list, and test/locklinear.go</code></span>
+<span class="codeline" id="line-39"><code>// for a test that exercises this.</code></span>
+<span class="codeline" id="line-40"><code>type semaRoot struct {</code></span>
+<span class="codeline" id="line-41"><code>	lock  mutex</code></span>
+<span class="codeline" id="line-42"><code>	treap *sudog // root of balanced tree of unique waiters.</code></span>
+<span class="codeline" id="line-43"><code>	nwait uint32 // Number of waiters. Read w/o the lock.</code></span>
+<span class="codeline" id="line-44"><code>}</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>// Prime to not correlate with any user patterns.</code></span>
+<span class="codeline" id="line-47"><code>const semTabSize = 251</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>var semtable [semTabSize]struct {</code></span>
+<span class="codeline" id="line-50"><code>	root semaRoot</code></span>
+<span class="codeline" id="line-51"><code>	pad  [cpu.CacheLinePadSize - unsafe.Sizeof(semaRoot{})]byte</code></span>
+<span class="codeline" id="line-52"><code>}</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>//go:linkname sync_runtime_Semacquire sync.runtime_Semacquire</code></span>
+<span class="codeline" id="line-55"><code>func sync_runtime_Semacquire(addr *uint32) {</code></span>
+<span class="codeline" id="line-56"><code>	semacquire1(addr, false, semaBlockProfile, 0)</code></span>
+<span class="codeline" id="line-57"><code>}</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>//go:linkname poll_runtime_Semacquire internal/poll.runtime_Semacquire</code></span>
+<span class="codeline" id="line-60"><code>func poll_runtime_Semacquire(addr *uint32) {</code></span>
+<span class="codeline" id="line-61"><code>	semacquire1(addr, false, semaBlockProfile, 0)</code></span>
+<span class="codeline" id="line-62"><code>}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>//go:linkname sync_runtime_Semrelease sync.runtime_Semrelease</code></span>
+<span class="codeline" id="line-65"><code>func sync_runtime_Semrelease(addr *uint32, handoff bool, skipframes int) {</code></span>
+<span class="codeline" id="line-66"><code>	semrelease1(addr, handoff, skipframes)</code></span>
+<span class="codeline" id="line-67"><code>}</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>//go:linkname sync_runtime_SemacquireMutex sync.runtime_SemacquireMutex</code></span>
+<span class="codeline" id="line-70"><code>func sync_runtime_SemacquireMutex(addr *uint32, lifo bool, skipframes int) {</code></span>
+<span class="codeline" id="line-71"><code>	semacquire1(addr, lifo, semaBlockProfile|semaMutexProfile, skipframes)</code></span>
+<span class="codeline" id="line-72"><code>}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>//go:linkname poll_runtime_Semrelease internal/poll.runtime_Semrelease</code></span>
+<span class="codeline" id="line-75"><code>func poll_runtime_Semrelease(addr *uint32) {</code></span>
+<span class="codeline" id="line-76"><code>	semrelease(addr)</code></span>
+<span class="codeline" id="line-77"><code>}</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>func readyWithTime(s *sudog, traceskip int) {</code></span>
+<span class="codeline" id="line-80"><code>	if s.releasetime != 0 {</code></span>
+<span class="codeline" id="line-81"><code>		s.releasetime = cputicks()</code></span>
+<span class="codeline" id="line-82"><code>	}</code></span>
+<span class="codeline" id="line-83"><code>	goready(s.g, traceskip)</code></span>
+<span class="codeline" id="line-84"><code>}</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>type semaProfileFlags int</code></span>
+<span class="codeline" id="line-87"><code></code></span>
+<span class="codeline" id="line-88"><code>const (</code></span>
+<span class="codeline" id="line-89"><code>	semaBlockProfile semaProfileFlags = 1 &lt;&lt; iota</code></span>
+<span class="codeline" id="line-90"><code>	semaMutexProfile</code></span>
+<span class="codeline" id="line-91"><code>)</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>// Called from runtime.</code></span>
+<span class="codeline" id="line-94"><code>func semacquire(addr *uint32) {</code></span>
+<span class="codeline" id="line-95"><code>	semacquire1(addr, false, 0, 0)</code></span>
+<span class="codeline" id="line-96"><code>}</code></span>
+<span class="codeline" id="line-97"><code></code></span>
+<span class="codeline" id="line-98"><code>func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes int) {</code></span>
+<span class="codeline" id="line-99"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-100"><code>	if gp != gp.m.curg {</code></span>
+<span class="codeline" id="line-101"><code>		throw("semacquire not on the G stack")</code></span>
+<span class="codeline" id="line-102"><code>	}</code></span>
+<span class="codeline" id="line-103"><code></code></span>
+<span class="codeline" id="line-104"><code>	// Easy case.</code></span>
+<span class="codeline" id="line-105"><code>	if cansemacquire(addr) {</code></span>
+<span class="codeline" id="line-106"><code>		return</code></span>
+<span class="codeline" id="line-107"><code>	}</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>	// Harder case:</code></span>
+<span class="codeline" id="line-110"><code>	//	increment waiter count</code></span>
+<span class="codeline" id="line-111"><code>	//	try cansemacquire one more time, return if succeeded</code></span>
+<span class="codeline" id="line-112"><code>	//	enqueue itself as a waiter</code></span>
+<span class="codeline" id="line-113"><code>	//	sleep</code></span>
+<span class="codeline" id="line-114"><code>	//	(waiter descriptor is dequeued by signaler)</code></span>
+<span class="codeline" id="line-115"><code>	s := acquireSudog()</code></span>
+<span class="codeline" id="line-116"><code>	root := semroot(addr)</code></span>
+<span class="codeline" id="line-117"><code>	t0 := int64(0)</code></span>
+<span class="codeline" id="line-118"><code>	s.releasetime = 0</code></span>
+<span class="codeline" id="line-119"><code>	s.acquiretime = 0</code></span>
+<span class="codeline" id="line-120"><code>	s.ticket = 0</code></span>
+<span class="codeline" id="line-121"><code>	if profile&amp;semaBlockProfile != 0 &amp;&amp; blockprofilerate &gt; 0 {</code></span>
+<span class="codeline" id="line-122"><code>		t0 = cputicks()</code></span>
+<span class="codeline" id="line-123"><code>		s.releasetime = -1</code></span>
+<span class="codeline" id="line-124"><code>	}</code></span>
+<span class="codeline" id="line-125"><code>	if profile&amp;semaMutexProfile != 0 &amp;&amp; mutexprofilerate &gt; 0 {</code></span>
+<span class="codeline" id="line-126"><code>		if t0 == 0 {</code></span>
+<span class="codeline" id="line-127"><code>			t0 = cputicks()</code></span>
+<span class="codeline" id="line-128"><code>		}</code></span>
+<span class="codeline" id="line-129"><code>		s.acquiretime = t0</code></span>
+<span class="codeline" id="line-130"><code>	}</code></span>
+<span class="codeline" id="line-131"><code>	for {</code></span>
+<span class="codeline" id="line-132"><code>		lockWithRank(&amp;root.lock, lockRankRoot)</code></span>
+<span class="codeline" id="line-133"><code>		// Add ourselves to nwait to disable "easy case" in semrelease.</code></span>
+<span class="codeline" id="line-134"><code>		atomic.Xadd(&amp;root.nwait, 1)</code></span>
+<span class="codeline" id="line-135"><code>		// Check cansemacquire to avoid missed wakeup.</code></span>
+<span class="codeline" id="line-136"><code>		if cansemacquire(addr) {</code></span>
+<span class="codeline" id="line-137"><code>			atomic.Xadd(&amp;root.nwait, -1)</code></span>
+<span class="codeline" id="line-138"><code>			unlock(&amp;root.lock)</code></span>
+<span class="codeline" id="line-139"><code>			break</code></span>
+<span class="codeline" id="line-140"><code>		}</code></span>
+<span class="codeline" id="line-141"><code>		// Any semrelease after the cansemacquire knows we're waiting</code></span>
+<span class="codeline" id="line-142"><code>		// (we set nwait above), so go to sleep.</code></span>
+<span class="codeline" id="line-143"><code>		root.queue(addr, s, lifo)</code></span>
+<span class="codeline" id="line-144"><code>		goparkunlock(&amp;root.lock, waitReasonSemacquire, traceEvGoBlockSync, 4+skipframes)</code></span>
+<span class="codeline" id="line-145"><code>		if s.ticket != 0 || cansemacquire(addr) {</code></span>
+<span class="codeline" id="line-146"><code>			break</code></span>
+<span class="codeline" id="line-147"><code>		}</code></span>
+<span class="codeline" id="line-148"><code>	}</code></span>
+<span class="codeline" id="line-149"><code>	if s.releasetime &gt; 0 {</code></span>
+<span class="codeline" id="line-150"><code>		blockevent(s.releasetime-t0, 3+skipframes)</code></span>
+<span class="codeline" id="line-151"><code>	}</code></span>
+<span class="codeline" id="line-152"><code>	releaseSudog(s)</code></span>
+<span class="codeline" id="line-153"><code>}</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>func semrelease(addr *uint32) {</code></span>
+<span class="codeline" id="line-156"><code>	semrelease1(addr, false, 0)</code></span>
+<span class="codeline" id="line-157"><code>}</code></span>
+<span class="codeline" id="line-158"><code></code></span>
+<span class="codeline" id="line-159"><code>func semrelease1(addr *uint32, handoff bool, skipframes int) {</code></span>
+<span class="codeline" id="line-160"><code>	root := semroot(addr)</code></span>
+<span class="codeline" id="line-161"><code>	atomic.Xadd(addr, 1)</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>	// Easy case: no waiters?</code></span>
+<span class="codeline" id="line-164"><code>	// This check must happen after the xadd, to avoid a missed wakeup</code></span>
+<span class="codeline" id="line-165"><code>	// (see loop in semacquire).</code></span>
+<span class="codeline" id="line-166"><code>	if atomic.Load(&amp;root.nwait) == 0 {</code></span>
+<span class="codeline" id="line-167"><code>		return</code></span>
+<span class="codeline" id="line-168"><code>	}</code></span>
+<span class="codeline" id="line-169"><code></code></span>
+<span class="codeline" id="line-170"><code>	// Harder case: search for a waiter and wake it.</code></span>
+<span class="codeline" id="line-171"><code>	lockWithRank(&amp;root.lock, lockRankRoot)</code></span>
+<span class="codeline" id="line-172"><code>	if atomic.Load(&amp;root.nwait) == 0 {</code></span>
+<span class="codeline" id="line-173"><code>		// The count is already consumed by another goroutine,</code></span>
+<span class="codeline" id="line-174"><code>		// so no need to wake up another goroutine.</code></span>
+<span class="codeline" id="line-175"><code>		unlock(&amp;root.lock)</code></span>
+<span class="codeline" id="line-176"><code>		return</code></span>
+<span class="codeline" id="line-177"><code>	}</code></span>
+<span class="codeline" id="line-178"><code>	s, t0 := root.dequeue(addr)</code></span>
+<span class="codeline" id="line-179"><code>	if s != nil {</code></span>
+<span class="codeline" id="line-180"><code>		atomic.Xadd(&amp;root.nwait, -1)</code></span>
+<span class="codeline" id="line-181"><code>	}</code></span>
+<span class="codeline" id="line-182"><code>	unlock(&amp;root.lock)</code></span>
+<span class="codeline" id="line-183"><code>	if s != nil { // May be slow or even yield, so unlock first</code></span>
+<span class="codeline" id="line-184"><code>		acquiretime := s.acquiretime</code></span>
+<span class="codeline" id="line-185"><code>		if acquiretime != 0 {</code></span>
+<span class="codeline" id="line-186"><code>			mutexevent(t0-acquiretime, 3+skipframes)</code></span>
+<span class="codeline" id="line-187"><code>		}</code></span>
+<span class="codeline" id="line-188"><code>		if s.ticket != 0 {</code></span>
+<span class="codeline" id="line-189"><code>			throw("corrupted semaphore ticket")</code></span>
+<span class="codeline" id="line-190"><code>		}</code></span>
+<span class="codeline" id="line-191"><code>		if handoff &amp;&amp; cansemacquire(addr) {</code></span>
+<span class="codeline" id="line-192"><code>			s.ticket = 1</code></span>
+<span class="codeline" id="line-193"><code>		}</code></span>
+<span class="codeline" id="line-194"><code>		readyWithTime(s, 5+skipframes)</code></span>
+<span class="codeline" id="line-195"><code>		if s.ticket == 1 &amp;&amp; getg().m.locks == 0 {</code></span>
+<span class="codeline" id="line-196"><code>			// Direct G handoff</code></span>
+<span class="codeline" id="line-197"><code>			// readyWithTime has added the waiter G as runnext in the</code></span>
+<span class="codeline" id="line-198"><code>			// current P; we now call the scheduler so that we start running</code></span>
+<span class="codeline" id="line-199"><code>			// the waiter G immediately.</code></span>
+<span class="codeline" id="line-200"><code>			// Note that waiter inherits our time slice: this is desirable</code></span>
+<span class="codeline" id="line-201"><code>			// to avoid having a highly contended semaphore hog the P</code></span>
+<span class="codeline" id="line-202"><code>			// indefinitely. goyield is like Gosched, but it emits a</code></span>
+<span class="codeline" id="line-203"><code>			// "preempted" trace event instead and, more importantly, puts</code></span>
+<span class="codeline" id="line-204"><code>			// the current G on the local runq instead of the global one.</code></span>
+<span class="codeline" id="line-205"><code>			// We only do this in the starving regime (handoff=true), as in</code></span>
+<span class="codeline" id="line-206"><code>			// the non-starving case it is possible for a different waiter</code></span>
+<span class="codeline" id="line-207"><code>			// to acquire the semaphore while we are yielding/scheduling,</code></span>
+<span class="codeline" id="line-208"><code>			// and this would be wasteful. We wait instead to enter starving</code></span>
+<span class="codeline" id="line-209"><code>			// regime, and then we start to do direct handoffs of ticket and</code></span>
+<span class="codeline" id="line-210"><code>			// P.</code></span>
+<span class="codeline" id="line-211"><code>			// See issue 33747 for discussion.</code></span>
+<span class="codeline" id="line-212"><code>			goyield()</code></span>
+<span class="codeline" id="line-213"><code>		}</code></span>
+<span class="codeline" id="line-214"><code>	}</code></span>
+<span class="codeline" id="line-215"><code>}</code></span>
+<span class="codeline" id="line-216"><code></code></span>
+<span class="codeline" id="line-217"><code>func semroot(addr *uint32) *semaRoot {</code></span>
+<span class="codeline" id="line-218"><code>	return &amp;semtable[(uintptr(unsafe.Pointer(addr))&gt;&gt;3)%semTabSize].root</code></span>
+<span class="codeline" id="line-219"><code>}</code></span>
+<span class="codeline" id="line-220"><code></code></span>
+<span class="codeline" id="line-221"><code>func cansemacquire(addr *uint32) bool {</code></span>
+<span class="codeline" id="line-222"><code>	for {</code></span>
+<span class="codeline" id="line-223"><code>		v := atomic.Load(addr)</code></span>
+<span class="codeline" id="line-224"><code>		if v == 0 {</code></span>
+<span class="codeline" id="line-225"><code>			return false</code></span>
+<span class="codeline" id="line-226"><code>		}</code></span>
+<span class="codeline" id="line-227"><code>		if atomic.Cas(addr, v, v-1) {</code></span>
+<span class="codeline" id="line-228"><code>			return true</code></span>
+<span class="codeline" id="line-229"><code>		}</code></span>
+<span class="codeline" id="line-230"><code>	}</code></span>
+<span class="codeline" id="line-231"><code>}</code></span>
+<span class="codeline" id="line-232"><code></code></span>
+<span class="codeline" id="line-233"><code>// queue adds s to the blocked goroutines in semaRoot.</code></span>
+<span class="codeline" id="line-234"><code>func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {</code></span>
+<span class="codeline" id="line-235"><code>	s.g = getg()</code></span>
+<span class="codeline" id="line-236"><code>	s.elem = unsafe.Pointer(addr)</code></span>
+<span class="codeline" id="line-237"><code>	s.next = nil</code></span>
+<span class="codeline" id="line-238"><code>	s.prev = nil</code></span>
+<span class="codeline" id="line-239"><code></code></span>
+<span class="codeline" id="line-240"><code>	var last *sudog</code></span>
+<span class="codeline" id="line-241"><code>	pt := &amp;root.treap</code></span>
+<span class="codeline" id="line-242"><code>	for t := *pt; t != nil; t = *pt {</code></span>
+<span class="codeline" id="line-243"><code>		if t.elem == unsafe.Pointer(addr) {</code></span>
+<span class="codeline" id="line-244"><code>			// Already have addr in list.</code></span>
+<span class="codeline" id="line-245"><code>			if lifo {</code></span>
+<span class="codeline" id="line-246"><code>				// Substitute s in t's place in treap.</code></span>
+<span class="codeline" id="line-247"><code>				*pt = s</code></span>
+<span class="codeline" id="line-248"><code>				s.ticket = t.ticket</code></span>
+<span class="codeline" id="line-249"><code>				s.acquiretime = t.acquiretime</code></span>
+<span class="codeline" id="line-250"><code>				s.parent = t.parent</code></span>
+<span class="codeline" id="line-251"><code>				s.prev = t.prev</code></span>
+<span class="codeline" id="line-252"><code>				s.next = t.next</code></span>
+<span class="codeline" id="line-253"><code>				if s.prev != nil {</code></span>
+<span class="codeline" id="line-254"><code>					s.prev.parent = s</code></span>
+<span class="codeline" id="line-255"><code>				}</code></span>
+<span class="codeline" id="line-256"><code>				if s.next != nil {</code></span>
+<span class="codeline" id="line-257"><code>					s.next.parent = s</code></span>
+<span class="codeline" id="line-258"><code>				}</code></span>
+<span class="codeline" id="line-259"><code>				// Add t first in s's wait list.</code></span>
+<span class="codeline" id="line-260"><code>				s.waitlink = t</code></span>
+<span class="codeline" id="line-261"><code>				s.waittail = t.waittail</code></span>
+<span class="codeline" id="line-262"><code>				if s.waittail == nil {</code></span>
+<span class="codeline" id="line-263"><code>					s.waittail = t</code></span>
+<span class="codeline" id="line-264"><code>				}</code></span>
+<span class="codeline" id="line-265"><code>				t.parent = nil</code></span>
+<span class="codeline" id="line-266"><code>				t.prev = nil</code></span>
+<span class="codeline" id="line-267"><code>				t.next = nil</code></span>
+<span class="codeline" id="line-268"><code>				t.waittail = nil</code></span>
+<span class="codeline" id="line-269"><code>			} else {</code></span>
+<span class="codeline" id="line-270"><code>				// Add s to end of t's wait list.</code></span>
+<span class="codeline" id="line-271"><code>				if t.waittail == nil {</code></span>
+<span class="codeline" id="line-272"><code>					t.waitlink = s</code></span>
+<span class="codeline" id="line-273"><code>				} else {</code></span>
+<span class="codeline" id="line-274"><code>					t.waittail.waitlink = s</code></span>
+<span class="codeline" id="line-275"><code>				}</code></span>
+<span class="codeline" id="line-276"><code>				t.waittail = s</code></span>
+<span class="codeline" id="line-277"><code>				s.waitlink = nil</code></span>
+<span class="codeline" id="line-278"><code>			}</code></span>
+<span class="codeline" id="line-279"><code>			return</code></span>
+<span class="codeline" id="line-280"><code>		}</code></span>
+<span class="codeline" id="line-281"><code>		last = t</code></span>
+<span class="codeline" id="line-282"><code>		if uintptr(unsafe.Pointer(addr)) &lt; uintptr(t.elem) {</code></span>
+<span class="codeline" id="line-283"><code>			pt = &amp;t.prev</code></span>
+<span class="codeline" id="line-284"><code>		} else {</code></span>
+<span class="codeline" id="line-285"><code>			pt = &amp;t.next</code></span>
+<span class="codeline" id="line-286"><code>		}</code></span>
+<span class="codeline" id="line-287"><code>	}</code></span>
+<span class="codeline" id="line-288"><code></code></span>
+<span class="codeline" id="line-289"><code>	// Add s as new leaf in tree of unique addrs.</code></span>
+<span class="codeline" id="line-290"><code>	// The balanced tree is a treap using ticket as the random heap priority.</code></span>
+<span class="codeline" id="line-291"><code>	// That is, it is a binary tree ordered according to the elem addresses,</code></span>
+<span class="codeline" id="line-292"><code>	// but then among the space of possible binary trees respecting those</code></span>
+<span class="codeline" id="line-293"><code>	// addresses, it is kept balanced on average by maintaining a heap ordering</code></span>
+<span class="codeline" id="line-294"><code>	// on the ticket: s.ticket &lt;= both s.prev.ticket and s.next.ticket.</code></span>
+<span class="codeline" id="line-295"><code>	// https://en.wikipedia.org/wiki/Treap</code></span>
+<span class="codeline" id="line-296"><code>	// https://faculty.washington.edu/aragon/pubs/rst89.pdf</code></span>
+<span class="codeline" id="line-297"><code>	//</code></span>
+<span class="codeline" id="line-298"><code>	// s.ticket compared with zero in couple of places, therefore set lowest bit.</code></span>
+<span class="codeline" id="line-299"><code>	// It will not affect treap's quality noticeably.</code></span>
+<span class="codeline" id="line-300"><code>	s.ticket = fastrand() | 1</code></span>
+<span class="codeline" id="line-301"><code>	s.parent = last</code></span>
+<span class="codeline" id="line-302"><code>	*pt = s</code></span>
+<span class="codeline" id="line-303"><code></code></span>
+<span class="codeline" id="line-304"><code>	// Rotate up into tree according to ticket (priority).</code></span>
+<span class="codeline" id="line-305"><code>	for s.parent != nil &amp;&amp; s.parent.ticket &gt; s.ticket {</code></span>
+<span class="codeline" id="line-306"><code>		if s.parent.prev == s {</code></span>
+<span class="codeline" id="line-307"><code>			root.rotateRight(s.parent)</code></span>
+<span class="codeline" id="line-308"><code>		} else {</code></span>
+<span class="codeline" id="line-309"><code>			if s.parent.next != s {</code></span>
+<span class="codeline" id="line-310"><code>				panic("semaRoot queue")</code></span>
+<span class="codeline" id="line-311"><code>			}</code></span>
+<span class="codeline" id="line-312"><code>			root.rotateLeft(s.parent)</code></span>
+<span class="codeline" id="line-313"><code>		}</code></span>
+<span class="codeline" id="line-314"><code>	}</code></span>
+<span class="codeline" id="line-315"><code>}</code></span>
+<span class="codeline" id="line-316"><code></code></span>
+<span class="codeline" id="line-317"><code>// dequeue searches for and finds the first goroutine</code></span>
+<span class="codeline" id="line-318"><code>// in semaRoot blocked on addr.</code></span>
+<span class="codeline" id="line-319"><code>// If the sudog was being profiled, dequeue returns the time</code></span>
+<span class="codeline" id="line-320"><code>// at which it was woken up as now. Otherwise now is 0.</code></span>
+<span class="codeline" id="line-321"><code>func (root *semaRoot) dequeue(addr *uint32) (found *sudog, now int64) {</code></span>
+<span class="codeline" id="line-322"><code>	ps := &amp;root.treap</code></span>
+<span class="codeline" id="line-323"><code>	s := *ps</code></span>
+<span class="codeline" id="line-324"><code>	for ; s != nil; s = *ps {</code></span>
+<span class="codeline" id="line-325"><code>		if s.elem == unsafe.Pointer(addr) {</code></span>
+<span class="codeline" id="line-326"><code>			goto Found</code></span>
+<span class="codeline" id="line-327"><code>		}</code></span>
+<span class="codeline" id="line-328"><code>		if uintptr(unsafe.Pointer(addr)) &lt; uintptr(s.elem) {</code></span>
+<span class="codeline" id="line-329"><code>			ps = &amp;s.prev</code></span>
+<span class="codeline" id="line-330"><code>		} else {</code></span>
+<span class="codeline" id="line-331"><code>			ps = &amp;s.next</code></span>
+<span class="codeline" id="line-332"><code>		}</code></span>
+<span class="codeline" id="line-333"><code>	}</code></span>
+<span class="codeline" id="line-334"><code>	return nil, 0</code></span>
+<span class="codeline" id="line-335"><code></code></span>
+<span class="codeline" id="line-336"><code>Found:</code></span>
+<span class="codeline" id="line-337"><code>	now = int64(0)</code></span>
+<span class="codeline" id="line-338"><code>	if s.acquiretime != 0 {</code></span>
+<span class="codeline" id="line-339"><code>		now = cputicks()</code></span>
+<span class="codeline" id="line-340"><code>	}</code></span>
+<span class="codeline" id="line-341"><code>	if t := s.waitlink; t != nil {</code></span>
+<span class="codeline" id="line-342"><code>		// Substitute t, also waiting on addr, for s in root tree of unique addrs.</code></span>
+<span class="codeline" id="line-343"><code>		*ps = t</code></span>
+<span class="codeline" id="line-344"><code>		t.ticket = s.ticket</code></span>
+<span class="codeline" id="line-345"><code>		t.parent = s.parent</code></span>
+<span class="codeline" id="line-346"><code>		t.prev = s.prev</code></span>
+<span class="codeline" id="line-347"><code>		if t.prev != nil {</code></span>
+<span class="codeline" id="line-348"><code>			t.prev.parent = t</code></span>
+<span class="codeline" id="line-349"><code>		}</code></span>
+<span class="codeline" id="line-350"><code>		t.next = s.next</code></span>
+<span class="codeline" id="line-351"><code>		if t.next != nil {</code></span>
+<span class="codeline" id="line-352"><code>			t.next.parent = t</code></span>
+<span class="codeline" id="line-353"><code>		}</code></span>
+<span class="codeline" id="line-354"><code>		if t.waitlink != nil {</code></span>
+<span class="codeline" id="line-355"><code>			t.waittail = s.waittail</code></span>
+<span class="codeline" id="line-356"><code>		} else {</code></span>
+<span class="codeline" id="line-357"><code>			t.waittail = nil</code></span>
+<span class="codeline" id="line-358"><code>		}</code></span>
+<span class="codeline" id="line-359"><code>		t.acquiretime = now</code></span>
+<span class="codeline" id="line-360"><code>		s.waitlink = nil</code></span>
+<span class="codeline" id="line-361"><code>		s.waittail = nil</code></span>
+<span class="codeline" id="line-362"><code>	} else {</code></span>
+<span class="codeline" id="line-363"><code>		// Rotate s down to be leaf of tree for removal, respecting priorities.</code></span>
+<span class="codeline" id="line-364"><code>		for s.next != nil || s.prev != nil {</code></span>
+<span class="codeline" id="line-365"><code>			if s.next == nil || s.prev != nil &amp;&amp; s.prev.ticket &lt; s.next.ticket {</code></span>
+<span class="codeline" id="line-366"><code>				root.rotateRight(s)</code></span>
+<span class="codeline" id="line-367"><code>			} else {</code></span>
+<span class="codeline" id="line-368"><code>				root.rotateLeft(s)</code></span>
+<span class="codeline" id="line-369"><code>			}</code></span>
+<span class="codeline" id="line-370"><code>		}</code></span>
+<span class="codeline" id="line-371"><code>		// Remove s, now a leaf.</code></span>
+<span class="codeline" id="line-372"><code>		if s.parent != nil {</code></span>
+<span class="codeline" id="line-373"><code>			if s.parent.prev == s {</code></span>
+<span class="codeline" id="line-374"><code>				s.parent.prev = nil</code></span>
+<span class="codeline" id="line-375"><code>			} else {</code></span>
+<span class="codeline" id="line-376"><code>				s.parent.next = nil</code></span>
+<span class="codeline" id="line-377"><code>			}</code></span>
+<span class="codeline" id="line-378"><code>		} else {</code></span>
+<span class="codeline" id="line-379"><code>			root.treap = nil</code></span>
+<span class="codeline" id="line-380"><code>		}</code></span>
+<span class="codeline" id="line-381"><code>	}</code></span>
+<span class="codeline" id="line-382"><code>	s.parent = nil</code></span>
+<span class="codeline" id="line-383"><code>	s.elem = nil</code></span>
+<span class="codeline" id="line-384"><code>	s.next = nil</code></span>
+<span class="codeline" id="line-385"><code>	s.prev = nil</code></span>
+<span class="codeline" id="line-386"><code>	s.ticket = 0</code></span>
+<span class="codeline" id="line-387"><code>	return s, now</code></span>
+<span class="codeline" id="line-388"><code>}</code></span>
+<span class="codeline" id="line-389"><code></code></span>
+<span class="codeline" id="line-390"><code>// rotateLeft rotates the tree rooted at node x.</code></span>
+<span class="codeline" id="line-391"><code>// turning (x a (y b c)) into (y (x a b) c).</code></span>
+<span class="codeline" id="line-392"><code>func (root *semaRoot) rotateLeft(x *sudog) {</code></span>
+<span class="codeline" id="line-393"><code>	// p -&gt; (x a (y b c))</code></span>
+<span class="codeline" id="line-394"><code>	p := x.parent</code></span>
+<span class="codeline" id="line-395"><code>	y := x.next</code></span>
+<span class="codeline" id="line-396"><code>	b := y.prev</code></span>
+<span class="codeline" id="line-397"><code></code></span>
+<span class="codeline" id="line-398"><code>	y.prev = x</code></span>
+<span class="codeline" id="line-399"><code>	x.parent = y</code></span>
+<span class="codeline" id="line-400"><code>	x.next = b</code></span>
+<span class="codeline" id="line-401"><code>	if b != nil {</code></span>
+<span class="codeline" id="line-402"><code>		b.parent = x</code></span>
+<span class="codeline" id="line-403"><code>	}</code></span>
+<span class="codeline" id="line-404"><code></code></span>
+<span class="codeline" id="line-405"><code>	y.parent = p</code></span>
+<span class="codeline" id="line-406"><code>	if p == nil {</code></span>
+<span class="codeline" id="line-407"><code>		root.treap = y</code></span>
+<span class="codeline" id="line-408"><code>	} else if p.prev == x {</code></span>
+<span class="codeline" id="line-409"><code>		p.prev = y</code></span>
+<span class="codeline" id="line-410"><code>	} else {</code></span>
+<span class="codeline" id="line-411"><code>		if p.next != x {</code></span>
+<span class="codeline" id="line-412"><code>			throw("semaRoot rotateLeft")</code></span>
+<span class="codeline" id="line-413"><code>		}</code></span>
+<span class="codeline" id="line-414"><code>		p.next = y</code></span>
+<span class="codeline" id="line-415"><code>	}</code></span>
+<span class="codeline" id="line-416"><code>}</code></span>
+<span class="codeline" id="line-417"><code></code></span>
+<span class="codeline" id="line-418"><code>// rotateRight rotates the tree rooted at node y.</code></span>
+<span class="codeline" id="line-419"><code>// turning (y (x a b) c) into (x a (y b c)).</code></span>
+<span class="codeline" id="line-420"><code>func (root *semaRoot) rotateRight(y *sudog) {</code></span>
+<span class="codeline" id="line-421"><code>	// p -&gt; (y (x a b) c)</code></span>
+<span class="codeline" id="line-422"><code>	p := y.parent</code></span>
+<span class="codeline" id="line-423"><code>	x := y.prev</code></span>
+<span class="codeline" id="line-424"><code>	b := x.next</code></span>
+<span class="codeline" id="line-425"><code></code></span>
+<span class="codeline" id="line-426"><code>	x.next = y</code></span>
+<span class="codeline" id="line-427"><code>	y.parent = x</code></span>
+<span class="codeline" id="line-428"><code>	y.prev = b</code></span>
+<span class="codeline" id="line-429"><code>	if b != nil {</code></span>
+<span class="codeline" id="line-430"><code>		b.parent = y</code></span>
+<span class="codeline" id="line-431"><code>	}</code></span>
+<span class="codeline" id="line-432"><code></code></span>
+<span class="codeline" id="line-433"><code>	x.parent = p</code></span>
+<span class="codeline" id="line-434"><code>	if p == nil {</code></span>
+<span class="codeline" id="line-435"><code>		root.treap = x</code></span>
+<span class="codeline" id="line-436"><code>	} else if p.prev == y {</code></span>
+<span class="codeline" id="line-437"><code>		p.prev = x</code></span>
+<span class="codeline" id="line-438"><code>	} else {</code></span>
+<span class="codeline" id="line-439"><code>		if p.next != y {</code></span>
+<span class="codeline" id="line-440"><code>			throw("semaRoot rotateRight")</code></span>
+<span class="codeline" id="line-441"><code>		}</code></span>
+<span class="codeline" id="line-442"><code>		p.next = x</code></span>
+<span class="codeline" id="line-443"><code>	}</code></span>
+<span class="codeline" id="line-444"><code>}</code></span>
+<span class="codeline" id="line-445"><code></code></span>
+<span class="codeline" id="line-446"><code>// notifyList is a ticket-based notification list used to implement sync.Cond.</code></span>
+<span class="codeline" id="line-447"><code>//</code></span>
+<span class="codeline" id="line-448"><code>// It must be kept in sync with the sync package.</code></span>
+<span class="codeline" id="line-449"><code>type notifyList struct {</code></span>
+<span class="codeline" id="line-450"><code>	// wait is the ticket number of the next waiter. It is atomically</code></span>
+<span class="codeline" id="line-451"><code>	// incremented outside the lock.</code></span>
+<span class="codeline" id="line-452"><code>	wait uint32</code></span>
+<span class="codeline" id="line-453"><code></code></span>
+<span class="codeline" id="line-454"><code>	// notify is the ticket number of the next waiter to be notified. It can</code></span>
+<span class="codeline" id="line-455"><code>	// be read outside the lock, but is only written to with lock held.</code></span>
+<span class="codeline" id="line-456"><code>	//</code></span>
+<span class="codeline" id="line-457"><code>	// Both wait &amp; notify can wrap around, and such cases will be correctly</code></span>
+<span class="codeline" id="line-458"><code>	// handled as long as their "unwrapped" difference is bounded by 2^31.</code></span>
+<span class="codeline" id="line-459"><code>	// For this not to be the case, we'd need to have 2^31+ goroutines</code></span>
+<span class="codeline" id="line-460"><code>	// blocked on the same condvar, which is currently not possible.</code></span>
+<span class="codeline" id="line-461"><code>	notify uint32</code></span>
+<span class="codeline" id="line-462"><code></code></span>
+<span class="codeline" id="line-463"><code>	// List of parked waiters.</code></span>
+<span class="codeline" id="line-464"><code>	lock mutex</code></span>
+<span class="codeline" id="line-465"><code>	head *sudog</code></span>
+<span class="codeline" id="line-466"><code>	tail *sudog</code></span>
+<span class="codeline" id="line-467"><code>}</code></span>
+<span class="codeline" id="line-468"><code></code></span>
+<span class="codeline" id="line-469"><code>// less checks if a &lt; b, considering a &amp; b running counts that may overflow the</code></span>
+<span class="codeline" id="line-470"><code>// 32-bit range, and that their "unwrapped" difference is always less than 2^31.</code></span>
+<span class="codeline" id="line-471"><code>func less(a, b uint32) bool {</code></span>
+<span class="codeline" id="line-472"><code>	return int32(a-b) &lt; 0</code></span>
+<span class="codeline" id="line-473"><code>}</code></span>
+<span class="codeline" id="line-474"><code></code></span>
+<span class="codeline" id="line-475"><code>// notifyListAdd adds the caller to a notify list such that it can receive</code></span>
+<span class="codeline" id="line-476"><code>// notifications. The caller must eventually call notifyListWait to wait for</code></span>
+<span class="codeline" id="line-477"><code>// such a notification, passing the returned ticket number.</code></span>
+<span class="codeline" id="line-478"><code>//go:linkname notifyListAdd sync.runtime_notifyListAdd</code></span>
+<span class="codeline" id="line-479"><code>func notifyListAdd(l *notifyList) uint32 {</code></span>
+<span class="codeline" id="line-480"><code>	// This may be called concurrently, for example, when called from</code></span>
+<span class="codeline" id="line-481"><code>	// sync.Cond.Wait while holding a RWMutex in read mode.</code></span>
+<span class="codeline" id="line-482"><code>	return atomic.Xadd(&amp;l.wait, 1) - 1</code></span>
+<span class="codeline" id="line-483"><code>}</code></span>
+<span class="codeline" id="line-484"><code></code></span>
+<span class="codeline" id="line-485"><code>// notifyListWait waits for a notification. If one has been sent since</code></span>
+<span class="codeline" id="line-486"><code>// notifyListAdd was called, it returns immediately. Otherwise, it blocks.</code></span>
+<span class="codeline" id="line-487"><code>//go:linkname notifyListWait sync.runtime_notifyListWait</code></span>
+<span class="codeline" id="line-488"><code>func notifyListWait(l *notifyList, t uint32) {</code></span>
+<span class="codeline" id="line-489"><code>	lockWithRank(&amp;l.lock, lockRankNotifyList)</code></span>
+<span class="codeline" id="line-490"><code></code></span>
+<span class="codeline" id="line-491"><code>	// Return right away if this ticket has already been notified.</code></span>
+<span class="codeline" id="line-492"><code>	if less(t, l.notify) {</code></span>
+<span class="codeline" id="line-493"><code>		unlock(&amp;l.lock)</code></span>
+<span class="codeline" id="line-494"><code>		return</code></span>
+<span class="codeline" id="line-495"><code>	}</code></span>
+<span class="codeline" id="line-496"><code></code></span>
+<span class="codeline" id="line-497"><code>	// Enqueue itself.</code></span>
+<span class="codeline" id="line-498"><code>	s := acquireSudog()</code></span>
+<span class="codeline" id="line-499"><code>	s.g = getg()</code></span>
+<span class="codeline" id="line-500"><code>	s.ticket = t</code></span>
+<span class="codeline" id="line-501"><code>	s.releasetime = 0</code></span>
+<span class="codeline" id="line-502"><code>	t0 := int64(0)</code></span>
+<span class="codeline" id="line-503"><code>	if blockprofilerate &gt; 0 {</code></span>
+<span class="codeline" id="line-504"><code>		t0 = cputicks()</code></span>
+<span class="codeline" id="line-505"><code>		s.releasetime = -1</code></span>
+<span class="codeline" id="line-506"><code>	}</code></span>
+<span class="codeline" id="line-507"><code>	if l.tail == nil {</code></span>
+<span class="codeline" id="line-508"><code>		l.head = s</code></span>
+<span class="codeline" id="line-509"><code>	} else {</code></span>
+<span class="codeline" id="line-510"><code>		l.tail.next = s</code></span>
+<span class="codeline" id="line-511"><code>	}</code></span>
+<span class="codeline" id="line-512"><code>	l.tail = s</code></span>
+<span class="codeline" id="line-513"><code>	goparkunlock(&amp;l.lock, waitReasonSyncCondWait, traceEvGoBlockCond, 3)</code></span>
+<span class="codeline" id="line-514"><code>	if t0 != 0 {</code></span>
+<span class="codeline" id="line-515"><code>		blockevent(s.releasetime-t0, 2)</code></span>
+<span class="codeline" id="line-516"><code>	}</code></span>
+<span class="codeline" id="line-517"><code>	releaseSudog(s)</code></span>
+<span class="codeline" id="line-518"><code>}</code></span>
+<span class="codeline" id="line-519"><code></code></span>
+<span class="codeline" id="line-520"><code>// notifyListNotifyAll notifies all entries in the list.</code></span>
+<span class="codeline" id="line-521"><code>//go:linkname notifyListNotifyAll sync.runtime_notifyListNotifyAll</code></span>
+<span class="codeline" id="line-522"><code>func notifyListNotifyAll(l *notifyList) {</code></span>
+<span class="codeline" id="line-523"><code>	// Fast-path: if there are no new waiters since the last notification</code></span>
+<span class="codeline" id="line-524"><code>	// we don't need to acquire the lock.</code></span>
+<span class="codeline" id="line-525"><code>	if atomic.Load(&amp;l.wait) == atomic.Load(&amp;l.notify) {</code></span>
+<span class="codeline" id="line-526"><code>		return</code></span>
+<span class="codeline" id="line-527"><code>	}</code></span>
+<span class="codeline" id="line-528"><code></code></span>
+<span class="codeline" id="line-529"><code>	// Pull the list out into a local variable, waiters will be readied</code></span>
+<span class="codeline" id="line-530"><code>	// outside the lock.</code></span>
+<span class="codeline" id="line-531"><code>	lockWithRank(&amp;l.lock, lockRankNotifyList)</code></span>
+<span class="codeline" id="line-532"><code>	s := l.head</code></span>
+<span class="codeline" id="line-533"><code>	l.head = nil</code></span>
+<span class="codeline" id="line-534"><code>	l.tail = nil</code></span>
+<span class="codeline" id="line-535"><code></code></span>
+<span class="codeline" id="line-536"><code>	// Update the next ticket to be notified. We can set it to the current</code></span>
+<span class="codeline" id="line-537"><code>	// value of wait because any previous waiters are already in the list</code></span>
+<span class="codeline" id="line-538"><code>	// or will notice that they have already been notified when trying to</code></span>
+<span class="codeline" id="line-539"><code>	// add themselves to the list.</code></span>
+<span class="codeline" id="line-540"><code>	atomic.Store(&amp;l.notify, atomic.Load(&amp;l.wait))</code></span>
+<span class="codeline" id="line-541"><code>	unlock(&amp;l.lock)</code></span>
+<span class="codeline" id="line-542"><code></code></span>
+<span class="codeline" id="line-543"><code>	// Go through the local list and ready all waiters.</code></span>
+<span class="codeline" id="line-544"><code>	for s != nil {</code></span>
+<span class="codeline" id="line-545"><code>		next := s.next</code></span>
+<span class="codeline" id="line-546"><code>		s.next = nil</code></span>
+<span class="codeline" id="line-547"><code>		readyWithTime(s, 4)</code></span>
+<span class="codeline" id="line-548"><code>		s = next</code></span>
+<span class="codeline" id="line-549"><code>	}</code></span>
+<span class="codeline" id="line-550"><code>}</code></span>
+<span class="codeline" id="line-551"><code></code></span>
+<span class="codeline" id="line-552"><code>// notifyListNotifyOne notifies one entry in the list.</code></span>
+<span class="codeline" id="line-553"><code>//go:linkname notifyListNotifyOne sync.runtime_notifyListNotifyOne</code></span>
+<span class="codeline" id="line-554"><code>func notifyListNotifyOne(l *notifyList) {</code></span>
+<span class="codeline" id="line-555"><code>	// Fast-path: if there are no new waiters since the last notification</code></span>
+<span class="codeline" id="line-556"><code>	// we don't need to acquire the lock at all.</code></span>
+<span class="codeline" id="line-557"><code>	if atomic.Load(&amp;l.wait) == atomic.Load(&amp;l.notify) {</code></span>
+<span class="codeline" id="line-558"><code>		return</code></span>
+<span class="codeline" id="line-559"><code>	}</code></span>
+<span class="codeline" id="line-560"><code></code></span>
+<span class="codeline" id="line-561"><code>	lockWithRank(&amp;l.lock, lockRankNotifyList)</code></span>
+<span class="codeline" id="line-562"><code></code></span>
+<span class="codeline" id="line-563"><code>	// Re-check under the lock if we need to do anything.</code></span>
+<span class="codeline" id="line-564"><code>	t := l.notify</code></span>
+<span class="codeline" id="line-565"><code>	if t == atomic.Load(&amp;l.wait) {</code></span>
+<span class="codeline" id="line-566"><code>		unlock(&amp;l.lock)</code></span>
+<span class="codeline" id="line-567"><code>		return</code></span>
+<span class="codeline" id="line-568"><code>	}</code></span>
+<span class="codeline" id="line-569"><code></code></span>
+<span class="codeline" id="line-570"><code>	// Update the next notify ticket number.</code></span>
+<span class="codeline" id="line-571"><code>	atomic.Store(&amp;l.notify, t+1)</code></span>
+<span class="codeline" id="line-572"><code></code></span>
+<span class="codeline" id="line-573"><code>	// Try to find the g that needs to be notified.</code></span>
+<span class="codeline" id="line-574"><code>	// If it hasn't made it to the list yet we won't find it,</code></span>
+<span class="codeline" id="line-575"><code>	// but it won't park itself once it sees the new notify number.</code></span>
+<span class="codeline" id="line-576"><code>	//</code></span>
+<span class="codeline" id="line-577"><code>	// This scan looks linear but essentially always stops quickly.</code></span>
+<span class="codeline" id="line-578"><code>	// Because g's queue separately from taking numbers,</code></span>
+<span class="codeline" id="line-579"><code>	// there may be minor reorderings in the list, but we</code></span>
+<span class="codeline" id="line-580"><code>	// expect the g we're looking for to be near the front.</code></span>
+<span class="codeline" id="line-581"><code>	// The g has others in front of it on the list only to the</code></span>
+<span class="codeline" id="line-582"><code>	// extent that it lost the race, so the iteration will not</code></span>
+<span class="codeline" id="line-583"><code>	// be too long. This applies even when the g is missing:</code></span>
+<span class="codeline" id="line-584"><code>	// it hasn't yet gotten to sleep and has lost the race to</code></span>
+<span class="codeline" id="line-585"><code>	// the (few) other g's that we find on the list.</code></span>
+<span class="codeline" id="line-586"><code>	for p, s := (*sudog)(nil), l.head; s != nil; p, s = s, s.next {</code></span>
+<span class="codeline" id="line-587"><code>		if s.ticket == t {</code></span>
+<span class="codeline" id="line-588"><code>			n := s.next</code></span>
+<span class="codeline" id="line-589"><code>			if p != nil {</code></span>
+<span class="codeline" id="line-590"><code>				p.next = n</code></span>
+<span class="codeline" id="line-591"><code>			} else {</code></span>
+<span class="codeline" id="line-592"><code>				l.head = n</code></span>
+<span class="codeline" id="line-593"><code>			}</code></span>
+<span class="codeline" id="line-594"><code>			if n == nil {</code></span>
+<span class="codeline" id="line-595"><code>				l.tail = p</code></span>
+<span class="codeline" id="line-596"><code>			}</code></span>
+<span class="codeline" id="line-597"><code>			unlock(&amp;l.lock)</code></span>
+<span class="codeline" id="line-598"><code>			s.next = nil</code></span>
+<span class="codeline" id="line-599"><code>			readyWithTime(s, 4)</code></span>
+<span class="codeline" id="line-600"><code>			return</code></span>
+<span class="codeline" id="line-601"><code>		}</code></span>
+<span class="codeline" id="line-602"><code>	}</code></span>
+<span class="codeline" id="line-603"><code>	unlock(&amp;l.lock)</code></span>
+<span class="codeline" id="line-604"><code>}</code></span>
+<span class="codeline" id="line-605"><code></code></span>
+<span class="codeline" id="line-606"><code>//go:linkname notifyListCheck sync.runtime_notifyListCheck</code></span>
+<span class="codeline" id="line-607"><code>func notifyListCheck(sz uintptr) {</code></span>
+<span class="codeline" id="line-608"><code>	if sz != unsafe.Sizeof(notifyList{}) {</code></span>
+<span class="codeline" id="line-609"><code>		print("runtime: bad notifyList size - sync=", sz, " runtime=", unsafe.Sizeof(notifyList{}), "\n")</code></span>
+<span class="codeline" id="line-610"><code>		throw("bad notifyList size")</code></span>
+<span class="codeline" id="line-611"><code>	}</code></span>
+<span class="codeline" id="line-612"><code>}</code></span>
+<span class="codeline" id="line-613"><code></code></span>
+<span class="codeline" id="line-614"><code>//go:linkname sync_nanotime sync.runtime_nanotime</code></span>
+<span class="codeline" id="line-615"><code>func sync_nanotime() int64 {</code></span>
+<span class="codeline" id="line-616"><code>	return nanotime()</code></span>
+<span class="codeline" id="line-617"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

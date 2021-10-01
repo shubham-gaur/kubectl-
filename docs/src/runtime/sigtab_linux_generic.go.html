@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sigtab_linux_generic.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sigtab_linux_generic.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build !mips</code></span>
+<span class="codeline" id="line-6"><code>// +build !mipsle</code></span>
+<span class="codeline" id="line-7"><code>// +build !mips64</code></span>
+<span class="codeline" id="line-8"><code>// +build !mips64le</code></span>
+<span class="codeline" id="line-9"><code>// +build linux</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>package runtime</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>var sigtable = [...]sigTabT{</code></span>
+<span class="codeline" id="line-14"><code>	/* 0 */ {0, "SIGNONE: no trap"},</code></span>
+<span class="codeline" id="line-15"><code>	/* 1 */ {_SigNotify + _SigKill, "SIGHUP: terminal line hangup"},</code></span>
+<span class="codeline" id="line-16"><code>	/* 2 */ {_SigNotify + _SigKill, "SIGINT: interrupt"},</code></span>
+<span class="codeline" id="line-17"><code>	/* 3 */ {_SigNotify + _SigThrow, "SIGQUIT: quit"},</code></span>
+<span class="codeline" id="line-18"><code>	/* 4 */ {_SigThrow + _SigUnblock, "SIGILL: illegal instruction"},</code></span>
+<span class="codeline" id="line-19"><code>	/* 5 */ {_SigThrow + _SigUnblock, "SIGTRAP: trace trap"},</code></span>
+<span class="codeline" id="line-20"><code>	/* 6 */ {_SigNotify + _SigThrow, "SIGABRT: abort"},</code></span>
+<span class="codeline" id="line-21"><code>	/* 7 */ {_SigPanic + _SigUnblock, "SIGBUS: bus error"},</code></span>
+<span class="codeline" id="line-22"><code>	/* 8 */ {_SigPanic + _SigUnblock, "SIGFPE: floating-point exception"},</code></span>
+<span class="codeline" id="line-23"><code>	/* 9 */ {0, "SIGKILL: kill"},</code></span>
+<span class="codeline" id="line-24"><code>	/* 10 */ {_SigNotify, "SIGUSR1: user-defined signal 1"},</code></span>
+<span class="codeline" id="line-25"><code>	/* 11 */ {_SigPanic + _SigUnblock, "SIGSEGV: segmentation violation"},</code></span>
+<span class="codeline" id="line-26"><code>	/* 12 */ {_SigNotify, "SIGUSR2: user-defined signal 2"},</code></span>
+<span class="codeline" id="line-27"><code>	/* 13 */ {_SigNotify, "SIGPIPE: write to broken pipe"},</code></span>
+<span class="codeline" id="line-28"><code>	/* 14 */ {_SigNotify, "SIGALRM: alarm clock"},</code></span>
+<span class="codeline" id="line-29"><code>	/* 15 */ {_SigNotify + _SigKill, "SIGTERM: termination"},</code></span>
+<span class="codeline" id="line-30"><code>	/* 16 */ {_SigThrow + _SigUnblock, "SIGSTKFLT: stack fault"},</code></span>
+<span class="codeline" id="line-31"><code>	/* 17 */ {_SigNotify + _SigUnblock + _SigIgn, "SIGCHLD: child status has changed"},</code></span>
+<span class="codeline" id="line-32"><code>	/* 18 */ {_SigNotify + _SigDefault + _SigIgn, "SIGCONT: continue"},</code></span>
+<span class="codeline" id="line-33"><code>	/* 19 */ {0, "SIGSTOP: stop, unblockable"},</code></span>
+<span class="codeline" id="line-34"><code>	/* 20 */ {_SigNotify + _SigDefault + _SigIgn, "SIGTSTP: keyboard stop"},</code></span>
+<span class="codeline" id="line-35"><code>	/* 21 */ {_SigNotify + _SigDefault + _SigIgn, "SIGTTIN: background read from tty"},</code></span>
+<span class="codeline" id="line-36"><code>	/* 22 */ {_SigNotify + _SigDefault + _SigIgn, "SIGTTOU: background write to tty"},</code></span>
+<span class="codeline" id="line-37"><code>	/* 23 */ {_SigNotify + _SigIgn, "SIGURG: urgent condition on socket"},</code></span>
+<span class="codeline" id="line-38"><code>	/* 24 */ {_SigNotify, "SIGXCPU: cpu limit exceeded"},</code></span>
+<span class="codeline" id="line-39"><code>	/* 25 */ {_SigNotify, "SIGXFSZ: file size limit exceeded"},</code></span>
+<span class="codeline" id="line-40"><code>	/* 26 */ {_SigNotify, "SIGVTALRM: virtual alarm clock"},</code></span>
+<span class="codeline" id="line-41"><code>	/* 27 */ {_SigNotify + _SigUnblock, "SIGPROF: profiling alarm clock"},</code></span>
+<span class="codeline" id="line-42"><code>	/* 28 */ {_SigNotify + _SigIgn, "SIGWINCH: window size change"},</code></span>
+<span class="codeline" id="line-43"><code>	/* 29 */ {_SigNotify, "SIGIO: i/o now possible"},</code></span>
+<span class="codeline" id="line-44"><code>	/* 30 */ {_SigNotify, "SIGPWR: power failure restart"},</code></span>
+<span class="codeline" id="line-45"><code>	/* 31 */ {_SigThrow, "SIGSYS: bad system call"},</code></span>
+<span class="codeline" id="line-46"><code>	/* 32 */ {_SigSetStack + _SigUnblock, "signal 32"}, /* SIGCANCEL; see issue 6997 */</code></span>
+<span class="codeline" id="line-47"><code>	/* 33 */ {_SigSetStack + _SigUnblock, "signal 33"}, /* SIGSETXID; see issues 3871, 9400, 12498 */</code></span>
+<span class="codeline" id="line-48"><code>	/* 34 */ {_SigSetStack + _SigUnblock, "signal 34"}, /* musl SIGSYNCCALL; see issue 39343 */</code></span>
+<span class="codeline" id="line-49"><code>	/* 35 */ {_SigNotify, "signal 35"},</code></span>
+<span class="codeline" id="line-50"><code>	/* 36 */ {_SigNotify, "signal 36"},</code></span>
+<span class="codeline" id="line-51"><code>	/* 37 */ {_SigNotify, "signal 37"},</code></span>
+<span class="codeline" id="line-52"><code>	/* 38 */ {_SigNotify, "signal 38"},</code></span>
+<span class="codeline" id="line-53"><code>	/* 39 */ {_SigNotify, "signal 39"},</code></span>
+<span class="codeline" id="line-54"><code>	/* 40 */ {_SigNotify, "signal 40"},</code></span>
+<span class="codeline" id="line-55"><code>	/* 41 */ {_SigNotify, "signal 41"},</code></span>
+<span class="codeline" id="line-56"><code>	/* 42 */ {_SigNotify, "signal 42"},</code></span>
+<span class="codeline" id="line-57"><code>	/* 43 */ {_SigNotify, "signal 43"},</code></span>
+<span class="codeline" id="line-58"><code>	/* 44 */ {_SigNotify, "signal 44"},</code></span>
+<span class="codeline" id="line-59"><code>	/* 45 */ {_SigNotify, "signal 45"},</code></span>
+<span class="codeline" id="line-60"><code>	/* 46 */ {_SigNotify, "signal 46"},</code></span>
+<span class="codeline" id="line-61"><code>	/* 47 */ {_SigNotify, "signal 47"},</code></span>
+<span class="codeline" id="line-62"><code>	/* 48 */ {_SigNotify, "signal 48"},</code></span>
+<span class="codeline" id="line-63"><code>	/* 49 */ {_SigNotify, "signal 49"},</code></span>
+<span class="codeline" id="line-64"><code>	/* 50 */ {_SigNotify, "signal 50"},</code></span>
+<span class="codeline" id="line-65"><code>	/* 51 */ {_SigNotify, "signal 51"},</code></span>
+<span class="codeline" id="line-66"><code>	/* 52 */ {_SigNotify, "signal 52"},</code></span>
+<span class="codeline" id="line-67"><code>	/* 53 */ {_SigNotify, "signal 53"},</code></span>
+<span class="codeline" id="line-68"><code>	/* 54 */ {_SigNotify, "signal 54"},</code></span>
+<span class="codeline" id="line-69"><code>	/* 55 */ {_SigNotify, "signal 55"},</code></span>
+<span class="codeline" id="line-70"><code>	/* 56 */ {_SigNotify, "signal 56"},</code></span>
+<span class="codeline" id="line-71"><code>	/* 57 */ {_SigNotify, "signal 57"},</code></span>
+<span class="codeline" id="line-72"><code>	/* 58 */ {_SigNotify, "signal 58"},</code></span>
+<span class="codeline" id="line-73"><code>	/* 59 */ {_SigNotify, "signal 59"},</code></span>
+<span class="codeline" id="line-74"><code>	/* 60 */ {_SigNotify, "signal 60"},</code></span>
+<span class="codeline" id="line-75"><code>	/* 61 */ {_SigNotify, "signal 61"},</code></span>
+<span class="codeline" id="line-76"><code>	/* 62 */ {_SigNotify, "signal 62"},</code></span>
+<span class="codeline" id="line-77"><code>	/* 63 */ {_SigNotify, "signal 63"},</code></span>
+<span class="codeline" id="line-78"><code>	/* 64 */ {_SigNotify, "signal 64"},</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

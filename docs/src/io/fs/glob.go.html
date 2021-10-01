@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: glob.go in package io/fs</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	glob.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/io/fs.html">io/fs</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2020 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package fs</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"path"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// A GlobFS is a file system with a Glob method.</code></span>
+<span class="codeline" id="line-12"><code>type GlobFS interface {</code></span>
+<span class="codeline" id="line-13"><code>	FS</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>	// Glob returns the names of all files matching pattern,</code></span>
+<span class="codeline" id="line-16"><code>	// providing an implementation of the top-level</code></span>
+<span class="codeline" id="line-17"><code>	// Glob function.</code></span>
+<span class="codeline" id="line-18"><code>	Glob(pattern string) ([]string, error)</code></span>
+<span class="codeline" id="line-19"><code>}</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>// Glob returns the names of all files matching pattern or nil</code></span>
+<span class="codeline" id="line-22"><code>// if there is no matching file. The syntax of patterns is the same</code></span>
+<span class="codeline" id="line-23"><code>// as in path.Match. The pattern may describe hierarchical names such as</code></span>
+<span class="codeline" id="line-24"><code>// usr/*/bin/ed.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// Glob ignores file system errors such as I/O errors reading directories.</code></span>
+<span class="codeline" id="line-27"><code>// The only possible returned error is path.ErrBadPattern, reporting that</code></span>
+<span class="codeline" id="line-28"><code>// the pattern is malformed.</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>// If fs implements GlobFS, Glob calls fs.Glob.</code></span>
+<span class="codeline" id="line-31"><code>// Otherwise, Glob uses ReadDir to traverse the directory tree</code></span>
+<span class="codeline" id="line-32"><code>// and look for matches for the pattern.</code></span>
+<span class="codeline" id="line-33"><code>func Glob(fsys FS, pattern string) (matches []string, err error) {</code></span>
+<span class="codeline" id="line-34"><code>	if fsys, ok := fsys.(GlobFS); ok {</code></span>
+<span class="codeline" id="line-35"><code>		return fsys.Glob(pattern)</code></span>
+<span class="codeline" id="line-36"><code>	}</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>	// Check pattern is well-formed.</code></span>
+<span class="codeline" id="line-39"><code>	if _, err := path.Match(pattern, ""); err != nil {</code></span>
+<span class="codeline" id="line-40"><code>		return nil, err</code></span>
+<span class="codeline" id="line-41"><code>	}</code></span>
+<span class="codeline" id="line-42"><code>	if !hasMeta(pattern) {</code></span>
+<span class="codeline" id="line-43"><code>		if _, err = Stat(fsys, pattern); err != nil {</code></span>
+<span class="codeline" id="line-44"><code>			return nil, nil</code></span>
+<span class="codeline" id="line-45"><code>		}</code></span>
+<span class="codeline" id="line-46"><code>		return []string{pattern}, nil</code></span>
+<span class="codeline" id="line-47"><code>	}</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>	dir, file := path.Split(pattern)</code></span>
+<span class="codeline" id="line-50"><code>	dir = cleanGlobPath(dir)</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>	if !hasMeta(dir) {</code></span>
+<span class="codeline" id="line-53"><code>		return glob(fsys, dir, file, nil)</code></span>
+<span class="codeline" id="line-54"><code>	}</code></span>
+<span class="codeline" id="line-55"><code></code></span>
+<span class="codeline" id="line-56"><code>	// Prevent infinite recursion. See issue 15879.</code></span>
+<span class="codeline" id="line-57"><code>	if dir == pattern {</code></span>
+<span class="codeline" id="line-58"><code>		return nil, path.ErrBadPattern</code></span>
+<span class="codeline" id="line-59"><code>	}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>	var m []string</code></span>
+<span class="codeline" id="line-62"><code>	m, err = Glob(fsys, dir)</code></span>
+<span class="codeline" id="line-63"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-64"><code>		return</code></span>
+<span class="codeline" id="line-65"><code>	}</code></span>
+<span class="codeline" id="line-66"><code>	for _, d := range m {</code></span>
+<span class="codeline" id="line-67"><code>		matches, err = glob(fsys, d, file, matches)</code></span>
+<span class="codeline" id="line-68"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-69"><code>			return</code></span>
+<span class="codeline" id="line-70"><code>		}</code></span>
+<span class="codeline" id="line-71"><code>	}</code></span>
+<span class="codeline" id="line-72"><code>	return</code></span>
+<span class="codeline" id="line-73"><code>}</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>// cleanGlobPath prepares path for glob matching.</code></span>
+<span class="codeline" id="line-76"><code>func cleanGlobPath(path string) string {</code></span>
+<span class="codeline" id="line-77"><code>	switch path {</code></span>
+<span class="codeline" id="line-78"><code>	case "":</code></span>
+<span class="codeline" id="line-79"><code>		return "."</code></span>
+<span class="codeline" id="line-80"><code>	default:</code></span>
+<span class="codeline" id="line-81"><code>		return path[0 : len(path)-1] // chop off trailing separator</code></span>
+<span class="codeline" id="line-82"><code>	}</code></span>
+<span class="codeline" id="line-83"><code>}</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>// glob searches for files matching pattern in the directory dir</code></span>
+<span class="codeline" id="line-86"><code>// and appends them to matches, returning the updated slice.</code></span>
+<span class="codeline" id="line-87"><code>// If the directory cannot be opened, glob returns the existing matches.</code></span>
+<span class="codeline" id="line-88"><code>// New matches are added in lexicographical order.</code></span>
+<span class="codeline" id="line-89"><code>func glob(fs FS, dir, pattern string, matches []string) (m []string, e error) {</code></span>
+<span class="codeline" id="line-90"><code>	m = matches</code></span>
+<span class="codeline" id="line-91"><code>	infos, err := ReadDir(fs, dir)</code></span>
+<span class="codeline" id="line-92"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-93"><code>		return // ignore I/O error</code></span>
+<span class="codeline" id="line-94"><code>	}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>	for _, info := range infos {</code></span>
+<span class="codeline" id="line-97"><code>		n := info.Name()</code></span>
+<span class="codeline" id="line-98"><code>		matched, err := path.Match(pattern, n)</code></span>
+<span class="codeline" id="line-99"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-100"><code>			return m, err</code></span>
+<span class="codeline" id="line-101"><code>		}</code></span>
+<span class="codeline" id="line-102"><code>		if matched {</code></span>
+<span class="codeline" id="line-103"><code>			m = append(m, path.Join(dir, n))</code></span>
+<span class="codeline" id="line-104"><code>		}</code></span>
+<span class="codeline" id="line-105"><code>	}</code></span>
+<span class="codeline" id="line-106"><code>	return</code></span>
+<span class="codeline" id="line-107"><code>}</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>// hasMeta reports whether path contains any of the magic characters</code></span>
+<span class="codeline" id="line-110"><code>// recognized by path.Match.</code></span>
+<span class="codeline" id="line-111"><code>func hasMeta(path string) bool {</code></span>
+<span class="codeline" id="line-112"><code>	for i := 0; i &lt; len(path); i++ {</code></span>
+<span class="codeline" id="line-113"><code>		switch path[i] {</code></span>
+<span class="codeline" id="line-114"><code>		case '*', '?', '[', '\\':</code></span>
+<span class="codeline" id="line-115"><code>			return true</code></span>
+<span class="codeline" id="line-116"><code>		}</code></span>
+<span class="codeline" id="line-117"><code>	}</code></span>
+<span class="codeline" id="line-118"><code>	return false</code></span>
+<span class="codeline" id="line-119"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

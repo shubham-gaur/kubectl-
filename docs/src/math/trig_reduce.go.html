@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: trig_reduce.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	trig_reduce.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"math/bits"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// reduceThreshold is the maximum value of x where the reduction using Pi/4</code></span>
+<span class="codeline" id="line-12"><code>// in 3 float64 parts still gives accurate results. This threshold</code></span>
+<span class="codeline" id="line-13"><code>// is set by y*C being representable as a float64 without error</code></span>
+<span class="codeline" id="line-14"><code>// where y is given by y = floor(x * (4 / Pi)) and C is the leading partial</code></span>
+<span class="codeline" id="line-15"><code>// terms of 4/Pi. Since the leading terms (PI4A and PI4B in sin.go) have 30</code></span>
+<span class="codeline" id="line-16"><code>// and 32 trailing zero bits, y should have less than 30 significant bits.</code></span>
+<span class="codeline" id="line-17"><code>//	y &lt; 1&lt;&lt;30  -&gt; floor(x*4/Pi) &lt; 1&lt;&lt;30 -&gt; x &lt; (1&lt;&lt;30 - 1) * Pi/4</code></span>
+<span class="codeline" id="line-18"><code>// So, conservatively we can take x &lt; 1&lt;&lt;29.</code></span>
+<span class="codeline" id="line-19"><code>// Above this threshold Payne-Hanek range reduction must be used.</code></span>
+<span class="codeline" id="line-20"><code>const reduceThreshold = 1 &lt;&lt; 29</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>// trigReduce implements Payne-Hanek range reduction by Pi/4</code></span>
+<span class="codeline" id="line-23"><code>// for x &gt; 0. It returns the integer part mod 8 (j) and</code></span>
+<span class="codeline" id="line-24"><code>// the fractional part (z) of x / (Pi/4).</code></span>
+<span class="codeline" id="line-25"><code>// The implementation is based on:</code></span>
+<span class="codeline" id="line-26"><code>// "ARGUMENT REDUCTION FOR HUGE ARGUMENTS: Good to the Last Bit"</code></span>
+<span class="codeline" id="line-27"><code>// K. C. Ng et al, March 24, 1992</code></span>
+<span class="codeline" id="line-28"><code>// The simulated multi-precision calculation of x*B uses 64-bit integer arithmetic.</code></span>
+<span class="codeline" id="line-29"><code>func trigReduce(x float64) (j uint64, z float64) {</code></span>
+<span class="codeline" id="line-30"><code>	const PI4 = Pi / 4</code></span>
+<span class="codeline" id="line-31"><code>	if x &lt; PI4 {</code></span>
+<span class="codeline" id="line-32"><code>		return 0, x</code></span>
+<span class="codeline" id="line-33"><code>	}</code></span>
+<span class="codeline" id="line-34"><code>	// Extract out the integer and exponent such that,</code></span>
+<span class="codeline" id="line-35"><code>	// x = ix * 2 ** exp.</code></span>
+<span class="codeline" id="line-36"><code>	ix := Float64bits(x)</code></span>
+<span class="codeline" id="line-37"><code>	exp := int(ix&gt;&gt;shift&amp;mask) - bias - shift</code></span>
+<span class="codeline" id="line-38"><code>	ix &amp;^= mask &lt;&lt; shift</code></span>
+<span class="codeline" id="line-39"><code>	ix |= 1 &lt;&lt; shift</code></span>
+<span class="codeline" id="line-40"><code>	// Use the exponent to extract the 3 appropriate uint64 digits from mPi4,</code></span>
+<span class="codeline" id="line-41"><code>	// B ~ (z0, z1, z2), such that the product leading digit has the exponent -61.</code></span>
+<span class="codeline" id="line-42"><code>	// Note, exp &gt;= -53 since x &gt;= PI4 and exp &lt; 971 for maximum float64.</code></span>
+<span class="codeline" id="line-43"><code>	digit, bitshift := uint(exp+61)/64, uint(exp+61)%64</code></span>
+<span class="codeline" id="line-44"><code>	z0 := (mPi4[digit] &lt;&lt; bitshift) | (mPi4[digit+1] &gt;&gt; (64 - bitshift))</code></span>
+<span class="codeline" id="line-45"><code>	z1 := (mPi4[digit+1] &lt;&lt; bitshift) | (mPi4[digit+2] &gt;&gt; (64 - bitshift))</code></span>
+<span class="codeline" id="line-46"><code>	z2 := (mPi4[digit+2] &lt;&lt; bitshift) | (mPi4[digit+3] &gt;&gt; (64 - bitshift))</code></span>
+<span class="codeline" id="line-47"><code>	// Multiply mantissa by the digits and extract the upper two digits (hi, lo).</code></span>
+<span class="codeline" id="line-48"><code>	z2hi, _ := bits.Mul64(z2, ix)</code></span>
+<span class="codeline" id="line-49"><code>	z1hi, z1lo := bits.Mul64(z1, ix)</code></span>
+<span class="codeline" id="line-50"><code>	z0lo := z0 * ix</code></span>
+<span class="codeline" id="line-51"><code>	lo, c := bits.Add64(z1lo, z2hi, 0)</code></span>
+<span class="codeline" id="line-52"><code>	hi, _ := bits.Add64(z0lo, z1hi, c)</code></span>
+<span class="codeline" id="line-53"><code>	// The top 3 bits are j.</code></span>
+<span class="codeline" id="line-54"><code>	j = hi &gt;&gt; 61</code></span>
+<span class="codeline" id="line-55"><code>	// Extract the fraction and find its magnitude.</code></span>
+<span class="codeline" id="line-56"><code>	hi = hi&lt;&lt;3 | lo&gt;&gt;61</code></span>
+<span class="codeline" id="line-57"><code>	lz := uint(bits.LeadingZeros64(hi))</code></span>
+<span class="codeline" id="line-58"><code>	e := uint64(bias - (lz + 1))</code></span>
+<span class="codeline" id="line-59"><code>	// Clear implicit mantissa bit and shift into place.</code></span>
+<span class="codeline" id="line-60"><code>	hi = (hi &lt;&lt; (lz + 1)) | (lo &gt;&gt; (64 - (lz + 1)))</code></span>
+<span class="codeline" id="line-61"><code>	hi &gt;&gt;= 64 - shift</code></span>
+<span class="codeline" id="line-62"><code>	// Include the exponent and convert to a float.</code></span>
+<span class="codeline" id="line-63"><code>	hi |= e &lt;&lt; shift</code></span>
+<span class="codeline" id="line-64"><code>	z = Float64frombits(hi)</code></span>
+<span class="codeline" id="line-65"><code>	// Map zeros to origin.</code></span>
+<span class="codeline" id="line-66"><code>	if j&amp;1 == 1 {</code></span>
+<span class="codeline" id="line-67"><code>		j++</code></span>
+<span class="codeline" id="line-68"><code>		j &amp;= 7</code></span>
+<span class="codeline" id="line-69"><code>		z--</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code>	// Multiply the fractional part by pi/4.</code></span>
+<span class="codeline" id="line-72"><code>	return j, z * PI4</code></span>
+<span class="codeline" id="line-73"><code>}</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>// mPi4 is the binary digits of 4/pi as a uint64 array,</code></span>
+<span class="codeline" id="line-76"><code>// that is, 4/pi = Sum mPi4[i]*2^(-64*i)</code></span>
+<span class="codeline" id="line-77"><code>// 19 64-bit digits and the leading one bit give 1217 bits</code></span>
+<span class="codeline" id="line-78"><code>// of precision to handle the largest possible float64 exponent.</code></span>
+<span class="codeline" id="line-79"><code>var mPi4 = [...]uint64{</code></span>
+<span class="codeline" id="line-80"><code>	0x0000000000000001,</code></span>
+<span class="codeline" id="line-81"><code>	0x45f306dc9c882a53,</code></span>
+<span class="codeline" id="line-82"><code>	0xf84eafa3ea69bb81,</code></span>
+<span class="codeline" id="line-83"><code>	0xb6c52b3278872083,</code></span>
+<span class="codeline" id="line-84"><code>	0xfca2c757bd778ac3,</code></span>
+<span class="codeline" id="line-85"><code>	0x6e48dc74849ba5c0,</code></span>
+<span class="codeline" id="line-86"><code>	0x0c925dd413a32439,</code></span>
+<span class="codeline" id="line-87"><code>	0xfc3bd63962534e7d,</code></span>
+<span class="codeline" id="line-88"><code>	0xd1046bea5d768909,</code></span>
+<span class="codeline" id="line-89"><code>	0xd338e04d68befc82,</code></span>
+<span class="codeline" id="line-90"><code>	0x7323ac7306a673e9,</code></span>
+<span class="codeline" id="line-91"><code>	0x3908bf177bf25076,</code></span>
+<span class="codeline" id="line-92"><code>	0x3ff12fffbc0b301f,</code></span>
+<span class="codeline" id="line-93"><code>	0xde5e2316b414da3e,</code></span>
+<span class="codeline" id="line-94"><code>	0xda6cfd9e4f96136e,</code></span>
+<span class="codeline" id="line-95"><code>	0x9e8c7ecd3cbfd45a,</code></span>
+<span class="codeline" id="line-96"><code>	0xea4f758fd7cbe2f6,</code></span>
+<span class="codeline" id="line-97"><code>	0x7a0e73ef14a525d4,</code></span>
+<span class="codeline" id="line-98"><code>	0xd7f6bf623f1aba10,</code></span>
+<span class="codeline" id="line-99"><code>	0xac06608df8f6d757,</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

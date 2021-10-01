@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: main.go in package command-line-arguments</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	main.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/command-line-arguments.html">command-line-arguments</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>package main</code></span>
+<span class="codeline" id="line-2"><code></code></span>
+<span class="codeline" id="line-3"><code>import (</code></span>
+<span class="codeline" id="line-4"><code>	"fmt"</code></span>
+<span class="codeline" id="line-5"><code>	"os"</code></span>
+<span class="codeline" id="line-6"><code>	"os/signal"</code></span>
+<span class="codeline" id="line-7"><code>	"syscall"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>	help "github.com/shubham-gaur/kubectl++/helper"</code></span>
+<span class="codeline" id="line-10"><code>	log "github.com/shubham-gaur/kubectl++/logger"</code></span>
+<span class="codeline" id="line-11"><code>	"github.com/shubham-gaur/kubectl++/services"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>func main() {</code></span>
+<span class="codeline" id="line-15"><code>	c := make(chan os.Signal)</code></span>
+<span class="codeline" id="line-16"><code>	signal.Notify(c, os.Interrupt, syscall.SIGTERM)</code></span>
+<span class="codeline" id="line-17"><code>	go func() {</code></span>
+<span class="codeline" id="line-18"><code>		&lt;-c</code></span>
+<span class="codeline" id="line-19"><code>		fmt.Println()</code></span>
+<span class="codeline" id="line-20"><code>		log.Info.Printf("😊 Thank you! Please visit again... 😊")</code></span>
+<span class="codeline" id="line-21"><code>		os.Exit(0)</code></span>
+<span class="codeline" id="line-22"><code>	}()</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>	options := make(map[int]string)</code></span>
+<span class="codeline" id="line-25"><code>	options[0] = "return"</code></span>
+<span class="codeline" id="line-26"><code>	options[1] = "perform operations on namespace"</code></span>
+<span class="codeline" id="line-27"><code>	options[2] = "perform operations on pod"</code></span>
+<span class="codeline" id="line-28"><code>	options[3] = "perform operations on container"</code></span>
+<span class="codeline" id="line-29"><code>	options[4] = "login specific container"</code></span>
+<span class="codeline" id="line-30"><code>	options[5] = "collect logs of container"</code></span>
+<span class="codeline" id="line-31"><code>	options[6] = "exit"</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	log.Info.Printf("😄 Initializing kubectl++ 😄")</code></span>
+<span class="codeline" id="line-34"><code>	var opt int</code></span>
+<span class="codeline" id="line-35"><code>	for {</code></span>
+<span class="codeline" id="line-36"><code>		help.Default(options)</code></span>
+<span class="codeline" id="line-37"><code>		help.TakeIntInput(&amp;opt, len(options))</code></span>
+<span class="codeline" id="line-38"><code>		switch options[opt] {</code></span>
+<span class="codeline" id="line-39"><code>		case options[0]:</code></span>
+<span class="codeline" id="line-40"><code>			log.Info.Printf("😊 Thank you! Please visit again... 😊")</code></span>
+<span class="codeline" id="line-41"><code>			return</code></span>
+<span class="codeline" id="line-42"><code>		case options[1]:</code></span>
+<span class="codeline" id="line-43"><code>			services.MarkNamespace()</code></span>
+<span class="codeline" id="line-44"><code>		case options[2]:</code></span>
+<span class="codeline" id="line-45"><code>			services.MarkPod()</code></span>
+<span class="codeline" id="line-46"><code>		case options[3]:</code></span>
+<span class="codeline" id="line-47"><code>			services.MarkContainer()</code></span>
+<span class="codeline" id="line-48"><code>		case options[4]:</code></span>
+<span class="codeline" id="line-49"><code>			services.Login()</code></span>
+<span class="codeline" id="line-50"><code>		case options[5]:</code></span>
+<span class="codeline" id="line-51"><code>			services.CollectLogForContainer()</code></span>
+<span class="codeline" id="line-52"><code>		case options[6]:</code></span>
+<span class="codeline" id="line-53"><code>			log.Info.Printf("😊 Thank you! Please visit again... 😊")</code></span>
+<span class="codeline" id="line-54"><code>			return</code></span>
+<span class="codeline" id="line-55"><code>		}</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

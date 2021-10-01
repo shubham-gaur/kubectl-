@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: pow10.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	pow10.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// pow10tab stores the pre-computed values 10**i for i &lt; 32.</code></span>
+<span class="codeline" id="line-8"><code>var pow10tab = [...]float64{</code></span>
+<span class="codeline" id="line-9"><code>	1e00, 1e01, 1e02, 1e03, 1e04, 1e05, 1e06, 1e07, 1e08, 1e09,</code></span>
+<span class="codeline" id="line-10"><code>	1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,</code></span>
+<span class="codeline" id="line-11"><code>	1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27, 1e28, 1e29,</code></span>
+<span class="codeline" id="line-12"><code>	1e30, 1e31,</code></span>
+<span class="codeline" id="line-13"><code>}</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// pow10postab32 stores the pre-computed value for 10**(i*32) at index i.</code></span>
+<span class="codeline" id="line-16"><code>var pow10postab32 = [...]float64{</code></span>
+<span class="codeline" id="line-17"><code>	1e00, 1e32, 1e64, 1e96, 1e128, 1e160, 1e192, 1e224, 1e256, 1e288,</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// pow10negtab32 stores the pre-computed value for 10**(-i*32) at index i.</code></span>
+<span class="codeline" id="line-21"><code>var pow10negtab32 = [...]float64{</code></span>
+<span class="codeline" id="line-22"><code>	1e-00, 1e-32, 1e-64, 1e-96, 1e-128, 1e-160, 1e-192, 1e-224, 1e-256, 1e-288, 1e-320,</code></span>
+<span class="codeline" id="line-23"><code>}</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>// Pow10 returns 10**n, the base-10 exponential of n.</code></span>
+<span class="codeline" id="line-26"><code>//</code></span>
+<span class="codeline" id="line-27"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-28"><code>//	Pow10(n) =    0 for n &lt; -323</code></span>
+<span class="codeline" id="line-29"><code>//	Pow10(n) = +Inf for n &gt; 308</code></span>
+<span class="codeline" id="line-30"><code>func Pow10(n int) float64 {</code></span>
+<span class="codeline" id="line-31"><code>	if 0 &lt;= n &amp;&amp; n &lt;= 308 {</code></span>
+<span class="codeline" id="line-32"><code>		return pow10postab32[uint(n)/32] * pow10tab[uint(n)%32]</code></span>
+<span class="codeline" id="line-33"><code>	}</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>	if -323 &lt;= n &amp;&amp; n &lt;= 0 {</code></span>
+<span class="codeline" id="line-36"><code>		return pow10negtab32[uint(-n)/32] / pow10tab[uint(-n)%32]</code></span>
+<span class="codeline" id="line-37"><code>	}</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>	// n &lt; -323 || 308 &lt; n</code></span>
+<span class="codeline" id="line-40"><code>	if n &gt; 0 {</code></span>
+<span class="codeline" id="line-41"><code>		return Inf(1)</code></span>
+<span class="codeline" id="line-42"><code>	}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	// n &lt; -323</code></span>
+<span class="codeline" id="line-45"><code>	return 0</code></span>
+<span class="codeline" id="line-46"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

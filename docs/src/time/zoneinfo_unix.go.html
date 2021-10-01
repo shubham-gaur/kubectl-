@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: zoneinfo_unix.go in package time</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	zoneinfo_unix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/time.html">time</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin,!ios dragonfly freebsd linux,!android netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Parse "zoneinfo" time zone file.</code></span>
+<span class="codeline" id="line-8"><code>// This is a fairly standard file format used on OS X, Linux, BSD, Sun, and others.</code></span>
+<span class="codeline" id="line-9"><code>// See tzfile(5), https://en.wikipedia.org/wiki/Zoneinfo,</code></span>
+<span class="codeline" id="line-10"><code>// and ftp://munnari.oz.au/pub/oldtz/</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>package time</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>import (</code></span>
+<span class="codeline" id="line-15"><code>	"runtime"</code></span>
+<span class="codeline" id="line-16"><code>	"syscall"</code></span>
+<span class="codeline" id="line-17"><code>)</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>// Many systems use /usr/share/zoneinfo, Solaris 2 has</code></span>
+<span class="codeline" id="line-20"><code>// /usr/share/lib/zoneinfo, IRIX 6 has /usr/lib/locale/TZ.</code></span>
+<span class="codeline" id="line-21"><code>var zoneSources = []string{</code></span>
+<span class="codeline" id="line-22"><code>	"/usr/share/zoneinfo/",</code></span>
+<span class="codeline" id="line-23"><code>	"/usr/share/lib/zoneinfo/",</code></span>
+<span class="codeline" id="line-24"><code>	"/usr/lib/locale/TZ/",</code></span>
+<span class="codeline" id="line-25"><code>	runtime.GOROOT() + "/lib/time/zoneinfo.zip",</code></span>
+<span class="codeline" id="line-26"><code>}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>func initLocal() {</code></span>
+<span class="codeline" id="line-29"><code>	// consult $TZ to find the time zone to use.</code></span>
+<span class="codeline" id="line-30"><code>	// no $TZ means use the system default /etc/localtime.</code></span>
+<span class="codeline" id="line-31"><code>	// $TZ="" means use UTC.</code></span>
+<span class="codeline" id="line-32"><code>	// $TZ="foo" or $TZ=":foo" if foo is an absolute path, then the file pointed</code></span>
+<span class="codeline" id="line-33"><code>	// by foo will be used to initialize timezone; otherwise, file</code></span>
+<span class="codeline" id="line-34"><code>	// /usr/share/zoneinfo/foo will be used.</code></span>
+<span class="codeline" id="line-35"><code></code></span>
+<span class="codeline" id="line-36"><code>	tz, ok := syscall.Getenv("TZ")</code></span>
+<span class="codeline" id="line-37"><code>	switch {</code></span>
+<span class="codeline" id="line-38"><code>	case !ok:</code></span>
+<span class="codeline" id="line-39"><code>		z, err := loadLocation("localtime", []string{"/etc"})</code></span>
+<span class="codeline" id="line-40"><code>		if err == nil {</code></span>
+<span class="codeline" id="line-41"><code>			localLoc = *z</code></span>
+<span class="codeline" id="line-42"><code>			localLoc.name = "Local"</code></span>
+<span class="codeline" id="line-43"><code>			return</code></span>
+<span class="codeline" id="line-44"><code>		}</code></span>
+<span class="codeline" id="line-45"><code>	case tz != "":</code></span>
+<span class="codeline" id="line-46"><code>		if tz[0] == ':' {</code></span>
+<span class="codeline" id="line-47"><code>			tz = tz[1:]</code></span>
+<span class="codeline" id="line-48"><code>		}</code></span>
+<span class="codeline" id="line-49"><code>		if tz != "" &amp;&amp; tz[0] == '/' {</code></span>
+<span class="codeline" id="line-50"><code>			if z, err := loadLocation(tz, []string{""}); err == nil {</code></span>
+<span class="codeline" id="line-51"><code>				localLoc = *z</code></span>
+<span class="codeline" id="line-52"><code>				if tz == "/etc/localtime" {</code></span>
+<span class="codeline" id="line-53"><code>					localLoc.name = "Local"</code></span>
+<span class="codeline" id="line-54"><code>				} else {</code></span>
+<span class="codeline" id="line-55"><code>					localLoc.name = tz</code></span>
+<span class="codeline" id="line-56"><code>				}</code></span>
+<span class="codeline" id="line-57"><code>				return</code></span>
+<span class="codeline" id="line-58"><code>			}</code></span>
+<span class="codeline" id="line-59"><code>		} else if tz != "" &amp;&amp; tz != "UTC" {</code></span>
+<span class="codeline" id="line-60"><code>			if z, err := loadLocation(tz, zoneSources); err == nil {</code></span>
+<span class="codeline" id="line-61"><code>				localLoc = *z</code></span>
+<span class="codeline" id="line-62"><code>				return</code></span>
+<span class="codeline" id="line-63"><code>			}</code></span>
+<span class="codeline" id="line-64"><code>		}</code></span>
+<span class="codeline" id="line-65"><code>	}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>	// Fall back to UTC.</code></span>
+<span class="codeline" id="line-68"><code>	localLoc.name = "UTC"</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

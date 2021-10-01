@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: cpu_x86.go in package internal/cpu</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	cpu_x86.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/cpu.html">internal/cpu</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build 386 amd64</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package cpu</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>const CacheLinePadSize = 64</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// cpuid is implemented in cpu_x86.s.</code></span>
+<span class="codeline" id="line-12"><code>func cpuid(eaxArg, ecxArg uint32) (eax, ebx, ecx, edx uint32)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>// xgetbv with ecx = 0 is implemented in cpu_x86.s.</code></span>
+<span class="codeline" id="line-15"><code>func xgetbv() (eax, edx uint32)</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>const (</code></span>
+<span class="codeline" id="line-18"><code>	// edx bits</code></span>
+<span class="codeline" id="line-19"><code>	cpuid_SSE2 = 1 &lt;&lt; 26</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>	// ecx bits</code></span>
+<span class="codeline" id="line-22"><code>	cpuid_SSE3      = 1 &lt;&lt; 0</code></span>
+<span class="codeline" id="line-23"><code>	cpuid_PCLMULQDQ = 1 &lt;&lt; 1</code></span>
+<span class="codeline" id="line-24"><code>	cpuid_SSSE3     = 1 &lt;&lt; 9</code></span>
+<span class="codeline" id="line-25"><code>	cpuid_FMA       = 1 &lt;&lt; 12</code></span>
+<span class="codeline" id="line-26"><code>	cpuid_SSE41     = 1 &lt;&lt; 19</code></span>
+<span class="codeline" id="line-27"><code>	cpuid_SSE42     = 1 &lt;&lt; 20</code></span>
+<span class="codeline" id="line-28"><code>	cpuid_POPCNT    = 1 &lt;&lt; 23</code></span>
+<span class="codeline" id="line-29"><code>	cpuid_AES       = 1 &lt;&lt; 25</code></span>
+<span class="codeline" id="line-30"><code>	cpuid_OSXSAVE   = 1 &lt;&lt; 27</code></span>
+<span class="codeline" id="line-31"><code>	cpuid_AVX       = 1 &lt;&lt; 28</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	// ebx bits</code></span>
+<span class="codeline" id="line-34"><code>	cpuid_BMI1 = 1 &lt;&lt; 3</code></span>
+<span class="codeline" id="line-35"><code>	cpuid_AVX2 = 1 &lt;&lt; 5</code></span>
+<span class="codeline" id="line-36"><code>	cpuid_BMI2 = 1 &lt;&lt; 8</code></span>
+<span class="codeline" id="line-37"><code>	cpuid_ERMS = 1 &lt;&lt; 9</code></span>
+<span class="codeline" id="line-38"><code>	cpuid_ADX  = 1 &lt;&lt; 19</code></span>
+<span class="codeline" id="line-39"><code>)</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>var maxExtendedFunctionInformation uint32</code></span>
+<span class="codeline" id="line-42"><code></code></span>
+<span class="codeline" id="line-43"><code>func doinit() {</code></span>
+<span class="codeline" id="line-44"><code>	options = []option{</code></span>
+<span class="codeline" id="line-45"><code>		{Name: "adx", Feature: &amp;X86.HasADX},</code></span>
+<span class="codeline" id="line-46"><code>		{Name: "aes", Feature: &amp;X86.HasAES},</code></span>
+<span class="codeline" id="line-47"><code>		{Name: "avx", Feature: &amp;X86.HasAVX},</code></span>
+<span class="codeline" id="line-48"><code>		{Name: "avx2", Feature: &amp;X86.HasAVX2},</code></span>
+<span class="codeline" id="line-49"><code>		{Name: "bmi1", Feature: &amp;X86.HasBMI1},</code></span>
+<span class="codeline" id="line-50"><code>		{Name: "bmi2", Feature: &amp;X86.HasBMI2},</code></span>
+<span class="codeline" id="line-51"><code>		{Name: "erms", Feature: &amp;X86.HasERMS},</code></span>
+<span class="codeline" id="line-52"><code>		{Name: "fma", Feature: &amp;X86.HasFMA},</code></span>
+<span class="codeline" id="line-53"><code>		{Name: "pclmulqdq", Feature: &amp;X86.HasPCLMULQDQ},</code></span>
+<span class="codeline" id="line-54"><code>		{Name: "popcnt", Feature: &amp;X86.HasPOPCNT},</code></span>
+<span class="codeline" id="line-55"><code>		{Name: "sse3", Feature: &amp;X86.HasSSE3},</code></span>
+<span class="codeline" id="line-56"><code>		{Name: "sse41", Feature: &amp;X86.HasSSE41},</code></span>
+<span class="codeline" id="line-57"><code>		{Name: "sse42", Feature: &amp;X86.HasSSE42},</code></span>
+<span class="codeline" id="line-58"><code>		{Name: "ssse3", Feature: &amp;X86.HasSSSE3},</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>		// These capabilities should always be enabled on amd64:</code></span>
+<span class="codeline" id="line-61"><code>		{Name: "sse2", Feature: &amp;X86.HasSSE2, Required: GOARCH == "amd64"},</code></span>
+<span class="codeline" id="line-62"><code>	}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>	maxID, _, _, _ := cpuid(0, 0)</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>	if maxID &lt; 1 {</code></span>
+<span class="codeline" id="line-67"><code>		return</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>	maxExtendedFunctionInformation, _, _, _ = cpuid(0x80000000, 0)</code></span>
+<span class="codeline" id="line-71"><code></code></span>
+<span class="codeline" id="line-72"><code>	_, _, ecx1, edx1 := cpuid(1, 0)</code></span>
+<span class="codeline" id="line-73"><code>	X86.HasSSE2 = isSet(edx1, cpuid_SSE2)</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>	X86.HasSSE3 = isSet(ecx1, cpuid_SSE3)</code></span>
+<span class="codeline" id="line-76"><code>	X86.HasPCLMULQDQ = isSet(ecx1, cpuid_PCLMULQDQ)</code></span>
+<span class="codeline" id="line-77"><code>	X86.HasSSSE3 = isSet(ecx1, cpuid_SSSE3)</code></span>
+<span class="codeline" id="line-78"><code>	X86.HasSSE41 = isSet(ecx1, cpuid_SSE41)</code></span>
+<span class="codeline" id="line-79"><code>	X86.HasSSE42 = isSet(ecx1, cpuid_SSE42)</code></span>
+<span class="codeline" id="line-80"><code>	X86.HasPOPCNT = isSet(ecx1, cpuid_POPCNT)</code></span>
+<span class="codeline" id="line-81"><code>	X86.HasAES = isSet(ecx1, cpuid_AES)</code></span>
+<span class="codeline" id="line-82"><code></code></span>
+<span class="codeline" id="line-83"><code>	// OSXSAVE can be false when using older Operating Systems</code></span>
+<span class="codeline" id="line-84"><code>	// or when explicitly disabled on newer Operating Systems by</code></span>
+<span class="codeline" id="line-85"><code>	// e.g. setting the xsavedisable boot option on Windows 10.</code></span>
+<span class="codeline" id="line-86"><code>	X86.HasOSXSAVE = isSet(ecx1, cpuid_OSXSAVE)</code></span>
+<span class="codeline" id="line-87"><code></code></span>
+<span class="codeline" id="line-88"><code>	// The FMA instruction set extension only has VEX prefixed instructions.</code></span>
+<span class="codeline" id="line-89"><code>	// VEX prefixed instructions require OSXSAVE to be enabled.</code></span>
+<span class="codeline" id="line-90"><code>	// See Intel 64 and IA-32 Architecture Software Developer’s Manual Volume 2</code></span>
+<span class="codeline" id="line-91"><code>	// Section 2.4 "AVX and SSE Instruction Exception Specification"</code></span>
+<span class="codeline" id="line-92"><code>	X86.HasFMA = isSet(ecx1, cpuid_FMA) &amp;&amp; X86.HasOSXSAVE</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>	osSupportsAVX := false</code></span>
+<span class="codeline" id="line-95"><code>	// For XGETBV, OSXSAVE bit is required and sufficient.</code></span>
+<span class="codeline" id="line-96"><code>	if X86.HasOSXSAVE {</code></span>
+<span class="codeline" id="line-97"><code>		eax, _ := xgetbv()</code></span>
+<span class="codeline" id="line-98"><code>		// Check if XMM and YMM registers have OS support.</code></span>
+<span class="codeline" id="line-99"><code>		osSupportsAVX = isSet(eax, 1&lt;&lt;1) &amp;&amp; isSet(eax, 1&lt;&lt;2)</code></span>
+<span class="codeline" id="line-100"><code>	}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>	X86.HasAVX = isSet(ecx1, cpuid_AVX) &amp;&amp; osSupportsAVX</code></span>
+<span class="codeline" id="line-103"><code></code></span>
+<span class="codeline" id="line-104"><code>	if maxID &lt; 7 {</code></span>
+<span class="codeline" id="line-105"><code>		return</code></span>
+<span class="codeline" id="line-106"><code>	}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>	_, ebx7, _, _ := cpuid(7, 0)</code></span>
+<span class="codeline" id="line-109"><code>	X86.HasBMI1 = isSet(ebx7, cpuid_BMI1)</code></span>
+<span class="codeline" id="line-110"><code>	X86.HasAVX2 = isSet(ebx7, cpuid_AVX2) &amp;&amp; osSupportsAVX</code></span>
+<span class="codeline" id="line-111"><code>	X86.HasBMI2 = isSet(ebx7, cpuid_BMI2)</code></span>
+<span class="codeline" id="line-112"><code>	X86.HasERMS = isSet(ebx7, cpuid_ERMS)</code></span>
+<span class="codeline" id="line-113"><code>	X86.HasADX = isSet(ebx7, cpuid_ADX)</code></span>
+<span class="codeline" id="line-114"><code>}</code></span>
+<span class="codeline" id="line-115"><code></code></span>
+<span class="codeline" id="line-116"><code>func isSet(hwc uint32, value uint32) bool {</code></span>
+<span class="codeline" id="line-117"><code>	return hwc&amp;value != 0</code></span>
+<span class="codeline" id="line-118"><code>}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>// Name returns the CPU name given by the vendor.</code></span>
+<span class="codeline" id="line-121"><code>// If the CPU name can not be determined an</code></span>
+<span class="codeline" id="line-122"><code>// empty string is returned.</code></span>
+<span class="codeline" id="line-123"><code>func Name() string {</code></span>
+<span class="codeline" id="line-124"><code>	if maxExtendedFunctionInformation &lt; 0x80000004 {</code></span>
+<span class="codeline" id="line-125"><code>		return ""</code></span>
+<span class="codeline" id="line-126"><code>	}</code></span>
+<span class="codeline" id="line-127"><code></code></span>
+<span class="codeline" id="line-128"><code>	data := make([]byte, 0, 3*4*4)</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	var eax, ebx, ecx, edx uint32</code></span>
+<span class="codeline" id="line-131"><code>	eax, ebx, ecx, edx = cpuid(0x80000002, 0)</code></span>
+<span class="codeline" id="line-132"><code>	data = appendBytes(data, eax, ebx, ecx, edx)</code></span>
+<span class="codeline" id="line-133"><code>	eax, ebx, ecx, edx = cpuid(0x80000003, 0)</code></span>
+<span class="codeline" id="line-134"><code>	data = appendBytes(data, eax, ebx, ecx, edx)</code></span>
+<span class="codeline" id="line-135"><code>	eax, ebx, ecx, edx = cpuid(0x80000004, 0)</code></span>
+<span class="codeline" id="line-136"><code>	data = appendBytes(data, eax, ebx, ecx, edx)</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>	// Trim leading spaces.</code></span>
+<span class="codeline" id="line-139"><code>	for len(data) &gt; 0 &amp;&amp; data[0] == ' ' {</code></span>
+<span class="codeline" id="line-140"><code>		data = data[1:]</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>	// Trim tail after and including the first null byte.</code></span>
+<span class="codeline" id="line-144"><code>	for i, c := range data {</code></span>
+<span class="codeline" id="line-145"><code>		if c == '\x00' {</code></span>
+<span class="codeline" id="line-146"><code>			data = data[:i]</code></span>
+<span class="codeline" id="line-147"><code>			break</code></span>
+<span class="codeline" id="line-148"><code>		}</code></span>
+<span class="codeline" id="line-149"><code>	}</code></span>
+<span class="codeline" id="line-150"><code></code></span>
+<span class="codeline" id="line-151"><code>	return string(data)</code></span>
+<span class="codeline" id="line-152"><code>}</code></span>
+<span class="codeline" id="line-153"><code></code></span>
+<span class="codeline" id="line-154"><code>func appendBytes(b []byte, args ...uint32) []byte {</code></span>
+<span class="codeline" id="line-155"><code>	for _, arg := range args {</code></span>
+<span class="codeline" id="line-156"><code>		b = append(b,</code></span>
+<span class="codeline" id="line-157"><code>			byte((arg &gt;&gt; 0)),</code></span>
+<span class="codeline" id="line-158"><code>			byte((arg &gt;&gt; 8)),</code></span>
+<span class="codeline" id="line-159"><code>			byte((arg &gt;&gt; 16)),</code></span>
+<span class="codeline" id="line-160"><code>			byte((arg &gt;&gt; 24)))</code></span>
+<span class="codeline" id="line-161"><code>	}</code></span>
+<span class="codeline" id="line-162"><code>	return b</code></span>
+<span class="codeline" id="line-163"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

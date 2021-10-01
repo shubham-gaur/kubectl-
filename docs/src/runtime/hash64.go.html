@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: hash64.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	hash64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Hashing algorithm inspired by</code></span>
+<span class="codeline" id="line-6"><code>//   xxhash: https://code.google.com/p/xxhash/</code></span>
+<span class="codeline" id="line-7"><code>// cityhash: https://code.google.com/p/cityhash/</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// +build amd64 arm64 mips64 mips64le ppc64 ppc64le riscv64 s390x wasm</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>package runtime</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>const (</code></span>
+<span class="codeline" id="line-16"><code>	// Constants for multiplication: four random odd 64-bit numbers.</code></span>
+<span class="codeline" id="line-17"><code>	m1 = 16877499708836156737</code></span>
+<span class="codeline" id="line-18"><code>	m2 = 2820277070424839065</code></span>
+<span class="codeline" id="line-19"><code>	m3 = 9497967016996688599</code></span>
+<span class="codeline" id="line-20"><code>	m4 = 15839092249703872147</code></span>
+<span class="codeline" id="line-21"><code>)</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>func memhashFallback(p unsafe.Pointer, seed, s uintptr) uintptr {</code></span>
+<span class="codeline" id="line-24"><code>	h := uint64(seed + s*hashkey[0])</code></span>
+<span class="codeline" id="line-25"><code>tail:</code></span>
+<span class="codeline" id="line-26"><code>	switch {</code></span>
+<span class="codeline" id="line-27"><code>	case s == 0:</code></span>
+<span class="codeline" id="line-28"><code>	case s &lt; 4:</code></span>
+<span class="codeline" id="line-29"><code>		h ^= uint64(*(*byte)(p))</code></span>
+<span class="codeline" id="line-30"><code>		h ^= uint64(*(*byte)(add(p, s&gt;&gt;1))) &lt;&lt; 8</code></span>
+<span class="codeline" id="line-31"><code>		h ^= uint64(*(*byte)(add(p, s-1))) &lt;&lt; 16</code></span>
+<span class="codeline" id="line-32"><code>		h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-33"><code>	case s &lt;= 8:</code></span>
+<span class="codeline" id="line-34"><code>		h ^= uint64(readUnaligned32(p))</code></span>
+<span class="codeline" id="line-35"><code>		h ^= uint64(readUnaligned32(add(p, s-4))) &lt;&lt; 32</code></span>
+<span class="codeline" id="line-36"><code>		h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-37"><code>	case s &lt;= 16:</code></span>
+<span class="codeline" id="line-38"><code>		h ^= readUnaligned64(p)</code></span>
+<span class="codeline" id="line-39"><code>		h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-40"><code>		h ^= readUnaligned64(add(p, s-8))</code></span>
+<span class="codeline" id="line-41"><code>		h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-42"><code>	case s &lt;= 32:</code></span>
+<span class="codeline" id="line-43"><code>		h ^= readUnaligned64(p)</code></span>
+<span class="codeline" id="line-44"><code>		h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-45"><code>		h ^= readUnaligned64(add(p, 8))</code></span>
+<span class="codeline" id="line-46"><code>		h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-47"><code>		h ^= readUnaligned64(add(p, s-16))</code></span>
+<span class="codeline" id="line-48"><code>		h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-49"><code>		h ^= readUnaligned64(add(p, s-8))</code></span>
+<span class="codeline" id="line-50"><code>		h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-51"><code>	default:</code></span>
+<span class="codeline" id="line-52"><code>		v1 := h</code></span>
+<span class="codeline" id="line-53"><code>		v2 := uint64(seed * hashkey[1])</code></span>
+<span class="codeline" id="line-54"><code>		v3 := uint64(seed * hashkey[2])</code></span>
+<span class="codeline" id="line-55"><code>		v4 := uint64(seed * hashkey[3])</code></span>
+<span class="codeline" id="line-56"><code>		for s &gt;= 32 {</code></span>
+<span class="codeline" id="line-57"><code>			v1 ^= readUnaligned64(p)</code></span>
+<span class="codeline" id="line-58"><code>			v1 = rotl_31(v1*m1) * m2</code></span>
+<span class="codeline" id="line-59"><code>			p = add(p, 8)</code></span>
+<span class="codeline" id="line-60"><code>			v2 ^= readUnaligned64(p)</code></span>
+<span class="codeline" id="line-61"><code>			v2 = rotl_31(v2*m2) * m3</code></span>
+<span class="codeline" id="line-62"><code>			p = add(p, 8)</code></span>
+<span class="codeline" id="line-63"><code>			v3 ^= readUnaligned64(p)</code></span>
+<span class="codeline" id="line-64"><code>			v3 = rotl_31(v3*m3) * m4</code></span>
+<span class="codeline" id="line-65"><code>			p = add(p, 8)</code></span>
+<span class="codeline" id="line-66"><code>			v4 ^= readUnaligned64(p)</code></span>
+<span class="codeline" id="line-67"><code>			v4 = rotl_31(v4*m4) * m1</code></span>
+<span class="codeline" id="line-68"><code>			p = add(p, 8)</code></span>
+<span class="codeline" id="line-69"><code>			s -= 32</code></span>
+<span class="codeline" id="line-70"><code>		}</code></span>
+<span class="codeline" id="line-71"><code>		h = v1 ^ v2 ^ v3 ^ v4</code></span>
+<span class="codeline" id="line-72"><code>		goto tail</code></span>
+<span class="codeline" id="line-73"><code>	}</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>	h ^= h &gt;&gt; 29</code></span>
+<span class="codeline" id="line-76"><code>	h *= m3</code></span>
+<span class="codeline" id="line-77"><code>	h ^= h &gt;&gt; 32</code></span>
+<span class="codeline" id="line-78"><code>	return uintptr(h)</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+<span class="codeline" id="line-80"><code></code></span>
+<span class="codeline" id="line-81"><code>func memhash32Fallback(p unsafe.Pointer, seed uintptr) uintptr {</code></span>
+<span class="codeline" id="line-82"><code>	h := uint64(seed + 4*hashkey[0])</code></span>
+<span class="codeline" id="line-83"><code>	v := uint64(readUnaligned32(p))</code></span>
+<span class="codeline" id="line-84"><code>	h ^= v</code></span>
+<span class="codeline" id="line-85"><code>	h ^= v &lt;&lt; 32</code></span>
+<span class="codeline" id="line-86"><code>	h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-87"><code>	h ^= h &gt;&gt; 29</code></span>
+<span class="codeline" id="line-88"><code>	h *= m3</code></span>
+<span class="codeline" id="line-89"><code>	h ^= h &gt;&gt; 32</code></span>
+<span class="codeline" id="line-90"><code>	return uintptr(h)</code></span>
+<span class="codeline" id="line-91"><code>}</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>func memhash64Fallback(p unsafe.Pointer, seed uintptr) uintptr {</code></span>
+<span class="codeline" id="line-94"><code>	h := uint64(seed + 8*hashkey[0])</code></span>
+<span class="codeline" id="line-95"><code>	h ^= uint64(readUnaligned32(p)) | uint64(readUnaligned32(add(p, 4)))&lt;&lt;32</code></span>
+<span class="codeline" id="line-96"><code>	h = rotl_31(h*m1) * m2</code></span>
+<span class="codeline" id="line-97"><code>	h ^= h &gt;&gt; 29</code></span>
+<span class="codeline" id="line-98"><code>	h *= m3</code></span>
+<span class="codeline" id="line-99"><code>	h ^= h &gt;&gt; 32</code></span>
+<span class="codeline" id="line-100"><code>	return uintptr(h)</code></span>
+<span class="codeline" id="line-101"><code>}</code></span>
+<span class="codeline" id="line-102"><code></code></span>
+<span class="codeline" id="line-103"><code>// Note: in order to get the compiler to issue rotl instructions, we</code></span>
+<span class="codeline" id="line-104"><code>// need to constant fold the shift amount by hand.</code></span>
+<span class="codeline" id="line-105"><code>// TODO: convince the compiler to issue rotl instructions after inlining.</code></span>
+<span class="codeline" id="line-106"><code>func rotl_31(x uint64) uint64 {</code></span>
+<span class="codeline" id="line-107"><code>	return (x &lt;&lt; 31) | (x &gt;&gt; (64 - 31))</code></span>
+<span class="codeline" id="line-108"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: timestruct.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	timestruct.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2016 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd js,wasm linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package syscall</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// TimespecToNSec returns the time stored in ts as nanoseconds.</code></span>
+<span class="codeline" id="line-10"><code>func TimespecToNsec(ts Timespec) int64 { return ts.Nano() }</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// NsecToTimespec converts a number of nanoseconds into a Timespec.</code></span>
+<span class="codeline" id="line-13"><code>func NsecToTimespec(nsec int64) Timespec {</code></span>
+<span class="codeline" id="line-14"><code>	sec := nsec / 1e9</code></span>
+<span class="codeline" id="line-15"><code>	nsec = nsec % 1e9</code></span>
+<span class="codeline" id="line-16"><code>	if nsec &lt; 0 {</code></span>
+<span class="codeline" id="line-17"><code>		nsec += 1e9</code></span>
+<span class="codeline" id="line-18"><code>		sec--</code></span>
+<span class="codeline" id="line-19"><code>	}</code></span>
+<span class="codeline" id="line-20"><code>	return setTimespec(sec, nsec)</code></span>
+<span class="codeline" id="line-21"><code>}</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>// TimevalToNsec returns the time stored in tv as nanoseconds.</code></span>
+<span class="codeline" id="line-24"><code>func TimevalToNsec(tv Timeval) int64 { return tv.Nano() }</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>// NsecToTimeval converts a number of nanoseconds into a Timeval.</code></span>
+<span class="codeline" id="line-27"><code>func NsecToTimeval(nsec int64) Timeval {</code></span>
+<span class="codeline" id="line-28"><code>	nsec += 999 // round up to microsecond</code></span>
+<span class="codeline" id="line-29"><code>	usec := nsec % 1e9 / 1e3</code></span>
+<span class="codeline" id="line-30"><code>	sec := nsec / 1e9</code></span>
+<span class="codeline" id="line-31"><code>	if usec &lt; 0 {</code></span>
+<span class="codeline" id="line-32"><code>		usec += 1e6</code></span>
+<span class="codeline" id="line-33"><code>		sec--</code></span>
+<span class="codeline" id="line-34"><code>	}</code></span>
+<span class="codeline" id="line-35"><code>	return setTimeval(sec, usec)</code></span>
+<span class="codeline" id="line-36"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

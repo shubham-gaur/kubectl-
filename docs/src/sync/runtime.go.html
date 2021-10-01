@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: runtime.go in package sync</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	runtime.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/sync.html">sync</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2012 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package sync</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// defined in package runtime</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// Semacquire waits until *s &gt; 0 and then atomically decrements it.</code></span>
+<span class="codeline" id="line-12"><code>// It is intended as a simple sleep primitive for use by the synchronization</code></span>
+<span class="codeline" id="line-13"><code>// library and should not be used directly.</code></span>
+<span class="codeline" id="line-14"><code>func runtime_Semacquire(s *uint32)</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>// SemacquireMutex is like Semacquire, but for profiling contended Mutexes.</code></span>
+<span class="codeline" id="line-17"><code>// If lifo is true, queue waiter at the head of wait queue.</code></span>
+<span class="codeline" id="line-18"><code>// skipframes is the number of frames to omit during tracing, counting from</code></span>
+<span class="codeline" id="line-19"><code>// runtime_SemacquireMutex's caller.</code></span>
+<span class="codeline" id="line-20"><code>func runtime_SemacquireMutex(s *uint32, lifo bool, skipframes int)</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>// Semrelease atomically increments *s and notifies a waiting goroutine</code></span>
+<span class="codeline" id="line-23"><code>// if one is blocked in Semacquire.</code></span>
+<span class="codeline" id="line-24"><code>// It is intended as a simple wakeup primitive for use by the synchronization</code></span>
+<span class="codeline" id="line-25"><code>// library and should not be used directly.</code></span>
+<span class="codeline" id="line-26"><code>// If handoff is true, pass count directly to the first waiter.</code></span>
+<span class="codeline" id="line-27"><code>// skipframes is the number of frames to omit during tracing, counting from</code></span>
+<span class="codeline" id="line-28"><code>// runtime_Semrelease's caller.</code></span>
+<span class="codeline" id="line-29"><code>func runtime_Semrelease(s *uint32, handoff bool, skipframes int)</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>// See runtime/sema.go for documentation.</code></span>
+<span class="codeline" id="line-32"><code>func runtime_notifyListAdd(l *notifyList) uint32</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>// See runtime/sema.go for documentation.</code></span>
+<span class="codeline" id="line-35"><code>func runtime_notifyListWait(l *notifyList, t uint32)</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>// See runtime/sema.go for documentation.</code></span>
+<span class="codeline" id="line-38"><code>func runtime_notifyListNotifyAll(l *notifyList)</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>// See runtime/sema.go for documentation.</code></span>
+<span class="codeline" id="line-41"><code>func runtime_notifyListNotifyOne(l *notifyList)</code></span>
+<span class="codeline" id="line-42"><code></code></span>
+<span class="codeline" id="line-43"><code>// Ensure that sync and runtime agree on size of notifyList.</code></span>
+<span class="codeline" id="line-44"><code>func runtime_notifyListCheck(size uintptr)</code></span>
+<span class="codeline" id="line-45"><code>func init() {</code></span>
+<span class="codeline" id="line-46"><code>	var n notifyList</code></span>
+<span class="codeline" id="line-47"><code>	runtime_notifyListCheck(unsafe.Sizeof(n))</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>// Active spinning runtime support.</code></span>
+<span class="codeline" id="line-51"><code>// runtime_canSpin reports whether spinning makes sense at the moment.</code></span>
+<span class="codeline" id="line-52"><code>func runtime_canSpin(i int) bool</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>// runtime_doSpin does active spinning.</code></span>
+<span class="codeline" id="line-55"><code>func runtime_doSpin()</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>func runtime_nanotime() int64</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: j1.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	j1.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>/*</code></span>
+<span class="codeline" id="line-8"><code>	Bessel function of the first and second kinds of order one.</code></span>
+<span class="codeline" id="line-9"><code>*/</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// The original C code and the long comment below are</code></span>
+<span class="codeline" id="line-12"><code>// from FreeBSD's /usr/src/lib/msun/src/e_j1.c and</code></span>
+<span class="codeline" id="line-13"><code>// came with this notice. The go code is a simplified</code></span>
+<span class="codeline" id="line-14"><code>// version of the original C.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>// ====================================================</code></span>
+<span class="codeline" id="line-17"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-20"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-21"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-22"><code>// is preserved.</code></span>
+<span class="codeline" id="line-23"><code>// ====================================================</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>// __ieee754_j1(x), __ieee754_y1(x)</code></span>
+<span class="codeline" id="line-26"><code>// Bessel function of the first and second kinds of order one.</code></span>
+<span class="codeline" id="line-27"><code>// Method -- j1(x):</code></span>
+<span class="codeline" id="line-28"><code>//      1. For tiny x, we use j1(x) = x/2 - x**3/16 + x**5/384 - ...</code></span>
+<span class="codeline" id="line-29"><code>//      2. Reduce x to |x| since j1(x)=-j1(-x),  and</code></span>
+<span class="codeline" id="line-30"><code>//         for x in (0,2)</code></span>
+<span class="codeline" id="line-31"><code>//              j1(x) = x/2 + x*z*R0/S0,  where z = x*x;</code></span>
+<span class="codeline" id="line-32"><code>//         (precision:  |j1/x - 1/2 - R0/S0 |&lt;2**-61.51 )</code></span>
+<span class="codeline" id="line-33"><code>//         for x in (2,inf)</code></span>
+<span class="codeline" id="line-34"><code>//              j1(x) = sqrt(2/(pi*x))*(p1(x)*cos(x1)-q1(x)*sin(x1))</code></span>
+<span class="codeline" id="line-35"><code>//              y1(x) = sqrt(2/(pi*x))*(p1(x)*sin(x1)+q1(x)*cos(x1))</code></span>
+<span class="codeline" id="line-36"><code>//         where x1 = x-3*pi/4. It is better to compute sin(x1),cos(x1)</code></span>
+<span class="codeline" id="line-37"><code>//         as follow:</code></span>
+<span class="codeline" id="line-38"><code>//              cos(x1) =  cos(x)cos(3pi/4)+sin(x)sin(3pi/4)</code></span>
+<span class="codeline" id="line-39"><code>//                      =  1/sqrt(2) * (sin(x) - cos(x))</code></span>
+<span class="codeline" id="line-40"><code>//              sin(x1) =  sin(x)cos(3pi/4)-cos(x)sin(3pi/4)</code></span>
+<span class="codeline" id="line-41"><code>//                      = -1/sqrt(2) * (sin(x) + cos(x))</code></span>
+<span class="codeline" id="line-42"><code>//         (To avoid cancellation, use</code></span>
+<span class="codeline" id="line-43"><code>//              sin(x) +- cos(x) = -cos(2x)/(sin(x) -+ cos(x))</code></span>
+<span class="codeline" id="line-44"><code>//         to compute the worse one.)</code></span>
+<span class="codeline" id="line-45"><code>//</code></span>
+<span class="codeline" id="line-46"><code>//      3 Special cases</code></span>
+<span class="codeline" id="line-47"><code>//              j1(nan)= nan</code></span>
+<span class="codeline" id="line-48"><code>//              j1(0) = 0</code></span>
+<span class="codeline" id="line-49"><code>//              j1(inf) = 0</code></span>
+<span class="codeline" id="line-50"><code>//</code></span>
+<span class="codeline" id="line-51"><code>// Method -- y1(x):</code></span>
+<span class="codeline" id="line-52"><code>//      1. screen out x&lt;=0 cases: y1(0)=-inf, y1(x&lt;0)=NaN</code></span>
+<span class="codeline" id="line-53"><code>//      2. For x&lt;2.</code></span>
+<span class="codeline" id="line-54"><code>//         Since</code></span>
+<span class="codeline" id="line-55"><code>//              y1(x) = 2/pi*(j1(x)*(ln(x/2)+Euler)-1/x-x/2+5/64*x**3-...)</code></span>
+<span class="codeline" id="line-56"><code>//         therefore y1(x)-2/pi*j1(x)*ln(x)-1/x is an odd function.</code></span>
+<span class="codeline" id="line-57"><code>//         We use the following function to approximate y1,</code></span>
+<span class="codeline" id="line-58"><code>//              y1(x) = x*U(z)/V(z) + (2/pi)*(j1(x)*ln(x)-1/x), z= x**2</code></span>
+<span class="codeline" id="line-59"><code>//         where for x in [0,2] (abs err less than 2**-65.89)</code></span>
+<span class="codeline" id="line-60"><code>//              U(z) = U0[0] + U0[1]*z + ... + U0[4]*z**4</code></span>
+<span class="codeline" id="line-61"><code>//              V(z) = 1  + v0[0]*z + ... + v0[4]*z**5</code></span>
+<span class="codeline" id="line-62"><code>//         Note: For tiny x, 1/x dominate y1 and hence</code></span>
+<span class="codeline" id="line-63"><code>//              y1(tiny) = -2/pi/tiny, (choose tiny&lt;2**-54)</code></span>
+<span class="codeline" id="line-64"><code>//      3. For x&gt;=2.</code></span>
+<span class="codeline" id="line-65"><code>//               y1(x) = sqrt(2/(pi*x))*(p1(x)*sin(x1)+q1(x)*cos(x1))</code></span>
+<span class="codeline" id="line-66"><code>//         where x1 = x-3*pi/4. It is better to compute sin(x1),cos(x1)</code></span>
+<span class="codeline" id="line-67"><code>//         by method mentioned above.</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>// J1 returns the order-one Bessel function of the first kind.</code></span>
+<span class="codeline" id="line-70"><code>//</code></span>
+<span class="codeline" id="line-71"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-72"><code>//	J1(±Inf) = 0</code></span>
+<span class="codeline" id="line-73"><code>//	J1(NaN) = NaN</code></span>
+<span class="codeline" id="line-74"><code>func J1(x float64) float64 {</code></span>
+<span class="codeline" id="line-75"><code>	const (</code></span>
+<span class="codeline" id="line-76"><code>		TwoM27 = 1.0 / (1 &lt;&lt; 27) // 2**-27 0x3e40000000000000</code></span>
+<span class="codeline" id="line-77"><code>		Two129 = 1 &lt;&lt; 129        // 2**129 0x4800000000000000</code></span>
+<span class="codeline" id="line-78"><code>		// R0/S0 on [0, 2]</code></span>
+<span class="codeline" id="line-79"><code>		R00 = -6.25000000000000000000e-02 // 0xBFB0000000000000</code></span>
+<span class="codeline" id="line-80"><code>		R01 = 1.40705666955189706048e-03  // 0x3F570D9F98472C61</code></span>
+<span class="codeline" id="line-81"><code>		R02 = -1.59955631084035597520e-05 // 0xBEF0C5C6BA169668</code></span>
+<span class="codeline" id="line-82"><code>		R03 = 4.96727999609584448412e-08  // 0x3E6AAAFA46CA0BD9</code></span>
+<span class="codeline" id="line-83"><code>		S01 = 1.91537599538363460805e-02  // 0x3F939D0B12637E53</code></span>
+<span class="codeline" id="line-84"><code>		S02 = 1.85946785588630915560e-04  // 0x3F285F56B9CDF664</code></span>
+<span class="codeline" id="line-85"><code>		S03 = 1.17718464042623683263e-06  // 0x3EB3BFF8333F8498</code></span>
+<span class="codeline" id="line-86"><code>		S04 = 5.04636257076217042715e-09  // 0x3E35AC88C97DFF2C</code></span>
+<span class="codeline" id="line-87"><code>		S05 = 1.23542274426137913908e-11  // 0x3DAB2ACFCFB97ED8</code></span>
+<span class="codeline" id="line-88"><code>	)</code></span>
+<span class="codeline" id="line-89"><code>	// special cases</code></span>
+<span class="codeline" id="line-90"><code>	switch {</code></span>
+<span class="codeline" id="line-91"><code>	case IsNaN(x):</code></span>
+<span class="codeline" id="line-92"><code>		return x</code></span>
+<span class="codeline" id="line-93"><code>	case IsInf(x, 0) || x == 0:</code></span>
+<span class="codeline" id="line-94"><code>		return 0</code></span>
+<span class="codeline" id="line-95"><code>	}</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>	sign := false</code></span>
+<span class="codeline" id="line-98"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-99"><code>		x = -x</code></span>
+<span class="codeline" id="line-100"><code>		sign = true</code></span>
+<span class="codeline" id="line-101"><code>	}</code></span>
+<span class="codeline" id="line-102"><code>	if x &gt;= 2 {</code></span>
+<span class="codeline" id="line-103"><code>		s, c := Sincos(x)</code></span>
+<span class="codeline" id="line-104"><code>		ss := -s - c</code></span>
+<span class="codeline" id="line-105"><code>		cc := s - c</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>		// make sure x+x does not overflow</code></span>
+<span class="codeline" id="line-108"><code>		if x &lt; MaxFloat64/2 {</code></span>
+<span class="codeline" id="line-109"><code>			z := Cos(x + x)</code></span>
+<span class="codeline" id="line-110"><code>			if s*c &gt; 0 {</code></span>
+<span class="codeline" id="line-111"><code>				cc = z / ss</code></span>
+<span class="codeline" id="line-112"><code>			} else {</code></span>
+<span class="codeline" id="line-113"><code>				ss = z / cc</code></span>
+<span class="codeline" id="line-114"><code>			}</code></span>
+<span class="codeline" id="line-115"><code>		}</code></span>
+<span class="codeline" id="line-116"><code></code></span>
+<span class="codeline" id="line-117"><code>		// j1(x) = 1/sqrt(pi) * (P(1,x)*cc - Q(1,x)*ss) / sqrt(x)</code></span>
+<span class="codeline" id="line-118"><code>		// y1(x) = 1/sqrt(pi) * (P(1,x)*ss + Q(1,x)*cc) / sqrt(x)</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>		var z float64</code></span>
+<span class="codeline" id="line-121"><code>		if x &gt; Two129 {</code></span>
+<span class="codeline" id="line-122"><code>			z = (1 / SqrtPi) * cc / Sqrt(x)</code></span>
+<span class="codeline" id="line-123"><code>		} else {</code></span>
+<span class="codeline" id="line-124"><code>			u := pone(x)</code></span>
+<span class="codeline" id="line-125"><code>			v := qone(x)</code></span>
+<span class="codeline" id="line-126"><code>			z = (1 / SqrtPi) * (u*cc - v*ss) / Sqrt(x)</code></span>
+<span class="codeline" id="line-127"><code>		}</code></span>
+<span class="codeline" id="line-128"><code>		if sign {</code></span>
+<span class="codeline" id="line-129"><code>			return -z</code></span>
+<span class="codeline" id="line-130"><code>		}</code></span>
+<span class="codeline" id="line-131"><code>		return z</code></span>
+<span class="codeline" id="line-132"><code>	}</code></span>
+<span class="codeline" id="line-133"><code>	if x &lt; TwoM27 { // |x|&lt;2**-27</code></span>
+<span class="codeline" id="line-134"><code>		return 0.5 * x // inexact if x!=0 necessary</code></span>
+<span class="codeline" id="line-135"><code>	}</code></span>
+<span class="codeline" id="line-136"><code>	z := x * x</code></span>
+<span class="codeline" id="line-137"><code>	r := z * (R00 + z*(R01+z*(R02+z*R03)))</code></span>
+<span class="codeline" id="line-138"><code>	s := 1.0 + z*(S01+z*(S02+z*(S03+z*(S04+z*S05))))</code></span>
+<span class="codeline" id="line-139"><code>	r *= x</code></span>
+<span class="codeline" id="line-140"><code>	z = 0.5*x + r/s</code></span>
+<span class="codeline" id="line-141"><code>	if sign {</code></span>
+<span class="codeline" id="line-142"><code>		return -z</code></span>
+<span class="codeline" id="line-143"><code>	}</code></span>
+<span class="codeline" id="line-144"><code>	return z</code></span>
+<span class="codeline" id="line-145"><code>}</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>// Y1 returns the order-one Bessel function of the second kind.</code></span>
+<span class="codeline" id="line-148"><code>//</code></span>
+<span class="codeline" id="line-149"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-150"><code>//	Y1(+Inf) = 0</code></span>
+<span class="codeline" id="line-151"><code>//	Y1(0) = -Inf</code></span>
+<span class="codeline" id="line-152"><code>//	Y1(x &lt; 0) = NaN</code></span>
+<span class="codeline" id="line-153"><code>//	Y1(NaN) = NaN</code></span>
+<span class="codeline" id="line-154"><code>func Y1(x float64) float64 {</code></span>
+<span class="codeline" id="line-155"><code>	const (</code></span>
+<span class="codeline" id="line-156"><code>		TwoM54 = 1.0 / (1 &lt;&lt; 54)             // 2**-54 0x3c90000000000000</code></span>
+<span class="codeline" id="line-157"><code>		Two129 = 1 &lt;&lt; 129                    // 2**129 0x4800000000000000</code></span>
+<span class="codeline" id="line-158"><code>		U00    = -1.96057090646238940668e-01 // 0xBFC91866143CBC8A</code></span>
+<span class="codeline" id="line-159"><code>		U01    = 5.04438716639811282616e-02  // 0x3FA9D3C776292CD1</code></span>
+<span class="codeline" id="line-160"><code>		U02    = -1.91256895875763547298e-03 // 0xBF5F55E54844F50F</code></span>
+<span class="codeline" id="line-161"><code>		U03    = 2.35252600561610495928e-05  // 0x3EF8AB038FA6B88E</code></span>
+<span class="codeline" id="line-162"><code>		U04    = -9.19099158039878874504e-08 // 0xBE78AC00569105B8</code></span>
+<span class="codeline" id="line-163"><code>		V00    = 1.99167318236649903973e-02  // 0x3F94650D3F4DA9F0</code></span>
+<span class="codeline" id="line-164"><code>		V01    = 2.02552581025135171496e-04  // 0x3F2A8C896C257764</code></span>
+<span class="codeline" id="line-165"><code>		V02    = 1.35608801097516229404e-06  // 0x3EB6C05A894E8CA6</code></span>
+<span class="codeline" id="line-166"><code>		V03    = 6.22741452364621501295e-09  // 0x3E3ABF1D5BA69A86</code></span>
+<span class="codeline" id="line-167"><code>		V04    = 1.66559246207992079114e-11  // 0x3DB25039DACA772A</code></span>
+<span class="codeline" id="line-168"><code>	)</code></span>
+<span class="codeline" id="line-169"><code>	// special cases</code></span>
+<span class="codeline" id="line-170"><code>	switch {</code></span>
+<span class="codeline" id="line-171"><code>	case x &lt; 0 || IsNaN(x):</code></span>
+<span class="codeline" id="line-172"><code>		return NaN()</code></span>
+<span class="codeline" id="line-173"><code>	case IsInf(x, 1):</code></span>
+<span class="codeline" id="line-174"><code>		return 0</code></span>
+<span class="codeline" id="line-175"><code>	case x == 0:</code></span>
+<span class="codeline" id="line-176"><code>		return Inf(-1)</code></span>
+<span class="codeline" id="line-177"><code>	}</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>	if x &gt;= 2 {</code></span>
+<span class="codeline" id="line-180"><code>		s, c := Sincos(x)</code></span>
+<span class="codeline" id="line-181"><code>		ss := -s - c</code></span>
+<span class="codeline" id="line-182"><code>		cc := s - c</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>		// make sure x+x does not overflow</code></span>
+<span class="codeline" id="line-185"><code>		if x &lt; MaxFloat64/2 {</code></span>
+<span class="codeline" id="line-186"><code>			z := Cos(x + x)</code></span>
+<span class="codeline" id="line-187"><code>			if s*c &gt; 0 {</code></span>
+<span class="codeline" id="line-188"><code>				cc = z / ss</code></span>
+<span class="codeline" id="line-189"><code>			} else {</code></span>
+<span class="codeline" id="line-190"><code>				ss = z / cc</code></span>
+<span class="codeline" id="line-191"><code>			}</code></span>
+<span class="codeline" id="line-192"><code>		}</code></span>
+<span class="codeline" id="line-193"><code>		// y1(x) = sqrt(2/(pi*x))*(p1(x)*sin(x0)+q1(x)*cos(x0))</code></span>
+<span class="codeline" id="line-194"><code>		// where x0 = x-3pi/4</code></span>
+<span class="codeline" id="line-195"><code>		//     Better formula:</code></span>
+<span class="codeline" id="line-196"><code>		//         cos(x0) = cos(x)cos(3pi/4)+sin(x)sin(3pi/4)</code></span>
+<span class="codeline" id="line-197"><code>		//                 =  1/sqrt(2) * (sin(x) - cos(x))</code></span>
+<span class="codeline" id="line-198"><code>		//         sin(x0) = sin(x)cos(3pi/4)-cos(x)sin(3pi/4)</code></span>
+<span class="codeline" id="line-199"><code>		//                 = -1/sqrt(2) * (cos(x) + sin(x))</code></span>
+<span class="codeline" id="line-200"><code>		// To avoid cancellation, use</code></span>
+<span class="codeline" id="line-201"><code>		//     sin(x) +- cos(x) = -cos(2x)/(sin(x) -+ cos(x))</code></span>
+<span class="codeline" id="line-202"><code>		// to compute the worse one.</code></span>
+<span class="codeline" id="line-203"><code></code></span>
+<span class="codeline" id="line-204"><code>		var z float64</code></span>
+<span class="codeline" id="line-205"><code>		if x &gt; Two129 {</code></span>
+<span class="codeline" id="line-206"><code>			z = (1 / SqrtPi) * ss / Sqrt(x)</code></span>
+<span class="codeline" id="line-207"><code>		} else {</code></span>
+<span class="codeline" id="line-208"><code>			u := pone(x)</code></span>
+<span class="codeline" id="line-209"><code>			v := qone(x)</code></span>
+<span class="codeline" id="line-210"><code>			z = (1 / SqrtPi) * (u*ss + v*cc) / Sqrt(x)</code></span>
+<span class="codeline" id="line-211"><code>		}</code></span>
+<span class="codeline" id="line-212"><code>		return z</code></span>
+<span class="codeline" id="line-213"><code>	}</code></span>
+<span class="codeline" id="line-214"><code>	if x &lt;= TwoM54 { // x &lt; 2**-54</code></span>
+<span class="codeline" id="line-215"><code>		return -(2 / Pi) / x</code></span>
+<span class="codeline" id="line-216"><code>	}</code></span>
+<span class="codeline" id="line-217"><code>	z := x * x</code></span>
+<span class="codeline" id="line-218"><code>	u := U00 + z*(U01+z*(U02+z*(U03+z*U04)))</code></span>
+<span class="codeline" id="line-219"><code>	v := 1 + z*(V00+z*(V01+z*(V02+z*(V03+z*V04))))</code></span>
+<span class="codeline" id="line-220"><code>	return x*(u/v) + (2/Pi)*(J1(x)*Log(x)-1/x)</code></span>
+<span class="codeline" id="line-221"><code>}</code></span>
+<span class="codeline" id="line-222"><code></code></span>
+<span class="codeline" id="line-223"><code>// For x &gt;= 8, the asymptotic expansions of pone is</code></span>
+<span class="codeline" id="line-224"><code>//      1 + 15/128 s**2 - 4725/2**15 s**4 - ..., where s = 1/x.</code></span>
+<span class="codeline" id="line-225"><code>// We approximate pone by</code></span>
+<span class="codeline" id="line-226"><code>//      pone(x) = 1 + (R/S)</code></span>
+<span class="codeline" id="line-227"><code>// where R = pr0 + pr1*s**2 + pr2*s**4 + ... + pr5*s**10</code></span>
+<span class="codeline" id="line-228"><code>//       S = 1 + ps0*s**2 + ... + ps4*s**10</code></span>
+<span class="codeline" id="line-229"><code>// and</code></span>
+<span class="codeline" id="line-230"><code>//      | pone(x)-1-R/S | &lt;= 2**(-60.06)</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>// for x in [inf, 8]=1/[0,0.125]</code></span>
+<span class="codeline" id="line-233"><code>var p1R8 = [6]float64{</code></span>
+<span class="codeline" id="line-234"><code>	0.00000000000000000000e+00, // 0x0000000000000000</code></span>
+<span class="codeline" id="line-235"><code>	1.17187499999988647970e-01, // 0x3FBDFFFFFFFFFCCE</code></span>
+<span class="codeline" id="line-236"><code>	1.32394806593073575129e+01, // 0x402A7A9D357F7FCE</code></span>
+<span class="codeline" id="line-237"><code>	4.12051854307378562225e+02, // 0x4079C0D4652EA590</code></span>
+<span class="codeline" id="line-238"><code>	3.87474538913960532227e+03, // 0x40AE457DA3A532CC</code></span>
+<span class="codeline" id="line-239"><code>	7.91447954031891731574e+03, // 0x40BEEA7AC32782DD</code></span>
+<span class="codeline" id="line-240"><code>}</code></span>
+<span class="codeline" id="line-241"><code>var p1S8 = [5]float64{</code></span>
+<span class="codeline" id="line-242"><code>	1.14207370375678408436e+02, // 0x405C8D458E656CAC</code></span>
+<span class="codeline" id="line-243"><code>	3.65093083420853463394e+03, // 0x40AC85DC964D274F</code></span>
+<span class="codeline" id="line-244"><code>	3.69562060269033463555e+04, // 0x40E20B8697C5BB7F</code></span>
+<span class="codeline" id="line-245"><code>	9.76027935934950801311e+04, // 0x40F7D42CB28F17BB</code></span>
+<span class="codeline" id="line-246"><code>	3.08042720627888811578e+04, // 0x40DE1511697A0B2D</code></span>
+<span class="codeline" id="line-247"><code>}</code></span>
+<span class="codeline" id="line-248"><code></code></span>
+<span class="codeline" id="line-249"><code>// for x in [8,4.5454] = 1/[0.125,0.22001]</code></span>
+<span class="codeline" id="line-250"><code>var p1R5 = [6]float64{</code></span>
+<span class="codeline" id="line-251"><code>	1.31990519556243522749e-11, // 0x3DAD0667DAE1CA7D</code></span>
+<span class="codeline" id="line-252"><code>	1.17187493190614097638e-01, // 0x3FBDFFFFE2C10043</code></span>
+<span class="codeline" id="line-253"><code>	6.80275127868432871736e+00, // 0x401B36046E6315E3</code></span>
+<span class="codeline" id="line-254"><code>	1.08308182990189109773e+02, // 0x405B13B9452602ED</code></span>
+<span class="codeline" id="line-255"><code>	5.17636139533199752805e+02, // 0x40802D16D052D649</code></span>
+<span class="codeline" id="line-256"><code>	5.28715201363337541807e+02, // 0x408085B8BB7E0CB7</code></span>
+<span class="codeline" id="line-257"><code>}</code></span>
+<span class="codeline" id="line-258"><code>var p1S5 = [5]float64{</code></span>
+<span class="codeline" id="line-259"><code>	5.92805987221131331921e+01, // 0x404DA3EAA8AF633D</code></span>
+<span class="codeline" id="line-260"><code>	9.91401418733614377743e+02, // 0x408EFB361B066701</code></span>
+<span class="codeline" id="line-261"><code>	5.35326695291487976647e+03, // 0x40B4E9445706B6FB</code></span>
+<span class="codeline" id="line-262"><code>	7.84469031749551231769e+03, // 0x40BEA4B0B8A5BB15</code></span>
+<span class="codeline" id="line-263"><code>	1.50404688810361062679e+03, // 0x40978030036F5E51</code></span>
+<span class="codeline" id="line-264"><code>}</code></span>
+<span class="codeline" id="line-265"><code></code></span>
+<span class="codeline" id="line-266"><code>// for x in[4.5453,2.8571] = 1/[0.2199,0.35001]</code></span>
+<span class="codeline" id="line-267"><code>var p1R3 = [6]float64{</code></span>
+<span class="codeline" id="line-268"><code>	3.02503916137373618024e-09, // 0x3E29FC21A7AD9EDD</code></span>
+<span class="codeline" id="line-269"><code>	1.17186865567253592491e-01, // 0x3FBDFFF55B21D17B</code></span>
+<span class="codeline" id="line-270"><code>	3.93297750033315640650e+00, // 0x400F76BCE85EAD8A</code></span>
+<span class="codeline" id="line-271"><code>	3.51194035591636932736e+01, // 0x40418F489DA6D129</code></span>
+<span class="codeline" id="line-272"><code>	9.10550110750781271918e+01, // 0x4056C3854D2C1837</code></span>
+<span class="codeline" id="line-273"><code>	4.85590685197364919645e+01, // 0x4048478F8EA83EE5</code></span>
+<span class="codeline" id="line-274"><code>}</code></span>
+<span class="codeline" id="line-275"><code>var p1S3 = [5]float64{</code></span>
+<span class="codeline" id="line-276"><code>	3.47913095001251519989e+01, // 0x40416549A134069C</code></span>
+<span class="codeline" id="line-277"><code>	3.36762458747825746741e+02, // 0x40750C3307F1A75F</code></span>
+<span class="codeline" id="line-278"><code>	1.04687139975775130551e+03, // 0x40905B7C5037D523</code></span>
+<span class="codeline" id="line-279"><code>	8.90811346398256432622e+02, // 0x408BD67DA32E31E9</code></span>
+<span class="codeline" id="line-280"><code>	1.03787932439639277504e+02, // 0x4059F26D7C2EED53</code></span>
+<span class="codeline" id="line-281"><code>}</code></span>
+<span class="codeline" id="line-282"><code></code></span>
+<span class="codeline" id="line-283"><code>// for x in [2.8570,2] = 1/[0.3499,0.5]</code></span>
+<span class="codeline" id="line-284"><code>var p1R2 = [6]float64{</code></span>
+<span class="codeline" id="line-285"><code>	1.07710830106873743082e-07, // 0x3E7CE9D4F65544F4</code></span>
+<span class="codeline" id="line-286"><code>	1.17176219462683348094e-01, // 0x3FBDFF42BE760D83</code></span>
+<span class="codeline" id="line-287"><code>	2.36851496667608785174e+00, // 0x4002F2B7F98FAEC0</code></span>
+<span class="codeline" id="line-288"><code>	1.22426109148261232917e+01, // 0x40287C377F71A964</code></span>
+<span class="codeline" id="line-289"><code>	1.76939711271687727390e+01, // 0x4031B1A8177F8EE2</code></span>
+<span class="codeline" id="line-290"><code>	5.07352312588818499250e+00, // 0x40144B49A574C1FE</code></span>
+<span class="codeline" id="line-291"><code>}</code></span>
+<span class="codeline" id="line-292"><code>var p1S2 = [5]float64{</code></span>
+<span class="codeline" id="line-293"><code>	2.14364859363821409488e+01, // 0x40356FBD8AD5ECDC</code></span>
+<span class="codeline" id="line-294"><code>	1.25290227168402751090e+02, // 0x405F529314F92CD5</code></span>
+<span class="codeline" id="line-295"><code>	2.32276469057162813669e+02, // 0x406D08D8D5A2DBD9</code></span>
+<span class="codeline" id="line-296"><code>	1.17679373287147100768e+02, // 0x405D6B7ADA1884A9</code></span>
+<span class="codeline" id="line-297"><code>	8.36463893371618283368e+00, // 0x4020BAB1F44E5192</code></span>
+<span class="codeline" id="line-298"><code>}</code></span>
+<span class="codeline" id="line-299"><code></code></span>
+<span class="codeline" id="line-300"><code>func pone(x float64) float64 {</code></span>
+<span class="codeline" id="line-301"><code>	var p *[6]float64</code></span>
+<span class="codeline" id="line-302"><code>	var q *[5]float64</code></span>
+<span class="codeline" id="line-303"><code>	if x &gt;= 8 {</code></span>
+<span class="codeline" id="line-304"><code>		p = &amp;p1R8</code></span>
+<span class="codeline" id="line-305"><code>		q = &amp;p1S8</code></span>
+<span class="codeline" id="line-306"><code>	} else if x &gt;= 4.5454 {</code></span>
+<span class="codeline" id="line-307"><code>		p = &amp;p1R5</code></span>
+<span class="codeline" id="line-308"><code>		q = &amp;p1S5</code></span>
+<span class="codeline" id="line-309"><code>	} else if x &gt;= 2.8571 {</code></span>
+<span class="codeline" id="line-310"><code>		p = &amp;p1R3</code></span>
+<span class="codeline" id="line-311"><code>		q = &amp;p1S3</code></span>
+<span class="codeline" id="line-312"><code>	} else if x &gt;= 2 {</code></span>
+<span class="codeline" id="line-313"><code>		p = &amp;p1R2</code></span>
+<span class="codeline" id="line-314"><code>		q = &amp;p1S2</code></span>
+<span class="codeline" id="line-315"><code>	}</code></span>
+<span class="codeline" id="line-316"><code>	z := 1 / (x * x)</code></span>
+<span class="codeline" id="line-317"><code>	r := p[0] + z*(p[1]+z*(p[2]+z*(p[3]+z*(p[4]+z*p[5]))))</code></span>
+<span class="codeline" id="line-318"><code>	s := 1.0 + z*(q[0]+z*(q[1]+z*(q[2]+z*(q[3]+z*q[4]))))</code></span>
+<span class="codeline" id="line-319"><code>	return 1 + r/s</code></span>
+<span class="codeline" id="line-320"><code>}</code></span>
+<span class="codeline" id="line-321"><code></code></span>
+<span class="codeline" id="line-322"><code>// For x &gt;= 8, the asymptotic expansions of qone is</code></span>
+<span class="codeline" id="line-323"><code>//      3/8 s - 105/1024 s**3 - ..., where s = 1/x.</code></span>
+<span class="codeline" id="line-324"><code>// We approximate qone by</code></span>
+<span class="codeline" id="line-325"><code>//      qone(x) = s*(0.375 + (R/S))</code></span>
+<span class="codeline" id="line-326"><code>// where R = qr1*s**2 + qr2*s**4 + ... + qr5*s**10</code></span>
+<span class="codeline" id="line-327"><code>//       S = 1 + qs1*s**2 + ... + qs6*s**12</code></span>
+<span class="codeline" id="line-328"><code>// and</code></span>
+<span class="codeline" id="line-329"><code>//      | qone(x)/s -0.375-R/S | &lt;= 2**(-61.13)</code></span>
+<span class="codeline" id="line-330"><code></code></span>
+<span class="codeline" id="line-331"><code>// for x in [inf, 8] = 1/[0,0.125]</code></span>
+<span class="codeline" id="line-332"><code>var q1R8 = [6]float64{</code></span>
+<span class="codeline" id="line-333"><code>	0.00000000000000000000e+00,  // 0x0000000000000000</code></span>
+<span class="codeline" id="line-334"><code>	-1.02539062499992714161e-01, // 0xBFBA3FFFFFFFFDF3</code></span>
+<span class="codeline" id="line-335"><code>	-1.62717534544589987888e+01, // 0xC0304591A26779F7</code></span>
+<span class="codeline" id="line-336"><code>	-7.59601722513950107896e+02, // 0xC087BCD053E4B576</code></span>
+<span class="codeline" id="line-337"><code>	-1.18498066702429587167e+04, // 0xC0C724E740F87415</code></span>
+<span class="codeline" id="line-338"><code>	-4.84385124285750353010e+04, // 0xC0E7A6D065D09C6A</code></span>
+<span class="codeline" id="line-339"><code>}</code></span>
+<span class="codeline" id="line-340"><code>var q1S8 = [6]float64{</code></span>
+<span class="codeline" id="line-341"><code>	1.61395369700722909556e+02,  // 0x40642CA6DE5BCDE5</code></span>
+<span class="codeline" id="line-342"><code>	7.82538599923348465381e+03,  // 0x40BE9162D0D88419</code></span>
+<span class="codeline" id="line-343"><code>	1.33875336287249578163e+05,  // 0x4100579AB0B75E98</code></span>
+<span class="codeline" id="line-344"><code>	7.19657723683240939863e+05,  // 0x4125F65372869C19</code></span>
+<span class="codeline" id="line-345"><code>	6.66601232617776375264e+05,  // 0x412457D27719AD5C</code></span>
+<span class="codeline" id="line-346"><code>	-2.94490264303834643215e+05, // 0xC111F9690EA5AA18</code></span>
+<span class="codeline" id="line-347"><code>}</code></span>
+<span class="codeline" id="line-348"><code></code></span>
+<span class="codeline" id="line-349"><code>// for x in [8,4.5454] = 1/[0.125,0.22001]</code></span>
+<span class="codeline" id="line-350"><code>var q1R5 = [6]float64{</code></span>
+<span class="codeline" id="line-351"><code>	-2.08979931141764104297e-11, // 0xBDB6FA431AA1A098</code></span>
+<span class="codeline" id="line-352"><code>	-1.02539050241375426231e-01, // 0xBFBA3FFFCB597FEF</code></span>
+<span class="codeline" id="line-353"><code>	-8.05644828123936029840e+00, // 0xC0201CE6CA03AD4B</code></span>
+<span class="codeline" id="line-354"><code>	-1.83669607474888380239e+02, // 0xC066F56D6CA7B9B0</code></span>
+<span class="codeline" id="line-355"><code>	-1.37319376065508163265e+03, // 0xC09574C66931734F</code></span>
+<span class="codeline" id="line-356"><code>	-2.61244440453215656817e+03, // 0xC0A468E388FDA79D</code></span>
+<span class="codeline" id="line-357"><code>}</code></span>
+<span class="codeline" id="line-358"><code>var q1S5 = [6]float64{</code></span>
+<span class="codeline" id="line-359"><code>	8.12765501384335777857e+01,  // 0x405451B2FF5A11B2</code></span>
+<span class="codeline" id="line-360"><code>	1.99179873460485964642e+03,  // 0x409F1F31E77BF839</code></span>
+<span class="codeline" id="line-361"><code>	1.74684851924908907677e+04,  // 0x40D10F1F0D64CE29</code></span>
+<span class="codeline" id="line-362"><code>	4.98514270910352279316e+04,  // 0x40E8576DAABAD197</code></span>
+<span class="codeline" id="line-363"><code>	2.79480751638918118260e+04,  // 0x40DB4B04CF7C364B</code></span>
+<span class="codeline" id="line-364"><code>	-4.71918354795128470869e+03, // 0xC0B26F2EFCFFA004</code></span>
+<span class="codeline" id="line-365"><code>}</code></span>
+<span class="codeline" id="line-366"><code></code></span>
+<span class="codeline" id="line-367"><code>// for x in [4.5454,2.8571] = 1/[0.2199,0.35001] ???</code></span>
+<span class="codeline" id="line-368"><code>var q1R3 = [6]float64{</code></span>
+<span class="codeline" id="line-369"><code>	-5.07831226461766561369e-09, // 0xBE35CFA9D38FC84F</code></span>
+<span class="codeline" id="line-370"><code>	-1.02537829820837089745e-01, // 0xBFBA3FEB51AEED54</code></span>
+<span class="codeline" id="line-371"><code>	-4.61011581139473403113e+00, // 0xC01270C23302D9FF</code></span>
+<span class="codeline" id="line-372"><code>	-5.78472216562783643212e+01, // 0xC04CEC71C25D16DA</code></span>
+<span class="codeline" id="line-373"><code>	-2.28244540737631695038e+02, // 0xC06C87D34718D55F</code></span>
+<span class="codeline" id="line-374"><code>	-2.19210128478909325622e+02, // 0xC06B66B95F5C1BF6</code></span>
+<span class="codeline" id="line-375"><code>}</code></span>
+<span class="codeline" id="line-376"><code>var q1S3 = [6]float64{</code></span>
+<span class="codeline" id="line-377"><code>	4.76651550323729509273e+01,  // 0x4047D523CCD367E4</code></span>
+<span class="codeline" id="line-378"><code>	6.73865112676699709482e+02,  // 0x40850EEBC031EE3E</code></span>
+<span class="codeline" id="line-379"><code>	3.38015286679526343505e+03,  // 0x40AA684E448E7C9A</code></span>
+<span class="codeline" id="line-380"><code>	5.54772909720722782367e+03,  // 0x40B5ABBAA61D54A6</code></span>
+<span class="codeline" id="line-381"><code>	1.90311919338810798763e+03,  // 0x409DBC7A0DD4DF4B</code></span>
+<span class="codeline" id="line-382"><code>	-1.35201191444307340817e+02, // 0xC060E670290A311F</code></span>
+<span class="codeline" id="line-383"><code>}</code></span>
+<span class="codeline" id="line-384"><code></code></span>
+<span class="codeline" id="line-385"><code>// for x in [2.8570,2] = 1/[0.3499,0.5]</code></span>
+<span class="codeline" id="line-386"><code>var q1R2 = [6]float64{</code></span>
+<span class="codeline" id="line-387"><code>	-1.78381727510958865572e-07, // 0xBE87F12644C626D2</code></span>
+<span class="codeline" id="line-388"><code>	-1.02517042607985553460e-01, // 0xBFBA3E8E9148B010</code></span>
+<span class="codeline" id="line-389"><code>	-2.75220568278187460720e+00, // 0xC006048469BB4EDA</code></span>
+<span class="codeline" id="line-390"><code>	-1.96636162643703720221e+01, // 0xC033A9E2C168907F</code></span>
+<span class="codeline" id="line-391"><code>	-4.23253133372830490089e+01, // 0xC04529A3DE104AAA</code></span>
+<span class="codeline" id="line-392"><code>	-2.13719211703704061733e+01, // 0xC0355F3639CF6E52</code></span>
+<span class="codeline" id="line-393"><code>}</code></span>
+<span class="codeline" id="line-394"><code>var q1S2 = [6]float64{</code></span>
+<span class="codeline" id="line-395"><code>	2.95333629060523854548e+01,  // 0x403D888A78AE64FF</code></span>
+<span class="codeline" id="line-396"><code>	2.52981549982190529136e+02,  // 0x406F9F68DB821CBA</code></span>
+<span class="codeline" id="line-397"><code>	7.57502834868645436472e+02,  // 0x4087AC05CE49A0F7</code></span>
+<span class="codeline" id="line-398"><code>	7.39393205320467245656e+02,  // 0x40871B2548D4C029</code></span>
+<span class="codeline" id="line-399"><code>	1.55949003336666123687e+02,  // 0x40637E5E3C3ED8D4</code></span>
+<span class="codeline" id="line-400"><code>	-4.95949898822628210127e+00, // 0xC013D686E71BE86B</code></span>
+<span class="codeline" id="line-401"><code>}</code></span>
+<span class="codeline" id="line-402"><code></code></span>
+<span class="codeline" id="line-403"><code>func qone(x float64) float64 {</code></span>
+<span class="codeline" id="line-404"><code>	var p, q *[6]float64</code></span>
+<span class="codeline" id="line-405"><code>	if x &gt;= 8 {</code></span>
+<span class="codeline" id="line-406"><code>		p = &amp;q1R8</code></span>
+<span class="codeline" id="line-407"><code>		q = &amp;q1S8</code></span>
+<span class="codeline" id="line-408"><code>	} else if x &gt;= 4.5454 {</code></span>
+<span class="codeline" id="line-409"><code>		p = &amp;q1R5</code></span>
+<span class="codeline" id="line-410"><code>		q = &amp;q1S5</code></span>
+<span class="codeline" id="line-411"><code>	} else if x &gt;= 2.8571 {</code></span>
+<span class="codeline" id="line-412"><code>		p = &amp;q1R3</code></span>
+<span class="codeline" id="line-413"><code>		q = &amp;q1S3</code></span>
+<span class="codeline" id="line-414"><code>	} else if x &gt;= 2 {</code></span>
+<span class="codeline" id="line-415"><code>		p = &amp;q1R2</code></span>
+<span class="codeline" id="line-416"><code>		q = &amp;q1S2</code></span>
+<span class="codeline" id="line-417"><code>	}</code></span>
+<span class="codeline" id="line-418"><code>	z := 1 / (x * x)</code></span>
+<span class="codeline" id="line-419"><code>	r := p[0] + z*(p[1]+z*(p[2]+z*(p[3]+z*(p[4]+z*p[5]))))</code></span>
+<span class="codeline" id="line-420"><code>	s := 1 + z*(q[0]+z*(q[1]+z*(q[2]+z*(q[3]+z*(q[4]+z*q[5])))))</code></span>
+<span class="codeline" id="line-421"><code>	return (0.375 + r/s) / x</code></span>
+<span class="codeline" id="line-422"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

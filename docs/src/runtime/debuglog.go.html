@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: debuglog.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	debuglog.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2019 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// This file provides an internal debug logging facility. The debug</code></span>
+<span class="codeline" id="line-6"><code>// log is a lightweight, in-memory, per-M ring buffer. By default, the</code></span>
+<span class="codeline" id="line-7"><code>// runtime prints the debug log on panic.</code></span>
+<span class="codeline" id="line-8"><code>//</code></span>
+<span class="codeline" id="line-9"><code>// To print something to the debug log, call dlog to obtain a dlogger</code></span>
+<span class="codeline" id="line-10"><code>// and use the methods on that to add values. The values will be</code></span>
+<span class="codeline" id="line-11"><code>// space-separated in the output (much like println).</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>// This facility can be enabled by passing -tags debuglog when</code></span>
+<span class="codeline" id="line-14"><code>// building. Without this tag, dlog calls compile to nothing.</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>package runtime</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>import (</code></span>
+<span class="codeline" id="line-19"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-20"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-21"><code>)</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>// debugLogBytes is the size of each per-M ring buffer. This is</code></span>
+<span class="codeline" id="line-24"><code>// allocated off-heap to avoid blowing up the M and hence the GC'd</code></span>
+<span class="codeline" id="line-25"><code>// heap size.</code></span>
+<span class="codeline" id="line-26"><code>const debugLogBytes = 16 &lt;&lt; 10</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>// debugLogStringLimit is the maximum number of bytes in a string.</code></span>
+<span class="codeline" id="line-29"><code>// Above this, the string will be truncated with "..(n more bytes).."</code></span>
+<span class="codeline" id="line-30"><code>const debugLogStringLimit = debugLogBytes / 8</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>// dlog returns a debug logger. The caller can use methods on the</code></span>
+<span class="codeline" id="line-33"><code>// returned logger to add values, which will be space-separated in the</code></span>
+<span class="codeline" id="line-34"><code>// final output, much like println. The caller must call end() to</code></span>
+<span class="codeline" id="line-35"><code>// finish the message.</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// dlog can be used from highly-constrained corners of the runtime: it</code></span>
+<span class="codeline" id="line-38"><code>// is safe to use in the signal handler, from within the write</code></span>
+<span class="codeline" id="line-39"><code>// barrier, from within the stack implementation, and in places that</code></span>
+<span class="codeline" id="line-40"><code>// must be recursively nosplit.</code></span>
+<span class="codeline" id="line-41"><code>//</code></span>
+<span class="codeline" id="line-42"><code>// This will be compiled away if built without the debuglog build tag.</code></span>
+<span class="codeline" id="line-43"><code>// However, argument construction may not be. If any of the arguments</code></span>
+<span class="codeline" id="line-44"><code>// are not literals or trivial expressions, consider protecting the</code></span>
+<span class="codeline" id="line-45"><code>// call with "if dlogEnabled".</code></span>
+<span class="codeline" id="line-46"><code>//</code></span>
+<span class="codeline" id="line-47"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-48"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-49"><code>func dlog() *dlogger {</code></span>
+<span class="codeline" id="line-50"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-51"><code>		return nil</code></span>
+<span class="codeline" id="line-52"><code>	}</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>	// Get the time.</code></span>
+<span class="codeline" id="line-55"><code>	tick, nano := uint64(cputicks()), uint64(nanotime())</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>	// Try to get a cached logger.</code></span>
+<span class="codeline" id="line-58"><code>	l := getCachedDlogger()</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>	// If we couldn't get a cached logger, try to get one from the</code></span>
+<span class="codeline" id="line-61"><code>	// global pool.</code></span>
+<span class="codeline" id="line-62"><code>	if l == nil {</code></span>
+<span class="codeline" id="line-63"><code>		allp := (*uintptr)(unsafe.Pointer(&amp;allDloggers))</code></span>
+<span class="codeline" id="line-64"><code>		all := (*dlogger)(unsafe.Pointer(atomic.Loaduintptr(allp)))</code></span>
+<span class="codeline" id="line-65"><code>		for l1 := all; l1 != nil; l1 = l1.allLink {</code></span>
+<span class="codeline" id="line-66"><code>			if atomic.Load(&amp;l1.owned) == 0 &amp;&amp; atomic.Cas(&amp;l1.owned, 0, 1) {</code></span>
+<span class="codeline" id="line-67"><code>				l = l1</code></span>
+<span class="codeline" id="line-68"><code>				break</code></span>
+<span class="codeline" id="line-69"><code>			}</code></span>
+<span class="codeline" id="line-70"><code>		}</code></span>
+<span class="codeline" id="line-71"><code>	}</code></span>
+<span class="codeline" id="line-72"><code></code></span>
+<span class="codeline" id="line-73"><code>	// If that failed, allocate a new logger.</code></span>
+<span class="codeline" id="line-74"><code>	if l == nil {</code></span>
+<span class="codeline" id="line-75"><code>		l = (*dlogger)(sysAlloc(unsafe.Sizeof(dlogger{}), nil))</code></span>
+<span class="codeline" id="line-76"><code>		if l == nil {</code></span>
+<span class="codeline" id="line-77"><code>			throw("failed to allocate debug log")</code></span>
+<span class="codeline" id="line-78"><code>		}</code></span>
+<span class="codeline" id="line-79"><code>		l.w.r.data = &amp;l.w.data</code></span>
+<span class="codeline" id="line-80"><code>		l.owned = 1</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>		// Prepend to allDloggers list.</code></span>
+<span class="codeline" id="line-83"><code>		headp := (*uintptr)(unsafe.Pointer(&amp;allDloggers))</code></span>
+<span class="codeline" id="line-84"><code>		for {</code></span>
+<span class="codeline" id="line-85"><code>			head := atomic.Loaduintptr(headp)</code></span>
+<span class="codeline" id="line-86"><code>			l.allLink = (*dlogger)(unsafe.Pointer(head))</code></span>
+<span class="codeline" id="line-87"><code>			if atomic.Casuintptr(headp, head, uintptr(unsafe.Pointer(l))) {</code></span>
+<span class="codeline" id="line-88"><code>				break</code></span>
+<span class="codeline" id="line-89"><code>			}</code></span>
+<span class="codeline" id="line-90"><code>		}</code></span>
+<span class="codeline" id="line-91"><code>	}</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>	// If the time delta is getting too high, write a new sync</code></span>
+<span class="codeline" id="line-94"><code>	// packet. We set the limit so we don't write more than 6</code></span>
+<span class="codeline" id="line-95"><code>	// bytes of delta in the record header.</code></span>
+<span class="codeline" id="line-96"><code>	const deltaLimit = 1&lt;&lt;(3*7) - 1 // ~2ms between sync packets</code></span>
+<span class="codeline" id="line-97"><code>	if tick-l.w.tick &gt; deltaLimit || nano-l.w.nano &gt; deltaLimit {</code></span>
+<span class="codeline" id="line-98"><code>		l.w.writeSync(tick, nano)</code></span>
+<span class="codeline" id="line-99"><code>	}</code></span>
+<span class="codeline" id="line-100"><code></code></span>
+<span class="codeline" id="line-101"><code>	// Reserve space for framing header.</code></span>
+<span class="codeline" id="line-102"><code>	l.w.ensure(debugLogHeaderSize)</code></span>
+<span class="codeline" id="line-103"><code>	l.w.write += debugLogHeaderSize</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>	// Write record header.</code></span>
+<span class="codeline" id="line-106"><code>	l.w.uvarint(tick - l.w.tick)</code></span>
+<span class="codeline" id="line-107"><code>	l.w.uvarint(nano - l.w.nano)</code></span>
+<span class="codeline" id="line-108"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-109"><code>	if gp != nil &amp;&amp; gp.m != nil &amp;&amp; gp.m.p != 0 {</code></span>
+<span class="codeline" id="line-110"><code>		l.w.varint(int64(gp.m.p.ptr().id))</code></span>
+<span class="codeline" id="line-111"><code>	} else {</code></span>
+<span class="codeline" id="line-112"><code>		l.w.varint(-1)</code></span>
+<span class="codeline" id="line-113"><code>	}</code></span>
+<span class="codeline" id="line-114"><code></code></span>
+<span class="codeline" id="line-115"><code>	return l</code></span>
+<span class="codeline" id="line-116"><code>}</code></span>
+<span class="codeline" id="line-117"><code></code></span>
+<span class="codeline" id="line-118"><code>// A dlogger writes to the debug log.</code></span>
+<span class="codeline" id="line-119"><code>//</code></span>
+<span class="codeline" id="line-120"><code>// To obtain a dlogger, call dlog(). When done with the dlogger, call</code></span>
+<span class="codeline" id="line-121"><code>// end().</code></span>
+<span class="codeline" id="line-122"><code>//</code></span>
+<span class="codeline" id="line-123"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-124"><code>type dlogger struct {</code></span>
+<span class="codeline" id="line-125"><code>	w debugLogWriter</code></span>
+<span class="codeline" id="line-126"><code></code></span>
+<span class="codeline" id="line-127"><code>	// allLink is the next dlogger in the allDloggers list.</code></span>
+<span class="codeline" id="line-128"><code>	allLink *dlogger</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>	// owned indicates that this dlogger is owned by an M. This is</code></span>
+<span class="codeline" id="line-131"><code>	// accessed atomically.</code></span>
+<span class="codeline" id="line-132"><code>	owned uint32</code></span>
+<span class="codeline" id="line-133"><code>}</code></span>
+<span class="codeline" id="line-134"><code></code></span>
+<span class="codeline" id="line-135"><code>// allDloggers is a list of all dloggers, linked through</code></span>
+<span class="codeline" id="line-136"><code>// dlogger.allLink. This is accessed atomically. This is prepend only,</code></span>
+<span class="codeline" id="line-137"><code>// so it doesn't need to protect against ABA races.</code></span>
+<span class="codeline" id="line-138"><code>var allDloggers *dlogger</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-141"><code>func (l *dlogger) end() {</code></span>
+<span class="codeline" id="line-142"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-143"><code>		return</code></span>
+<span class="codeline" id="line-144"><code>	}</code></span>
+<span class="codeline" id="line-145"><code></code></span>
+<span class="codeline" id="line-146"><code>	// Fill in framing header.</code></span>
+<span class="codeline" id="line-147"><code>	size := l.w.write - l.w.r.end</code></span>
+<span class="codeline" id="line-148"><code>	if !l.w.writeFrameAt(l.w.r.end, size) {</code></span>
+<span class="codeline" id="line-149"><code>		throw("record too large")</code></span>
+<span class="codeline" id="line-150"><code>	}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>	// Commit the record.</code></span>
+<span class="codeline" id="line-153"><code>	l.w.r.end = l.w.write</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>	// Attempt to return this logger to the cache.</code></span>
+<span class="codeline" id="line-156"><code>	if putCachedDlogger(l) {</code></span>
+<span class="codeline" id="line-157"><code>		return</code></span>
+<span class="codeline" id="line-158"><code>	}</code></span>
+<span class="codeline" id="line-159"><code></code></span>
+<span class="codeline" id="line-160"><code>	// Return the logger to the global pool.</code></span>
+<span class="codeline" id="line-161"><code>	atomic.Store(&amp;l.owned, 0)</code></span>
+<span class="codeline" id="line-162"><code>}</code></span>
+<span class="codeline" id="line-163"><code></code></span>
+<span class="codeline" id="line-164"><code>const (</code></span>
+<span class="codeline" id="line-165"><code>	debugLogUnknown = 1 + iota</code></span>
+<span class="codeline" id="line-166"><code>	debugLogBoolTrue</code></span>
+<span class="codeline" id="line-167"><code>	debugLogBoolFalse</code></span>
+<span class="codeline" id="line-168"><code>	debugLogInt</code></span>
+<span class="codeline" id="line-169"><code>	debugLogUint</code></span>
+<span class="codeline" id="line-170"><code>	debugLogHex</code></span>
+<span class="codeline" id="line-171"><code>	debugLogPtr</code></span>
+<span class="codeline" id="line-172"><code>	debugLogString</code></span>
+<span class="codeline" id="line-173"><code>	debugLogConstString</code></span>
+<span class="codeline" id="line-174"><code>	debugLogStringOverflow</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>	debugLogPC</code></span>
+<span class="codeline" id="line-177"><code>	debugLogTraceback</code></span>
+<span class="codeline" id="line-178"><code>)</code></span>
+<span class="codeline" id="line-179"><code></code></span>
+<span class="codeline" id="line-180"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-181"><code>func (l *dlogger) b(x bool) *dlogger {</code></span>
+<span class="codeline" id="line-182"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-183"><code>		return l</code></span>
+<span class="codeline" id="line-184"><code>	}</code></span>
+<span class="codeline" id="line-185"><code>	if x {</code></span>
+<span class="codeline" id="line-186"><code>		l.w.byte(debugLogBoolTrue)</code></span>
+<span class="codeline" id="line-187"><code>	} else {</code></span>
+<span class="codeline" id="line-188"><code>		l.w.byte(debugLogBoolFalse)</code></span>
+<span class="codeline" id="line-189"><code>	}</code></span>
+<span class="codeline" id="line-190"><code>	return l</code></span>
+<span class="codeline" id="line-191"><code>}</code></span>
+<span class="codeline" id="line-192"><code></code></span>
+<span class="codeline" id="line-193"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-194"><code>func (l *dlogger) i(x int) *dlogger {</code></span>
+<span class="codeline" id="line-195"><code>	return l.i64(int64(x))</code></span>
+<span class="codeline" id="line-196"><code>}</code></span>
+<span class="codeline" id="line-197"><code></code></span>
+<span class="codeline" id="line-198"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-199"><code>func (l *dlogger) i8(x int8) *dlogger {</code></span>
+<span class="codeline" id="line-200"><code>	return l.i64(int64(x))</code></span>
+<span class="codeline" id="line-201"><code>}</code></span>
+<span class="codeline" id="line-202"><code></code></span>
+<span class="codeline" id="line-203"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-204"><code>func (l *dlogger) i16(x int16) *dlogger {</code></span>
+<span class="codeline" id="line-205"><code>	return l.i64(int64(x))</code></span>
+<span class="codeline" id="line-206"><code>}</code></span>
+<span class="codeline" id="line-207"><code></code></span>
+<span class="codeline" id="line-208"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-209"><code>func (l *dlogger) i32(x int32) *dlogger {</code></span>
+<span class="codeline" id="line-210"><code>	return l.i64(int64(x))</code></span>
+<span class="codeline" id="line-211"><code>}</code></span>
+<span class="codeline" id="line-212"><code></code></span>
+<span class="codeline" id="line-213"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-214"><code>func (l *dlogger) i64(x int64) *dlogger {</code></span>
+<span class="codeline" id="line-215"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-216"><code>		return l</code></span>
+<span class="codeline" id="line-217"><code>	}</code></span>
+<span class="codeline" id="line-218"><code>	l.w.byte(debugLogInt)</code></span>
+<span class="codeline" id="line-219"><code>	l.w.varint(x)</code></span>
+<span class="codeline" id="line-220"><code>	return l</code></span>
+<span class="codeline" id="line-221"><code>}</code></span>
+<span class="codeline" id="line-222"><code></code></span>
+<span class="codeline" id="line-223"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-224"><code>func (l *dlogger) u(x uint) *dlogger {</code></span>
+<span class="codeline" id="line-225"><code>	return l.u64(uint64(x))</code></span>
+<span class="codeline" id="line-226"><code>}</code></span>
+<span class="codeline" id="line-227"><code></code></span>
+<span class="codeline" id="line-228"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-229"><code>func (l *dlogger) uptr(x uintptr) *dlogger {</code></span>
+<span class="codeline" id="line-230"><code>	return l.u64(uint64(x))</code></span>
+<span class="codeline" id="line-231"><code>}</code></span>
+<span class="codeline" id="line-232"><code></code></span>
+<span class="codeline" id="line-233"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-234"><code>func (l *dlogger) u8(x uint8) *dlogger {</code></span>
+<span class="codeline" id="line-235"><code>	return l.u64(uint64(x))</code></span>
+<span class="codeline" id="line-236"><code>}</code></span>
+<span class="codeline" id="line-237"><code></code></span>
+<span class="codeline" id="line-238"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-239"><code>func (l *dlogger) u16(x uint16) *dlogger {</code></span>
+<span class="codeline" id="line-240"><code>	return l.u64(uint64(x))</code></span>
+<span class="codeline" id="line-241"><code>}</code></span>
+<span class="codeline" id="line-242"><code></code></span>
+<span class="codeline" id="line-243"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-244"><code>func (l *dlogger) u32(x uint32) *dlogger {</code></span>
+<span class="codeline" id="line-245"><code>	return l.u64(uint64(x))</code></span>
+<span class="codeline" id="line-246"><code>}</code></span>
+<span class="codeline" id="line-247"><code></code></span>
+<span class="codeline" id="line-248"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-249"><code>func (l *dlogger) u64(x uint64) *dlogger {</code></span>
+<span class="codeline" id="line-250"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-251"><code>		return l</code></span>
+<span class="codeline" id="line-252"><code>	}</code></span>
+<span class="codeline" id="line-253"><code>	l.w.byte(debugLogUint)</code></span>
+<span class="codeline" id="line-254"><code>	l.w.uvarint(x)</code></span>
+<span class="codeline" id="line-255"><code>	return l</code></span>
+<span class="codeline" id="line-256"><code>}</code></span>
+<span class="codeline" id="line-257"><code></code></span>
+<span class="codeline" id="line-258"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-259"><code>func (l *dlogger) hex(x uint64) *dlogger {</code></span>
+<span class="codeline" id="line-260"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-261"><code>		return l</code></span>
+<span class="codeline" id="line-262"><code>	}</code></span>
+<span class="codeline" id="line-263"><code>	l.w.byte(debugLogHex)</code></span>
+<span class="codeline" id="line-264"><code>	l.w.uvarint(x)</code></span>
+<span class="codeline" id="line-265"><code>	return l</code></span>
+<span class="codeline" id="line-266"><code>}</code></span>
+<span class="codeline" id="line-267"><code></code></span>
+<span class="codeline" id="line-268"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-269"><code>func (l *dlogger) p(x interface{}) *dlogger {</code></span>
+<span class="codeline" id="line-270"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-271"><code>		return l</code></span>
+<span class="codeline" id="line-272"><code>	}</code></span>
+<span class="codeline" id="line-273"><code>	l.w.byte(debugLogPtr)</code></span>
+<span class="codeline" id="line-274"><code>	if x == nil {</code></span>
+<span class="codeline" id="line-275"><code>		l.w.uvarint(0)</code></span>
+<span class="codeline" id="line-276"><code>	} else {</code></span>
+<span class="codeline" id="line-277"><code>		v := efaceOf(&amp;x)</code></span>
+<span class="codeline" id="line-278"><code>		switch v._type.kind &amp; kindMask {</code></span>
+<span class="codeline" id="line-279"><code>		case kindChan, kindFunc, kindMap, kindPtr, kindUnsafePointer:</code></span>
+<span class="codeline" id="line-280"><code>			l.w.uvarint(uint64(uintptr(v.data)))</code></span>
+<span class="codeline" id="line-281"><code>		default:</code></span>
+<span class="codeline" id="line-282"><code>			throw("not a pointer type")</code></span>
+<span class="codeline" id="line-283"><code>		}</code></span>
+<span class="codeline" id="line-284"><code>	}</code></span>
+<span class="codeline" id="line-285"><code>	return l</code></span>
+<span class="codeline" id="line-286"><code>}</code></span>
+<span class="codeline" id="line-287"><code></code></span>
+<span class="codeline" id="line-288"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-289"><code>func (l *dlogger) s(x string) *dlogger {</code></span>
+<span class="codeline" id="line-290"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-291"><code>		return l</code></span>
+<span class="codeline" id="line-292"><code>	}</code></span>
+<span class="codeline" id="line-293"><code>	str := stringStructOf(&amp;x)</code></span>
+<span class="codeline" id="line-294"><code>	datap := &amp;firstmoduledata</code></span>
+<span class="codeline" id="line-295"><code>	if len(x) &gt; 4 &amp;&amp; datap.etext &lt;= uintptr(str.str) &amp;&amp; uintptr(str.str) &lt; datap.end {</code></span>
+<span class="codeline" id="line-296"><code>		// String constants are in the rodata section, which</code></span>
+<span class="codeline" id="line-297"><code>		// isn't recorded in moduledata. But it has to be</code></span>
+<span class="codeline" id="line-298"><code>		// somewhere between etext and end.</code></span>
+<span class="codeline" id="line-299"><code>		l.w.byte(debugLogConstString)</code></span>
+<span class="codeline" id="line-300"><code>		l.w.uvarint(uint64(str.len))</code></span>
+<span class="codeline" id="line-301"><code>		l.w.uvarint(uint64(uintptr(str.str) - datap.etext))</code></span>
+<span class="codeline" id="line-302"><code>	} else {</code></span>
+<span class="codeline" id="line-303"><code>		l.w.byte(debugLogString)</code></span>
+<span class="codeline" id="line-304"><code>		var b []byte</code></span>
+<span class="codeline" id="line-305"><code>		bb := (*slice)(unsafe.Pointer(&amp;b))</code></span>
+<span class="codeline" id="line-306"><code>		bb.array = str.str</code></span>
+<span class="codeline" id="line-307"><code>		bb.len, bb.cap = str.len, str.len</code></span>
+<span class="codeline" id="line-308"><code>		if len(b) &gt; debugLogStringLimit {</code></span>
+<span class="codeline" id="line-309"><code>			b = b[:debugLogStringLimit]</code></span>
+<span class="codeline" id="line-310"><code>		}</code></span>
+<span class="codeline" id="line-311"><code>		l.w.uvarint(uint64(len(b)))</code></span>
+<span class="codeline" id="line-312"><code>		l.w.bytes(b)</code></span>
+<span class="codeline" id="line-313"><code>		if len(b) != len(x) {</code></span>
+<span class="codeline" id="line-314"><code>			l.w.byte(debugLogStringOverflow)</code></span>
+<span class="codeline" id="line-315"><code>			l.w.uvarint(uint64(len(x) - len(b)))</code></span>
+<span class="codeline" id="line-316"><code>		}</code></span>
+<span class="codeline" id="line-317"><code>	}</code></span>
+<span class="codeline" id="line-318"><code>	return l</code></span>
+<span class="codeline" id="line-319"><code>}</code></span>
+<span class="codeline" id="line-320"><code></code></span>
+<span class="codeline" id="line-321"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-322"><code>func (l *dlogger) pc(x uintptr) *dlogger {</code></span>
+<span class="codeline" id="line-323"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-324"><code>		return l</code></span>
+<span class="codeline" id="line-325"><code>	}</code></span>
+<span class="codeline" id="line-326"><code>	l.w.byte(debugLogPC)</code></span>
+<span class="codeline" id="line-327"><code>	l.w.uvarint(uint64(x))</code></span>
+<span class="codeline" id="line-328"><code>	return l</code></span>
+<span class="codeline" id="line-329"><code>}</code></span>
+<span class="codeline" id="line-330"><code></code></span>
+<span class="codeline" id="line-331"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-332"><code>func (l *dlogger) traceback(x []uintptr) *dlogger {</code></span>
+<span class="codeline" id="line-333"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-334"><code>		return l</code></span>
+<span class="codeline" id="line-335"><code>	}</code></span>
+<span class="codeline" id="line-336"><code>	l.w.byte(debugLogTraceback)</code></span>
+<span class="codeline" id="line-337"><code>	l.w.uvarint(uint64(len(x)))</code></span>
+<span class="codeline" id="line-338"><code>	for _, pc := range x {</code></span>
+<span class="codeline" id="line-339"><code>		l.w.uvarint(uint64(pc))</code></span>
+<span class="codeline" id="line-340"><code>	}</code></span>
+<span class="codeline" id="line-341"><code>	return l</code></span>
+<span class="codeline" id="line-342"><code>}</code></span>
+<span class="codeline" id="line-343"><code></code></span>
+<span class="codeline" id="line-344"><code>// A debugLogWriter is a ring buffer of binary debug log records.</code></span>
+<span class="codeline" id="line-345"><code>//</code></span>
+<span class="codeline" id="line-346"><code>// A log record consists of a 2-byte framing header and a sequence of</code></span>
+<span class="codeline" id="line-347"><code>// fields. The framing header gives the size of the record as a little</code></span>
+<span class="codeline" id="line-348"><code>// endian 16-bit value. Each field starts with a byte indicating its</code></span>
+<span class="codeline" id="line-349"><code>// type, followed by type-specific data. If the size in the framing</code></span>
+<span class="codeline" id="line-350"><code>// header is 0, it's a sync record consisting of two little endian</code></span>
+<span class="codeline" id="line-351"><code>// 64-bit values giving a new time base.</code></span>
+<span class="codeline" id="line-352"><code>//</code></span>
+<span class="codeline" id="line-353"><code>// Because this is a ring buffer, new records will eventually</code></span>
+<span class="codeline" id="line-354"><code>// overwrite old records. Hence, it maintains a reader that consumes</code></span>
+<span class="codeline" id="line-355"><code>// the log as it gets overwritten. That reader state is where an</code></span>
+<span class="codeline" id="line-356"><code>// actual log reader would start.</code></span>
+<span class="codeline" id="line-357"><code>//</code></span>
+<span class="codeline" id="line-358"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-359"><code>type debugLogWriter struct {</code></span>
+<span class="codeline" id="line-360"><code>	write uint64</code></span>
+<span class="codeline" id="line-361"><code>	data  debugLogBuf</code></span>
+<span class="codeline" id="line-362"><code></code></span>
+<span class="codeline" id="line-363"><code>	// tick and nano are the time bases from the most recently</code></span>
+<span class="codeline" id="line-364"><code>	// written sync record.</code></span>
+<span class="codeline" id="line-365"><code>	tick, nano uint64</code></span>
+<span class="codeline" id="line-366"><code></code></span>
+<span class="codeline" id="line-367"><code>	// r is a reader that consumes records as they get overwritten</code></span>
+<span class="codeline" id="line-368"><code>	// by the writer. It also acts as the initial reader state</code></span>
+<span class="codeline" id="line-369"><code>	// when printing the log.</code></span>
+<span class="codeline" id="line-370"><code>	r debugLogReader</code></span>
+<span class="codeline" id="line-371"><code></code></span>
+<span class="codeline" id="line-372"><code>	// buf is a scratch buffer for encoding. This is here to</code></span>
+<span class="codeline" id="line-373"><code>	// reduce stack usage.</code></span>
+<span class="codeline" id="line-374"><code>	buf [10]byte</code></span>
+<span class="codeline" id="line-375"><code>}</code></span>
+<span class="codeline" id="line-376"><code></code></span>
+<span class="codeline" id="line-377"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-378"><code>type debugLogBuf [debugLogBytes]byte</code></span>
+<span class="codeline" id="line-379"><code></code></span>
+<span class="codeline" id="line-380"><code>const (</code></span>
+<span class="codeline" id="line-381"><code>	// debugLogHeaderSize is the number of bytes in the framing</code></span>
+<span class="codeline" id="line-382"><code>	// header of every dlog record.</code></span>
+<span class="codeline" id="line-383"><code>	debugLogHeaderSize = 2</code></span>
+<span class="codeline" id="line-384"><code></code></span>
+<span class="codeline" id="line-385"><code>	// debugLogSyncSize is the number of bytes in a sync record.</code></span>
+<span class="codeline" id="line-386"><code>	debugLogSyncSize = debugLogHeaderSize + 2*8</code></span>
+<span class="codeline" id="line-387"><code>)</code></span>
+<span class="codeline" id="line-388"><code></code></span>
+<span class="codeline" id="line-389"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-390"><code>func (l *debugLogWriter) ensure(n uint64) {</code></span>
+<span class="codeline" id="line-391"><code>	for l.write+n &gt;= l.r.begin+uint64(len(l.data)) {</code></span>
+<span class="codeline" id="line-392"><code>		// Consume record at begin.</code></span>
+<span class="codeline" id="line-393"><code>		if l.r.skip() == ^uint64(0) {</code></span>
+<span class="codeline" id="line-394"><code>			// Wrapped around within a record.</code></span>
+<span class="codeline" id="line-395"><code>			//</code></span>
+<span class="codeline" id="line-396"><code>			// TODO(austin): It would be better to just</code></span>
+<span class="codeline" id="line-397"><code>			// eat the whole buffer at this point, but we</code></span>
+<span class="codeline" id="line-398"><code>			// have to communicate that to the reader</code></span>
+<span class="codeline" id="line-399"><code>			// somehow.</code></span>
+<span class="codeline" id="line-400"><code>			throw("record wrapped around")</code></span>
+<span class="codeline" id="line-401"><code>		}</code></span>
+<span class="codeline" id="line-402"><code>	}</code></span>
+<span class="codeline" id="line-403"><code>}</code></span>
+<span class="codeline" id="line-404"><code></code></span>
+<span class="codeline" id="line-405"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-406"><code>func (l *debugLogWriter) writeFrameAt(pos, size uint64) bool {</code></span>
+<span class="codeline" id="line-407"><code>	l.data[pos%uint64(len(l.data))] = uint8(size)</code></span>
+<span class="codeline" id="line-408"><code>	l.data[(pos+1)%uint64(len(l.data))] = uint8(size &gt;&gt; 8)</code></span>
+<span class="codeline" id="line-409"><code>	return size &lt;= 0xFFFF</code></span>
+<span class="codeline" id="line-410"><code>}</code></span>
+<span class="codeline" id="line-411"><code></code></span>
+<span class="codeline" id="line-412"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-413"><code>func (l *debugLogWriter) writeSync(tick, nano uint64) {</code></span>
+<span class="codeline" id="line-414"><code>	l.tick, l.nano = tick, nano</code></span>
+<span class="codeline" id="line-415"><code>	l.ensure(debugLogHeaderSize)</code></span>
+<span class="codeline" id="line-416"><code>	l.writeFrameAt(l.write, 0)</code></span>
+<span class="codeline" id="line-417"><code>	l.write += debugLogHeaderSize</code></span>
+<span class="codeline" id="line-418"><code>	l.writeUint64LE(tick)</code></span>
+<span class="codeline" id="line-419"><code>	l.writeUint64LE(nano)</code></span>
+<span class="codeline" id="line-420"><code>	l.r.end = l.write</code></span>
+<span class="codeline" id="line-421"><code>}</code></span>
+<span class="codeline" id="line-422"><code></code></span>
+<span class="codeline" id="line-423"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-424"><code>func (l *debugLogWriter) writeUint64LE(x uint64) {</code></span>
+<span class="codeline" id="line-425"><code>	var b [8]byte</code></span>
+<span class="codeline" id="line-426"><code>	b[0] = byte(x)</code></span>
+<span class="codeline" id="line-427"><code>	b[1] = byte(x &gt;&gt; 8)</code></span>
+<span class="codeline" id="line-428"><code>	b[2] = byte(x &gt;&gt; 16)</code></span>
+<span class="codeline" id="line-429"><code>	b[3] = byte(x &gt;&gt; 24)</code></span>
+<span class="codeline" id="line-430"><code>	b[4] = byte(x &gt;&gt; 32)</code></span>
+<span class="codeline" id="line-431"><code>	b[5] = byte(x &gt;&gt; 40)</code></span>
+<span class="codeline" id="line-432"><code>	b[6] = byte(x &gt;&gt; 48)</code></span>
+<span class="codeline" id="line-433"><code>	b[7] = byte(x &gt;&gt; 56)</code></span>
+<span class="codeline" id="line-434"><code>	l.bytes(b[:])</code></span>
+<span class="codeline" id="line-435"><code>}</code></span>
+<span class="codeline" id="line-436"><code></code></span>
+<span class="codeline" id="line-437"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-438"><code>func (l *debugLogWriter) byte(x byte) {</code></span>
+<span class="codeline" id="line-439"><code>	l.ensure(1)</code></span>
+<span class="codeline" id="line-440"><code>	pos := l.write</code></span>
+<span class="codeline" id="line-441"><code>	l.write++</code></span>
+<span class="codeline" id="line-442"><code>	l.data[pos%uint64(len(l.data))] = x</code></span>
+<span class="codeline" id="line-443"><code>}</code></span>
+<span class="codeline" id="line-444"><code></code></span>
+<span class="codeline" id="line-445"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-446"><code>func (l *debugLogWriter) bytes(x []byte) {</code></span>
+<span class="codeline" id="line-447"><code>	l.ensure(uint64(len(x)))</code></span>
+<span class="codeline" id="line-448"><code>	pos := l.write</code></span>
+<span class="codeline" id="line-449"><code>	l.write += uint64(len(x))</code></span>
+<span class="codeline" id="line-450"><code>	for len(x) &gt; 0 {</code></span>
+<span class="codeline" id="line-451"><code>		n := copy(l.data[pos%uint64(len(l.data)):], x)</code></span>
+<span class="codeline" id="line-452"><code>		pos += uint64(n)</code></span>
+<span class="codeline" id="line-453"><code>		x = x[n:]</code></span>
+<span class="codeline" id="line-454"><code>	}</code></span>
+<span class="codeline" id="line-455"><code>}</code></span>
+<span class="codeline" id="line-456"><code></code></span>
+<span class="codeline" id="line-457"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-458"><code>func (l *debugLogWriter) varint(x int64) {</code></span>
+<span class="codeline" id="line-459"><code>	var u uint64</code></span>
+<span class="codeline" id="line-460"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-461"><code>		u = (^uint64(x) &lt;&lt; 1) | 1 // complement i, bit 0 is 1</code></span>
+<span class="codeline" id="line-462"><code>	} else {</code></span>
+<span class="codeline" id="line-463"><code>		u = (uint64(x) &lt;&lt; 1) // do not complement i, bit 0 is 0</code></span>
+<span class="codeline" id="line-464"><code>	}</code></span>
+<span class="codeline" id="line-465"><code>	l.uvarint(u)</code></span>
+<span class="codeline" id="line-466"><code>}</code></span>
+<span class="codeline" id="line-467"><code></code></span>
+<span class="codeline" id="line-468"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-469"><code>func (l *debugLogWriter) uvarint(u uint64) {</code></span>
+<span class="codeline" id="line-470"><code>	i := 0</code></span>
+<span class="codeline" id="line-471"><code>	for u &gt;= 0x80 {</code></span>
+<span class="codeline" id="line-472"><code>		l.buf[i] = byte(u) | 0x80</code></span>
+<span class="codeline" id="line-473"><code>		u &gt;&gt;= 7</code></span>
+<span class="codeline" id="line-474"><code>		i++</code></span>
+<span class="codeline" id="line-475"><code>	}</code></span>
+<span class="codeline" id="line-476"><code>	l.buf[i] = byte(u)</code></span>
+<span class="codeline" id="line-477"><code>	i++</code></span>
+<span class="codeline" id="line-478"><code>	l.bytes(l.buf[:i])</code></span>
+<span class="codeline" id="line-479"><code>}</code></span>
+<span class="codeline" id="line-480"><code></code></span>
+<span class="codeline" id="line-481"><code>type debugLogReader struct {</code></span>
+<span class="codeline" id="line-482"><code>	data *debugLogBuf</code></span>
+<span class="codeline" id="line-483"><code></code></span>
+<span class="codeline" id="line-484"><code>	// begin and end are the positions in the log of the beginning</code></span>
+<span class="codeline" id="line-485"><code>	// and end of the log data, modulo len(data).</code></span>
+<span class="codeline" id="line-486"><code>	begin, end uint64</code></span>
+<span class="codeline" id="line-487"><code></code></span>
+<span class="codeline" id="line-488"><code>	// tick and nano are the current time base at begin.</code></span>
+<span class="codeline" id="line-489"><code>	tick, nano uint64</code></span>
+<span class="codeline" id="line-490"><code>}</code></span>
+<span class="codeline" id="line-491"><code></code></span>
+<span class="codeline" id="line-492"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-493"><code>func (r *debugLogReader) skip() uint64 {</code></span>
+<span class="codeline" id="line-494"><code>	// Read size at pos.</code></span>
+<span class="codeline" id="line-495"><code>	if r.begin+debugLogHeaderSize &gt; r.end {</code></span>
+<span class="codeline" id="line-496"><code>		return ^uint64(0)</code></span>
+<span class="codeline" id="line-497"><code>	}</code></span>
+<span class="codeline" id="line-498"><code>	size := uint64(r.readUint16LEAt(r.begin))</code></span>
+<span class="codeline" id="line-499"><code>	if size == 0 {</code></span>
+<span class="codeline" id="line-500"><code>		// Sync packet.</code></span>
+<span class="codeline" id="line-501"><code>		r.tick = r.readUint64LEAt(r.begin + debugLogHeaderSize)</code></span>
+<span class="codeline" id="line-502"><code>		r.nano = r.readUint64LEAt(r.begin + debugLogHeaderSize + 8)</code></span>
+<span class="codeline" id="line-503"><code>		size = debugLogSyncSize</code></span>
+<span class="codeline" id="line-504"><code>	}</code></span>
+<span class="codeline" id="line-505"><code>	if r.begin+size &gt; r.end {</code></span>
+<span class="codeline" id="line-506"><code>		return ^uint64(0)</code></span>
+<span class="codeline" id="line-507"><code>	}</code></span>
+<span class="codeline" id="line-508"><code>	r.begin += size</code></span>
+<span class="codeline" id="line-509"><code>	return size</code></span>
+<span class="codeline" id="line-510"><code>}</code></span>
+<span class="codeline" id="line-511"><code></code></span>
+<span class="codeline" id="line-512"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-513"><code>func (r *debugLogReader) readUint16LEAt(pos uint64) uint16 {</code></span>
+<span class="codeline" id="line-514"><code>	return uint16(r.data[pos%uint64(len(r.data))]) |</code></span>
+<span class="codeline" id="line-515"><code>		uint16(r.data[(pos+1)%uint64(len(r.data))])&lt;&lt;8</code></span>
+<span class="codeline" id="line-516"><code>}</code></span>
+<span class="codeline" id="line-517"><code></code></span>
+<span class="codeline" id="line-518"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-519"><code>func (r *debugLogReader) readUint64LEAt(pos uint64) uint64 {</code></span>
+<span class="codeline" id="line-520"><code>	var b [8]byte</code></span>
+<span class="codeline" id="line-521"><code>	for i := range b {</code></span>
+<span class="codeline" id="line-522"><code>		b[i] = r.data[pos%uint64(len(r.data))]</code></span>
+<span class="codeline" id="line-523"><code>		pos++</code></span>
+<span class="codeline" id="line-524"><code>	}</code></span>
+<span class="codeline" id="line-525"><code>	return uint64(b[0]) | uint64(b[1])&lt;&lt;8 |</code></span>
+<span class="codeline" id="line-526"><code>		uint64(b[2])&lt;&lt;16 | uint64(b[3])&lt;&lt;24 |</code></span>
+<span class="codeline" id="line-527"><code>		uint64(b[4])&lt;&lt;32 | uint64(b[5])&lt;&lt;40 |</code></span>
+<span class="codeline" id="line-528"><code>		uint64(b[6])&lt;&lt;48 | uint64(b[7])&lt;&lt;56</code></span>
+<span class="codeline" id="line-529"><code>}</code></span>
+<span class="codeline" id="line-530"><code></code></span>
+<span class="codeline" id="line-531"><code>func (r *debugLogReader) peek() (tick uint64) {</code></span>
+<span class="codeline" id="line-532"><code>	// Consume any sync records.</code></span>
+<span class="codeline" id="line-533"><code>	size := uint64(0)</code></span>
+<span class="codeline" id="line-534"><code>	for size == 0 {</code></span>
+<span class="codeline" id="line-535"><code>		if r.begin+debugLogHeaderSize &gt; r.end {</code></span>
+<span class="codeline" id="line-536"><code>			return ^uint64(0)</code></span>
+<span class="codeline" id="line-537"><code>		}</code></span>
+<span class="codeline" id="line-538"><code>		size = uint64(r.readUint16LEAt(r.begin))</code></span>
+<span class="codeline" id="line-539"><code>		if size != 0 {</code></span>
+<span class="codeline" id="line-540"><code>			break</code></span>
+<span class="codeline" id="line-541"><code>		}</code></span>
+<span class="codeline" id="line-542"><code>		if r.begin+debugLogSyncSize &gt; r.end {</code></span>
+<span class="codeline" id="line-543"><code>			return ^uint64(0)</code></span>
+<span class="codeline" id="line-544"><code>		}</code></span>
+<span class="codeline" id="line-545"><code>		// Sync packet.</code></span>
+<span class="codeline" id="line-546"><code>		r.tick = r.readUint64LEAt(r.begin + debugLogHeaderSize)</code></span>
+<span class="codeline" id="line-547"><code>		r.nano = r.readUint64LEAt(r.begin + debugLogHeaderSize + 8)</code></span>
+<span class="codeline" id="line-548"><code>		r.begin += debugLogSyncSize</code></span>
+<span class="codeline" id="line-549"><code>	}</code></span>
+<span class="codeline" id="line-550"><code></code></span>
+<span class="codeline" id="line-551"><code>	// Peek tick delta.</code></span>
+<span class="codeline" id="line-552"><code>	if r.begin+size &gt; r.end {</code></span>
+<span class="codeline" id="line-553"><code>		return ^uint64(0)</code></span>
+<span class="codeline" id="line-554"><code>	}</code></span>
+<span class="codeline" id="line-555"><code>	pos := r.begin + debugLogHeaderSize</code></span>
+<span class="codeline" id="line-556"><code>	var u uint64</code></span>
+<span class="codeline" id="line-557"><code>	for i := uint(0); ; i += 7 {</code></span>
+<span class="codeline" id="line-558"><code>		b := r.data[pos%uint64(len(r.data))]</code></span>
+<span class="codeline" id="line-559"><code>		pos++</code></span>
+<span class="codeline" id="line-560"><code>		u |= uint64(b&amp;^0x80) &lt;&lt; i</code></span>
+<span class="codeline" id="line-561"><code>		if b&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-562"><code>			break</code></span>
+<span class="codeline" id="line-563"><code>		}</code></span>
+<span class="codeline" id="line-564"><code>	}</code></span>
+<span class="codeline" id="line-565"><code>	if pos &gt; r.begin+size {</code></span>
+<span class="codeline" id="line-566"><code>		return ^uint64(0)</code></span>
+<span class="codeline" id="line-567"><code>	}</code></span>
+<span class="codeline" id="line-568"><code>	return r.tick + u</code></span>
+<span class="codeline" id="line-569"><code>}</code></span>
+<span class="codeline" id="line-570"><code></code></span>
+<span class="codeline" id="line-571"><code>func (r *debugLogReader) header() (end, tick, nano uint64, p int) {</code></span>
+<span class="codeline" id="line-572"><code>	// Read size. We've already skipped sync packets and checked</code></span>
+<span class="codeline" id="line-573"><code>	// bounds in peek.</code></span>
+<span class="codeline" id="line-574"><code>	size := uint64(r.readUint16LEAt(r.begin))</code></span>
+<span class="codeline" id="line-575"><code>	end = r.begin + size</code></span>
+<span class="codeline" id="line-576"><code>	r.begin += debugLogHeaderSize</code></span>
+<span class="codeline" id="line-577"><code></code></span>
+<span class="codeline" id="line-578"><code>	// Read tick, nano, and p.</code></span>
+<span class="codeline" id="line-579"><code>	tick = r.uvarint() + r.tick</code></span>
+<span class="codeline" id="line-580"><code>	nano = r.uvarint() + r.nano</code></span>
+<span class="codeline" id="line-581"><code>	p = int(r.varint())</code></span>
+<span class="codeline" id="line-582"><code></code></span>
+<span class="codeline" id="line-583"><code>	return</code></span>
+<span class="codeline" id="line-584"><code>}</code></span>
+<span class="codeline" id="line-585"><code></code></span>
+<span class="codeline" id="line-586"><code>func (r *debugLogReader) uvarint() uint64 {</code></span>
+<span class="codeline" id="line-587"><code>	var u uint64</code></span>
+<span class="codeline" id="line-588"><code>	for i := uint(0); ; i += 7 {</code></span>
+<span class="codeline" id="line-589"><code>		b := r.data[r.begin%uint64(len(r.data))]</code></span>
+<span class="codeline" id="line-590"><code>		r.begin++</code></span>
+<span class="codeline" id="line-591"><code>		u |= uint64(b&amp;^0x80) &lt;&lt; i</code></span>
+<span class="codeline" id="line-592"><code>		if b&amp;0x80 == 0 {</code></span>
+<span class="codeline" id="line-593"><code>			break</code></span>
+<span class="codeline" id="line-594"><code>		}</code></span>
+<span class="codeline" id="line-595"><code>	}</code></span>
+<span class="codeline" id="line-596"><code>	return u</code></span>
+<span class="codeline" id="line-597"><code>}</code></span>
+<span class="codeline" id="line-598"><code></code></span>
+<span class="codeline" id="line-599"><code>func (r *debugLogReader) varint() int64 {</code></span>
+<span class="codeline" id="line-600"><code>	u := r.uvarint()</code></span>
+<span class="codeline" id="line-601"><code>	var v int64</code></span>
+<span class="codeline" id="line-602"><code>	if u&amp;1 == 0 {</code></span>
+<span class="codeline" id="line-603"><code>		v = int64(u &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-604"><code>	} else {</code></span>
+<span class="codeline" id="line-605"><code>		v = ^int64(u &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-606"><code>	}</code></span>
+<span class="codeline" id="line-607"><code>	return v</code></span>
+<span class="codeline" id="line-608"><code>}</code></span>
+<span class="codeline" id="line-609"><code></code></span>
+<span class="codeline" id="line-610"><code>func (r *debugLogReader) printVal() bool {</code></span>
+<span class="codeline" id="line-611"><code>	typ := r.data[r.begin%uint64(len(r.data))]</code></span>
+<span class="codeline" id="line-612"><code>	r.begin++</code></span>
+<span class="codeline" id="line-613"><code></code></span>
+<span class="codeline" id="line-614"><code>	switch typ {</code></span>
+<span class="codeline" id="line-615"><code>	default:</code></span>
+<span class="codeline" id="line-616"><code>		print("&lt;unknown field type ", hex(typ), " pos ", r.begin-1, " end ", r.end, "&gt;\n")</code></span>
+<span class="codeline" id="line-617"><code>		return false</code></span>
+<span class="codeline" id="line-618"><code></code></span>
+<span class="codeline" id="line-619"><code>	case debugLogUnknown:</code></span>
+<span class="codeline" id="line-620"><code>		print("&lt;unknown kind&gt;")</code></span>
+<span class="codeline" id="line-621"><code></code></span>
+<span class="codeline" id="line-622"><code>	case debugLogBoolTrue:</code></span>
+<span class="codeline" id="line-623"><code>		print(true)</code></span>
+<span class="codeline" id="line-624"><code></code></span>
+<span class="codeline" id="line-625"><code>	case debugLogBoolFalse:</code></span>
+<span class="codeline" id="line-626"><code>		print(false)</code></span>
+<span class="codeline" id="line-627"><code></code></span>
+<span class="codeline" id="line-628"><code>	case debugLogInt:</code></span>
+<span class="codeline" id="line-629"><code>		print(r.varint())</code></span>
+<span class="codeline" id="line-630"><code></code></span>
+<span class="codeline" id="line-631"><code>	case debugLogUint:</code></span>
+<span class="codeline" id="line-632"><code>		print(r.uvarint())</code></span>
+<span class="codeline" id="line-633"><code></code></span>
+<span class="codeline" id="line-634"><code>	case debugLogHex, debugLogPtr:</code></span>
+<span class="codeline" id="line-635"><code>		print(hex(r.uvarint()))</code></span>
+<span class="codeline" id="line-636"><code></code></span>
+<span class="codeline" id="line-637"><code>	case debugLogString:</code></span>
+<span class="codeline" id="line-638"><code>		sl := r.uvarint()</code></span>
+<span class="codeline" id="line-639"><code>		if r.begin+sl &gt; r.end {</code></span>
+<span class="codeline" id="line-640"><code>			r.begin = r.end</code></span>
+<span class="codeline" id="line-641"><code>			print("&lt;string length corrupted&gt;")</code></span>
+<span class="codeline" id="line-642"><code>			break</code></span>
+<span class="codeline" id="line-643"><code>		}</code></span>
+<span class="codeline" id="line-644"><code>		for sl &gt; 0 {</code></span>
+<span class="codeline" id="line-645"><code>			b := r.data[r.begin%uint64(len(r.data)):]</code></span>
+<span class="codeline" id="line-646"><code>			if uint64(len(b)) &gt; sl {</code></span>
+<span class="codeline" id="line-647"><code>				b = b[:sl]</code></span>
+<span class="codeline" id="line-648"><code>			}</code></span>
+<span class="codeline" id="line-649"><code>			r.begin += uint64(len(b))</code></span>
+<span class="codeline" id="line-650"><code>			sl -= uint64(len(b))</code></span>
+<span class="codeline" id="line-651"><code>			gwrite(b)</code></span>
+<span class="codeline" id="line-652"><code>		}</code></span>
+<span class="codeline" id="line-653"><code></code></span>
+<span class="codeline" id="line-654"><code>	case debugLogConstString:</code></span>
+<span class="codeline" id="line-655"><code>		len, ptr := int(r.uvarint()), uintptr(r.uvarint())</code></span>
+<span class="codeline" id="line-656"><code>		ptr += firstmoduledata.etext</code></span>
+<span class="codeline" id="line-657"><code>		str := stringStruct{</code></span>
+<span class="codeline" id="line-658"><code>			str: unsafe.Pointer(ptr),</code></span>
+<span class="codeline" id="line-659"><code>			len: len,</code></span>
+<span class="codeline" id="line-660"><code>		}</code></span>
+<span class="codeline" id="line-661"><code>		s := *(*string)(unsafe.Pointer(&amp;str))</code></span>
+<span class="codeline" id="line-662"><code>		print(s)</code></span>
+<span class="codeline" id="line-663"><code></code></span>
+<span class="codeline" id="line-664"><code>	case debugLogStringOverflow:</code></span>
+<span class="codeline" id="line-665"><code>		print("..(", r.uvarint(), " more bytes)..")</code></span>
+<span class="codeline" id="line-666"><code></code></span>
+<span class="codeline" id="line-667"><code>	case debugLogPC:</code></span>
+<span class="codeline" id="line-668"><code>		printDebugLogPC(uintptr(r.uvarint()), false)</code></span>
+<span class="codeline" id="line-669"><code></code></span>
+<span class="codeline" id="line-670"><code>	case debugLogTraceback:</code></span>
+<span class="codeline" id="line-671"><code>		n := int(r.uvarint())</code></span>
+<span class="codeline" id="line-672"><code>		for i := 0; i &lt; n; i++ {</code></span>
+<span class="codeline" id="line-673"><code>			print("\n\t")</code></span>
+<span class="codeline" id="line-674"><code>			// gentraceback PCs are always return PCs.</code></span>
+<span class="codeline" id="line-675"><code>			// Convert them to call PCs.</code></span>
+<span class="codeline" id="line-676"><code>			//</code></span>
+<span class="codeline" id="line-677"><code>			// TODO(austin): Expand inlined frames.</code></span>
+<span class="codeline" id="line-678"><code>			printDebugLogPC(uintptr(r.uvarint()), true)</code></span>
+<span class="codeline" id="line-679"><code>		}</code></span>
+<span class="codeline" id="line-680"><code>	}</code></span>
+<span class="codeline" id="line-681"><code></code></span>
+<span class="codeline" id="line-682"><code>	return true</code></span>
+<span class="codeline" id="line-683"><code>}</code></span>
+<span class="codeline" id="line-684"><code></code></span>
+<span class="codeline" id="line-685"><code>// printDebugLog prints the debug log.</code></span>
+<span class="codeline" id="line-686"><code>func printDebugLog() {</code></span>
+<span class="codeline" id="line-687"><code>	if !dlogEnabled {</code></span>
+<span class="codeline" id="line-688"><code>		return</code></span>
+<span class="codeline" id="line-689"><code>	}</code></span>
+<span class="codeline" id="line-690"><code></code></span>
+<span class="codeline" id="line-691"><code>	// This function should not panic or throw since it is used in</code></span>
+<span class="codeline" id="line-692"><code>	// the fatal panic path and this may deadlock.</code></span>
+<span class="codeline" id="line-693"><code></code></span>
+<span class="codeline" id="line-694"><code>	printlock()</code></span>
+<span class="codeline" id="line-695"><code></code></span>
+<span class="codeline" id="line-696"><code>	// Get the list of all debug logs.</code></span>
+<span class="codeline" id="line-697"><code>	allp := (*uintptr)(unsafe.Pointer(&amp;allDloggers))</code></span>
+<span class="codeline" id="line-698"><code>	all := (*dlogger)(unsafe.Pointer(atomic.Loaduintptr(allp)))</code></span>
+<span class="codeline" id="line-699"><code></code></span>
+<span class="codeline" id="line-700"><code>	// Count the logs.</code></span>
+<span class="codeline" id="line-701"><code>	n := 0</code></span>
+<span class="codeline" id="line-702"><code>	for l := all; l != nil; l = l.allLink {</code></span>
+<span class="codeline" id="line-703"><code>		n++</code></span>
+<span class="codeline" id="line-704"><code>	}</code></span>
+<span class="codeline" id="line-705"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-706"><code>		printunlock()</code></span>
+<span class="codeline" id="line-707"><code>		return</code></span>
+<span class="codeline" id="line-708"><code>	}</code></span>
+<span class="codeline" id="line-709"><code></code></span>
+<span class="codeline" id="line-710"><code>	// Prepare read state for all logs.</code></span>
+<span class="codeline" id="line-711"><code>	type readState struct {</code></span>
+<span class="codeline" id="line-712"><code>		debugLogReader</code></span>
+<span class="codeline" id="line-713"><code>		first    bool</code></span>
+<span class="codeline" id="line-714"><code>		lost     uint64</code></span>
+<span class="codeline" id="line-715"><code>		nextTick uint64</code></span>
+<span class="codeline" id="line-716"><code>	}</code></span>
+<span class="codeline" id="line-717"><code>	state1 := sysAlloc(unsafe.Sizeof(readState{})*uintptr(n), nil)</code></span>
+<span class="codeline" id="line-718"><code>	if state1 == nil {</code></span>
+<span class="codeline" id="line-719"><code>		println("failed to allocate read state for", n, "logs")</code></span>
+<span class="codeline" id="line-720"><code>		printunlock()</code></span>
+<span class="codeline" id="line-721"><code>		return</code></span>
+<span class="codeline" id="line-722"><code>	}</code></span>
+<span class="codeline" id="line-723"><code>	state := (*[1 &lt;&lt; 20]readState)(state1)[:n]</code></span>
+<span class="codeline" id="line-724"><code>	{</code></span>
+<span class="codeline" id="line-725"><code>		l := all</code></span>
+<span class="codeline" id="line-726"><code>		for i := range state {</code></span>
+<span class="codeline" id="line-727"><code>			s := &amp;state[i]</code></span>
+<span class="codeline" id="line-728"><code>			s.debugLogReader = l.w.r</code></span>
+<span class="codeline" id="line-729"><code>			s.first = true</code></span>
+<span class="codeline" id="line-730"><code>			s.lost = l.w.r.begin</code></span>
+<span class="codeline" id="line-731"><code>			s.nextTick = s.peek()</code></span>
+<span class="codeline" id="line-732"><code>			l = l.allLink</code></span>
+<span class="codeline" id="line-733"><code>		}</code></span>
+<span class="codeline" id="line-734"><code>	}</code></span>
+<span class="codeline" id="line-735"><code></code></span>
+<span class="codeline" id="line-736"><code>	// Print records.</code></span>
+<span class="codeline" id="line-737"><code>	for {</code></span>
+<span class="codeline" id="line-738"><code>		// Find the next record.</code></span>
+<span class="codeline" id="line-739"><code>		var best struct {</code></span>
+<span class="codeline" id="line-740"><code>			tick uint64</code></span>
+<span class="codeline" id="line-741"><code>			i    int</code></span>
+<span class="codeline" id="line-742"><code>		}</code></span>
+<span class="codeline" id="line-743"><code>		best.tick = ^uint64(0)</code></span>
+<span class="codeline" id="line-744"><code>		for i := range state {</code></span>
+<span class="codeline" id="line-745"><code>			if state[i].nextTick &lt; best.tick {</code></span>
+<span class="codeline" id="line-746"><code>				best.tick = state[i].nextTick</code></span>
+<span class="codeline" id="line-747"><code>				best.i = i</code></span>
+<span class="codeline" id="line-748"><code>			}</code></span>
+<span class="codeline" id="line-749"><code>		}</code></span>
+<span class="codeline" id="line-750"><code>		if best.tick == ^uint64(0) {</code></span>
+<span class="codeline" id="line-751"><code>			break</code></span>
+<span class="codeline" id="line-752"><code>		}</code></span>
+<span class="codeline" id="line-753"><code></code></span>
+<span class="codeline" id="line-754"><code>		// Print record.</code></span>
+<span class="codeline" id="line-755"><code>		s := &amp;state[best.i]</code></span>
+<span class="codeline" id="line-756"><code>		if s.first {</code></span>
+<span class="codeline" id="line-757"><code>			print("&gt;&gt; begin log ", best.i)</code></span>
+<span class="codeline" id="line-758"><code>			if s.lost != 0 {</code></span>
+<span class="codeline" id="line-759"><code>				print("; lost first ", s.lost&gt;&gt;10, "KB")</code></span>
+<span class="codeline" id="line-760"><code>			}</code></span>
+<span class="codeline" id="line-761"><code>			print(" &lt;&lt;\n")</code></span>
+<span class="codeline" id="line-762"><code>			s.first = false</code></span>
+<span class="codeline" id="line-763"><code>		}</code></span>
+<span class="codeline" id="line-764"><code></code></span>
+<span class="codeline" id="line-765"><code>		end, _, nano, p := s.header()</code></span>
+<span class="codeline" id="line-766"><code>		oldEnd := s.end</code></span>
+<span class="codeline" id="line-767"><code>		s.end = end</code></span>
+<span class="codeline" id="line-768"><code></code></span>
+<span class="codeline" id="line-769"><code>		print("[")</code></span>
+<span class="codeline" id="line-770"><code>		var tmpbuf [21]byte</code></span>
+<span class="codeline" id="line-771"><code>		pnano := int64(nano) - runtimeInitTime</code></span>
+<span class="codeline" id="line-772"><code>		if pnano &lt; 0 {</code></span>
+<span class="codeline" id="line-773"><code>			// Logged before runtimeInitTime was set.</code></span>
+<span class="codeline" id="line-774"><code>			pnano = 0</code></span>
+<span class="codeline" id="line-775"><code>		}</code></span>
+<span class="codeline" id="line-776"><code>		print(string(itoaDiv(tmpbuf[:], uint64(pnano), 9)))</code></span>
+<span class="codeline" id="line-777"><code>		print(" P ", p, "] ")</code></span>
+<span class="codeline" id="line-778"><code></code></span>
+<span class="codeline" id="line-779"><code>		for i := 0; s.begin &lt; s.end; i++ {</code></span>
+<span class="codeline" id="line-780"><code>			if i &gt; 0 {</code></span>
+<span class="codeline" id="line-781"><code>				print(" ")</code></span>
+<span class="codeline" id="line-782"><code>			}</code></span>
+<span class="codeline" id="line-783"><code>			if !s.printVal() {</code></span>
+<span class="codeline" id="line-784"><code>				// Abort this P log.</code></span>
+<span class="codeline" id="line-785"><code>				print("&lt;aborting P log&gt;")</code></span>
+<span class="codeline" id="line-786"><code>				end = oldEnd</code></span>
+<span class="codeline" id="line-787"><code>				break</code></span>
+<span class="codeline" id="line-788"><code>			}</code></span>
+<span class="codeline" id="line-789"><code>		}</code></span>
+<span class="codeline" id="line-790"><code>		println()</code></span>
+<span class="codeline" id="line-791"><code></code></span>
+<span class="codeline" id="line-792"><code>		// Move on to the next record.</code></span>
+<span class="codeline" id="line-793"><code>		s.begin = end</code></span>
+<span class="codeline" id="line-794"><code>		s.end = oldEnd</code></span>
+<span class="codeline" id="line-795"><code>		s.nextTick = s.peek()</code></span>
+<span class="codeline" id="line-796"><code>	}</code></span>
+<span class="codeline" id="line-797"><code></code></span>
+<span class="codeline" id="line-798"><code>	printunlock()</code></span>
+<span class="codeline" id="line-799"><code>}</code></span>
+<span class="codeline" id="line-800"><code></code></span>
+<span class="codeline" id="line-801"><code>// printDebugLogPC prints a single symbolized PC. If returnPC is true,</code></span>
+<span class="codeline" id="line-802"><code>// pc is a return PC that must first be converted to a call PC.</code></span>
+<span class="codeline" id="line-803"><code>func printDebugLogPC(pc uintptr, returnPC bool) {</code></span>
+<span class="codeline" id="line-804"><code>	fn := findfunc(pc)</code></span>
+<span class="codeline" id="line-805"><code>	if returnPC &amp;&amp; (!fn.valid() || pc &gt; fn.entry) {</code></span>
+<span class="codeline" id="line-806"><code>		// TODO(austin): Don't back up if the previous frame</code></span>
+<span class="codeline" id="line-807"><code>		// was a sigpanic.</code></span>
+<span class="codeline" id="line-808"><code>		pc--</code></span>
+<span class="codeline" id="line-809"><code>	}</code></span>
+<span class="codeline" id="line-810"><code></code></span>
+<span class="codeline" id="line-811"><code>	print(hex(pc))</code></span>
+<span class="codeline" id="line-812"><code>	if !fn.valid() {</code></span>
+<span class="codeline" id="line-813"><code>		print(" [unknown PC]")</code></span>
+<span class="codeline" id="line-814"><code>	} else {</code></span>
+<span class="codeline" id="line-815"><code>		name := funcname(fn)</code></span>
+<span class="codeline" id="line-816"><code>		file, line := funcline(fn, pc)</code></span>
+<span class="codeline" id="line-817"><code>		print(" [", name, "+", hex(pc-fn.entry),</code></span>
+<span class="codeline" id="line-818"><code>			" ", file, ":", line, "]")</code></span>
+<span class="codeline" id="line-819"><code>	}</code></span>
+<span class="codeline" id="line-820"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,1574 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mgcmark.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mgcmark.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Garbage collector: marking and scanning</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package runtime</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-11"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-12"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>const (</code></span>
+<span class="codeline" id="line-16"><code>	fixedRootFinalizers = iota</code></span>
+<span class="codeline" id="line-17"><code>	fixedRootFreeGStacks</code></span>
+<span class="codeline" id="line-18"><code>	fixedRootCount</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>	// rootBlockBytes is the number of bytes to scan per data or</code></span>
+<span class="codeline" id="line-21"><code>	// BSS root.</code></span>
+<span class="codeline" id="line-22"><code>	rootBlockBytes = 256 &lt;&lt; 10</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>	// maxObletBytes is the maximum bytes of an object to scan at</code></span>
+<span class="codeline" id="line-25"><code>	// once. Larger objects will be split up into "oblets" of at</code></span>
+<span class="codeline" id="line-26"><code>	// most this size. Since we can scan 1–2 MB/ms, 128 KB bounds</code></span>
+<span class="codeline" id="line-27"><code>	// scan preemption at ~100 µs.</code></span>
+<span class="codeline" id="line-28"><code>	//</code></span>
+<span class="codeline" id="line-29"><code>	// This must be &gt; _MaxSmallSize so that the object base is the</code></span>
+<span class="codeline" id="line-30"><code>	// span base.</code></span>
+<span class="codeline" id="line-31"><code>	maxObletBytes = 128 &lt;&lt; 10</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	// drainCheckThreshold specifies how many units of work to do</code></span>
+<span class="codeline" id="line-34"><code>	// between self-preemption checks in gcDrain. Assuming a scan</code></span>
+<span class="codeline" id="line-35"><code>	// rate of 1 MB/ms, this is ~100 µs. Lower values have higher</code></span>
+<span class="codeline" id="line-36"><code>	// overhead in the scan loop (the scheduler check may perform</code></span>
+<span class="codeline" id="line-37"><code>	// a syscall, so its overhead is nontrivial). Higher values</code></span>
+<span class="codeline" id="line-38"><code>	// make the system less responsive to incoming work.</code></span>
+<span class="codeline" id="line-39"><code>	drainCheckThreshold = 100000</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>	// pagesPerSpanRoot indicates how many pages to scan from a span root</code></span>
+<span class="codeline" id="line-42"><code>	// at a time. Used by special root marking.</code></span>
+<span class="codeline" id="line-43"><code>	//</code></span>
+<span class="codeline" id="line-44"><code>	// Higher values improve throughput by increasing locality, but</code></span>
+<span class="codeline" id="line-45"><code>	// increase the minimum latency of a marking operation.</code></span>
+<span class="codeline" id="line-46"><code>	//</code></span>
+<span class="codeline" id="line-47"><code>	// Must be a multiple of the pageInUse bitmap element size and</code></span>
+<span class="codeline" id="line-48"><code>	// must also evenly divide pagesPerArena.</code></span>
+<span class="codeline" id="line-49"><code>	pagesPerSpanRoot = 512</code></span>
+<span class="codeline" id="line-50"><code>)</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>// gcMarkRootPrepare queues root scanning jobs (stacks, globals, and</code></span>
+<span class="codeline" id="line-53"><code>// some miscellany) and initializes scanning-related state.</code></span>
+<span class="codeline" id="line-54"><code>//</code></span>
+<span class="codeline" id="line-55"><code>// The world must be stopped.</code></span>
+<span class="codeline" id="line-56"><code>func gcMarkRootPrepare() {</code></span>
+<span class="codeline" id="line-57"><code>	assertWorldStopped()</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>	work.nFlushCacheRoots = 0</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>	// Compute how many data and BSS root blocks there are.</code></span>
+<span class="codeline" id="line-62"><code>	nBlocks := func(bytes uintptr) int {</code></span>
+<span class="codeline" id="line-63"><code>		return int(divRoundUp(bytes, rootBlockBytes))</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>	work.nDataRoots = 0</code></span>
+<span class="codeline" id="line-67"><code>	work.nBSSRoots = 0</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>	// Scan globals.</code></span>
+<span class="codeline" id="line-70"><code>	for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-71"><code>		nDataRoots := nBlocks(datap.edata - datap.data)</code></span>
+<span class="codeline" id="line-72"><code>		if nDataRoots &gt; work.nDataRoots {</code></span>
+<span class="codeline" id="line-73"><code>			work.nDataRoots = nDataRoots</code></span>
+<span class="codeline" id="line-74"><code>		}</code></span>
+<span class="codeline" id="line-75"><code>	}</code></span>
+<span class="codeline" id="line-76"><code></code></span>
+<span class="codeline" id="line-77"><code>	for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-78"><code>		nBSSRoots := nBlocks(datap.ebss - datap.bss)</code></span>
+<span class="codeline" id="line-79"><code>		if nBSSRoots &gt; work.nBSSRoots {</code></span>
+<span class="codeline" id="line-80"><code>			work.nBSSRoots = nBSSRoots</code></span>
+<span class="codeline" id="line-81"><code>		}</code></span>
+<span class="codeline" id="line-82"><code>	}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>	// Scan span roots for finalizer specials.</code></span>
+<span class="codeline" id="line-85"><code>	//</code></span>
+<span class="codeline" id="line-86"><code>	// We depend on addfinalizer to mark objects that get</code></span>
+<span class="codeline" id="line-87"><code>	// finalizers after root marking.</code></span>
+<span class="codeline" id="line-88"><code>	//</code></span>
+<span class="codeline" id="line-89"><code>	// We're going to scan the whole heap (that was available at the time the</code></span>
+<span class="codeline" id="line-90"><code>	// mark phase started, i.e. markArenas) for in-use spans which have specials.</code></span>
+<span class="codeline" id="line-91"><code>	//</code></span>
+<span class="codeline" id="line-92"><code>	// Break up the work into arenas, and further into chunks.</code></span>
+<span class="codeline" id="line-93"><code>	//</code></span>
+<span class="codeline" id="line-94"><code>	// Snapshot allArenas as markArenas. This snapshot is safe because allArenas</code></span>
+<span class="codeline" id="line-95"><code>	// is append-only.</code></span>
+<span class="codeline" id="line-96"><code>	mheap_.markArenas = mheap_.allArenas[:len(mheap_.allArenas):len(mheap_.allArenas)]</code></span>
+<span class="codeline" id="line-97"><code>	work.nSpanRoots = len(mheap_.markArenas) * (pagesPerArena / pagesPerSpanRoot)</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>	// Scan stacks.</code></span>
+<span class="codeline" id="line-100"><code>	//</code></span>
+<span class="codeline" id="line-101"><code>	// Gs may be created after this point, but it's okay that we</code></span>
+<span class="codeline" id="line-102"><code>	// ignore them because they begin life without any roots, so</code></span>
+<span class="codeline" id="line-103"><code>	// there's nothing to scan, and any roots they create during</code></span>
+<span class="codeline" id="line-104"><code>	// the concurrent phase will be caught by the write barrier.</code></span>
+<span class="codeline" id="line-105"><code>	work.nStackRoots = int(atomic.Loaduintptr(&amp;allglen))</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>	work.markrootNext = 0</code></span>
+<span class="codeline" id="line-108"><code>	work.markrootJobs = uint32(fixedRootCount + work.nFlushCacheRoots + work.nDataRoots + work.nBSSRoots + work.nSpanRoots + work.nStackRoots)</code></span>
+<span class="codeline" id="line-109"><code>}</code></span>
+<span class="codeline" id="line-110"><code></code></span>
+<span class="codeline" id="line-111"><code>// gcMarkRootCheck checks that all roots have been scanned. It is</code></span>
+<span class="codeline" id="line-112"><code>// purely for debugging.</code></span>
+<span class="codeline" id="line-113"><code>func gcMarkRootCheck() {</code></span>
+<span class="codeline" id="line-114"><code>	if work.markrootNext &lt; work.markrootJobs {</code></span>
+<span class="codeline" id="line-115"><code>		print(work.markrootNext, " of ", work.markrootJobs, " markroot jobs done\n")</code></span>
+<span class="codeline" id="line-116"><code>		throw("left over markroot jobs")</code></span>
+<span class="codeline" id="line-117"><code>	}</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>	lock(&amp;allglock)</code></span>
+<span class="codeline" id="line-120"><code>	// Check that stacks have been scanned.</code></span>
+<span class="codeline" id="line-121"><code>	var gp *g</code></span>
+<span class="codeline" id="line-122"><code>	for i := 0; i &lt; work.nStackRoots; i++ {</code></span>
+<span class="codeline" id="line-123"><code>		gp = allgs[i]</code></span>
+<span class="codeline" id="line-124"><code>		if !gp.gcscandone {</code></span>
+<span class="codeline" id="line-125"><code>			goto fail</code></span>
+<span class="codeline" id="line-126"><code>		}</code></span>
+<span class="codeline" id="line-127"><code>	}</code></span>
+<span class="codeline" id="line-128"><code>	unlock(&amp;allglock)</code></span>
+<span class="codeline" id="line-129"><code>	return</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>fail:</code></span>
+<span class="codeline" id="line-132"><code>	println("gp", gp, "goid", gp.goid,</code></span>
+<span class="codeline" id="line-133"><code>		"status", readgstatus(gp),</code></span>
+<span class="codeline" id="line-134"><code>		"gcscandone", gp.gcscandone)</code></span>
+<span class="codeline" id="line-135"><code>	throw("scan missed a g")</code></span>
+<span class="codeline" id="line-136"><code>}</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>// ptrmask for an allocation containing a single pointer.</code></span>
+<span class="codeline" id="line-139"><code>var oneptrmask = [...]uint8{1}</code></span>
+<span class="codeline" id="line-140"><code></code></span>
+<span class="codeline" id="line-141"><code>// markroot scans the i'th root.</code></span>
+<span class="codeline" id="line-142"><code>//</code></span>
+<span class="codeline" id="line-143"><code>// Preemption must be disabled (because this uses a gcWork).</code></span>
+<span class="codeline" id="line-144"><code>//</code></span>
+<span class="codeline" id="line-145"><code>// nowritebarrier is only advisory here.</code></span>
+<span class="codeline" id="line-146"><code>//</code></span>
+<span class="codeline" id="line-147"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-148"><code>func markroot(gcw *gcWork, i uint32) {</code></span>
+<span class="codeline" id="line-149"><code>	// TODO(austin): This is a bit ridiculous. Compute and store</code></span>
+<span class="codeline" id="line-150"><code>	// the bases in gcMarkRootPrepare instead of the counts.</code></span>
+<span class="codeline" id="line-151"><code>	baseFlushCache := uint32(fixedRootCount)</code></span>
+<span class="codeline" id="line-152"><code>	baseData := baseFlushCache + uint32(work.nFlushCacheRoots)</code></span>
+<span class="codeline" id="line-153"><code>	baseBSS := baseData + uint32(work.nDataRoots)</code></span>
+<span class="codeline" id="line-154"><code>	baseSpans := baseBSS + uint32(work.nBSSRoots)</code></span>
+<span class="codeline" id="line-155"><code>	baseStacks := baseSpans + uint32(work.nSpanRoots)</code></span>
+<span class="codeline" id="line-156"><code>	end := baseStacks + uint32(work.nStackRoots)</code></span>
+<span class="codeline" id="line-157"><code></code></span>
+<span class="codeline" id="line-158"><code>	// Note: if you add a case here, please also update heapdump.go:dumproots.</code></span>
+<span class="codeline" id="line-159"><code>	switch {</code></span>
+<span class="codeline" id="line-160"><code>	case baseFlushCache &lt;= i &amp;&amp; i &lt; baseData:</code></span>
+<span class="codeline" id="line-161"><code>		flushmcache(int(i - baseFlushCache))</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>	case baseData &lt;= i &amp;&amp; i &lt; baseBSS:</code></span>
+<span class="codeline" id="line-164"><code>		for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-165"><code>			markrootBlock(datap.data, datap.edata-datap.data, datap.gcdatamask.bytedata, gcw, int(i-baseData))</code></span>
+<span class="codeline" id="line-166"><code>		}</code></span>
+<span class="codeline" id="line-167"><code></code></span>
+<span class="codeline" id="line-168"><code>	case baseBSS &lt;= i &amp;&amp; i &lt; baseSpans:</code></span>
+<span class="codeline" id="line-169"><code>		for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-170"><code>			markrootBlock(datap.bss, datap.ebss-datap.bss, datap.gcbssmask.bytedata, gcw, int(i-baseBSS))</code></span>
+<span class="codeline" id="line-171"><code>		}</code></span>
+<span class="codeline" id="line-172"><code></code></span>
+<span class="codeline" id="line-173"><code>	case i == fixedRootFinalizers:</code></span>
+<span class="codeline" id="line-174"><code>		for fb := allfin; fb != nil; fb = fb.alllink {</code></span>
+<span class="codeline" id="line-175"><code>			cnt := uintptr(atomic.Load(&amp;fb.cnt))</code></span>
+<span class="codeline" id="line-176"><code>			scanblock(uintptr(unsafe.Pointer(&amp;fb.fin[0])), cnt*unsafe.Sizeof(fb.fin[0]), &amp;finptrmask[0], gcw, nil)</code></span>
+<span class="codeline" id="line-177"><code>		}</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>	case i == fixedRootFreeGStacks:</code></span>
+<span class="codeline" id="line-180"><code>		// Switch to the system stack so we can call</code></span>
+<span class="codeline" id="line-181"><code>		// stackfree.</code></span>
+<span class="codeline" id="line-182"><code>		systemstack(markrootFreeGStacks)</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>	case baseSpans &lt;= i &amp;&amp; i &lt; baseStacks:</code></span>
+<span class="codeline" id="line-185"><code>		// mark mspan.specials</code></span>
+<span class="codeline" id="line-186"><code>		markrootSpans(gcw, int(i-baseSpans))</code></span>
+<span class="codeline" id="line-187"><code></code></span>
+<span class="codeline" id="line-188"><code>	default:</code></span>
+<span class="codeline" id="line-189"><code>		// the rest is scanning goroutine stacks</code></span>
+<span class="codeline" id="line-190"><code>		var gp *g</code></span>
+<span class="codeline" id="line-191"><code>		if baseStacks &lt;= i &amp;&amp; i &lt; end {</code></span>
+<span class="codeline" id="line-192"><code>			gp = allgs[i-baseStacks]</code></span>
+<span class="codeline" id="line-193"><code>		} else {</code></span>
+<span class="codeline" id="line-194"><code>			throw("markroot: bad index")</code></span>
+<span class="codeline" id="line-195"><code>		}</code></span>
+<span class="codeline" id="line-196"><code></code></span>
+<span class="codeline" id="line-197"><code>		// remember when we've first observed the G blocked</code></span>
+<span class="codeline" id="line-198"><code>		// needed only to output in traceback</code></span>
+<span class="codeline" id="line-199"><code>		status := readgstatus(gp) // We are not in a scan state</code></span>
+<span class="codeline" id="line-200"><code>		if (status == _Gwaiting || status == _Gsyscall) &amp;&amp; gp.waitsince == 0 {</code></span>
+<span class="codeline" id="line-201"><code>			gp.waitsince = work.tstart</code></span>
+<span class="codeline" id="line-202"><code>		}</code></span>
+<span class="codeline" id="line-203"><code></code></span>
+<span class="codeline" id="line-204"><code>		// scanstack must be done on the system stack in case</code></span>
+<span class="codeline" id="line-205"><code>		// we're trying to scan our own stack.</code></span>
+<span class="codeline" id="line-206"><code>		systemstack(func() {</code></span>
+<span class="codeline" id="line-207"><code>			// If this is a self-scan, put the user G in</code></span>
+<span class="codeline" id="line-208"><code>			// _Gwaiting to prevent self-deadlock. It may</code></span>
+<span class="codeline" id="line-209"><code>			// already be in _Gwaiting if this is a mark</code></span>
+<span class="codeline" id="line-210"><code>			// worker or we're in mark termination.</code></span>
+<span class="codeline" id="line-211"><code>			userG := getg().m.curg</code></span>
+<span class="codeline" id="line-212"><code>			selfScan := gp == userG &amp;&amp; readgstatus(userG) == _Grunning</code></span>
+<span class="codeline" id="line-213"><code>			if selfScan {</code></span>
+<span class="codeline" id="line-214"><code>				casgstatus(userG, _Grunning, _Gwaiting)</code></span>
+<span class="codeline" id="line-215"><code>				userG.waitreason = waitReasonGarbageCollectionScan</code></span>
+<span class="codeline" id="line-216"><code>			}</code></span>
+<span class="codeline" id="line-217"><code></code></span>
+<span class="codeline" id="line-218"><code>			// TODO: suspendG blocks (and spins) until gp</code></span>
+<span class="codeline" id="line-219"><code>			// stops, which may take a while for</code></span>
+<span class="codeline" id="line-220"><code>			// running goroutines. Consider doing this in</code></span>
+<span class="codeline" id="line-221"><code>			// two phases where the first is non-blocking:</code></span>
+<span class="codeline" id="line-222"><code>			// we scan the stacks we can and ask running</code></span>
+<span class="codeline" id="line-223"><code>			// goroutines to scan themselves; and the</code></span>
+<span class="codeline" id="line-224"><code>			// second blocks.</code></span>
+<span class="codeline" id="line-225"><code>			stopped := suspendG(gp)</code></span>
+<span class="codeline" id="line-226"><code>			if stopped.dead {</code></span>
+<span class="codeline" id="line-227"><code>				gp.gcscandone = true</code></span>
+<span class="codeline" id="line-228"><code>				return</code></span>
+<span class="codeline" id="line-229"><code>			}</code></span>
+<span class="codeline" id="line-230"><code>			if gp.gcscandone {</code></span>
+<span class="codeline" id="line-231"><code>				throw("g already scanned")</code></span>
+<span class="codeline" id="line-232"><code>			}</code></span>
+<span class="codeline" id="line-233"><code>			scanstack(gp, gcw)</code></span>
+<span class="codeline" id="line-234"><code>			gp.gcscandone = true</code></span>
+<span class="codeline" id="line-235"><code>			resumeG(stopped)</code></span>
+<span class="codeline" id="line-236"><code></code></span>
+<span class="codeline" id="line-237"><code>			if selfScan {</code></span>
+<span class="codeline" id="line-238"><code>				casgstatus(userG, _Gwaiting, _Grunning)</code></span>
+<span class="codeline" id="line-239"><code>			}</code></span>
+<span class="codeline" id="line-240"><code>		})</code></span>
+<span class="codeline" id="line-241"><code>	}</code></span>
+<span class="codeline" id="line-242"><code>}</code></span>
+<span class="codeline" id="line-243"><code></code></span>
+<span class="codeline" id="line-244"><code>// markrootBlock scans the shard'th shard of the block of memory [b0,</code></span>
+<span class="codeline" id="line-245"><code>// b0+n0), with the given pointer mask.</code></span>
+<span class="codeline" id="line-246"><code>//</code></span>
+<span class="codeline" id="line-247"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-248"><code>func markrootBlock(b0, n0 uintptr, ptrmask0 *uint8, gcw *gcWork, shard int) {</code></span>
+<span class="codeline" id="line-249"><code>	if rootBlockBytes%(8*sys.PtrSize) != 0 {</code></span>
+<span class="codeline" id="line-250"><code>		// This is necessary to pick byte offsets in ptrmask0.</code></span>
+<span class="codeline" id="line-251"><code>		throw("rootBlockBytes must be a multiple of 8*ptrSize")</code></span>
+<span class="codeline" id="line-252"><code>	}</code></span>
+<span class="codeline" id="line-253"><code></code></span>
+<span class="codeline" id="line-254"><code>	// Note that if b0 is toward the end of the address space,</code></span>
+<span class="codeline" id="line-255"><code>	// then b0 + rootBlockBytes might wrap around.</code></span>
+<span class="codeline" id="line-256"><code>	// These tests are written to avoid any possible overflow.</code></span>
+<span class="codeline" id="line-257"><code>	off := uintptr(shard) * rootBlockBytes</code></span>
+<span class="codeline" id="line-258"><code>	if off &gt;= n0 {</code></span>
+<span class="codeline" id="line-259"><code>		return</code></span>
+<span class="codeline" id="line-260"><code>	}</code></span>
+<span class="codeline" id="line-261"><code>	b := b0 + off</code></span>
+<span class="codeline" id="line-262"><code>	ptrmask := (*uint8)(add(unsafe.Pointer(ptrmask0), uintptr(shard)*(rootBlockBytes/(8*sys.PtrSize))))</code></span>
+<span class="codeline" id="line-263"><code>	n := uintptr(rootBlockBytes)</code></span>
+<span class="codeline" id="line-264"><code>	if off+n &gt; n0 {</code></span>
+<span class="codeline" id="line-265"><code>		n = n0 - off</code></span>
+<span class="codeline" id="line-266"><code>	}</code></span>
+<span class="codeline" id="line-267"><code></code></span>
+<span class="codeline" id="line-268"><code>	// Scan this shard.</code></span>
+<span class="codeline" id="line-269"><code>	scanblock(b, n, ptrmask, gcw, nil)</code></span>
+<span class="codeline" id="line-270"><code>}</code></span>
+<span class="codeline" id="line-271"><code></code></span>
+<span class="codeline" id="line-272"><code>// markrootFreeGStacks frees stacks of dead Gs.</code></span>
+<span class="codeline" id="line-273"><code>//</code></span>
+<span class="codeline" id="line-274"><code>// This does not free stacks of dead Gs cached on Ps, but having a few</code></span>
+<span class="codeline" id="line-275"><code>// cached stacks around isn't a problem.</code></span>
+<span class="codeline" id="line-276"><code>func markrootFreeGStacks() {</code></span>
+<span class="codeline" id="line-277"><code>	// Take list of dead Gs with stacks.</code></span>
+<span class="codeline" id="line-278"><code>	lock(&amp;sched.gFree.lock)</code></span>
+<span class="codeline" id="line-279"><code>	list := sched.gFree.stack</code></span>
+<span class="codeline" id="line-280"><code>	sched.gFree.stack = gList{}</code></span>
+<span class="codeline" id="line-281"><code>	unlock(&amp;sched.gFree.lock)</code></span>
+<span class="codeline" id="line-282"><code>	if list.empty() {</code></span>
+<span class="codeline" id="line-283"><code>		return</code></span>
+<span class="codeline" id="line-284"><code>	}</code></span>
+<span class="codeline" id="line-285"><code></code></span>
+<span class="codeline" id="line-286"><code>	// Free stacks.</code></span>
+<span class="codeline" id="line-287"><code>	q := gQueue{list.head, list.head}</code></span>
+<span class="codeline" id="line-288"><code>	for gp := list.head.ptr(); gp != nil; gp = gp.schedlink.ptr() {</code></span>
+<span class="codeline" id="line-289"><code>		stackfree(gp.stack)</code></span>
+<span class="codeline" id="line-290"><code>		gp.stack.lo = 0</code></span>
+<span class="codeline" id="line-291"><code>		gp.stack.hi = 0</code></span>
+<span class="codeline" id="line-292"><code>		// Manipulate the queue directly since the Gs are</code></span>
+<span class="codeline" id="line-293"><code>		// already all linked the right way.</code></span>
+<span class="codeline" id="line-294"><code>		q.tail.set(gp)</code></span>
+<span class="codeline" id="line-295"><code>	}</code></span>
+<span class="codeline" id="line-296"><code></code></span>
+<span class="codeline" id="line-297"><code>	// Put Gs back on the free list.</code></span>
+<span class="codeline" id="line-298"><code>	lock(&amp;sched.gFree.lock)</code></span>
+<span class="codeline" id="line-299"><code>	sched.gFree.noStack.pushAll(q)</code></span>
+<span class="codeline" id="line-300"><code>	unlock(&amp;sched.gFree.lock)</code></span>
+<span class="codeline" id="line-301"><code>}</code></span>
+<span class="codeline" id="line-302"><code></code></span>
+<span class="codeline" id="line-303"><code>// markrootSpans marks roots for one shard of markArenas.</code></span>
+<span class="codeline" id="line-304"><code>//</code></span>
+<span class="codeline" id="line-305"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-306"><code>func markrootSpans(gcw *gcWork, shard int) {</code></span>
+<span class="codeline" id="line-307"><code>	// Objects with finalizers have two GC-related invariants:</code></span>
+<span class="codeline" id="line-308"><code>	//</code></span>
+<span class="codeline" id="line-309"><code>	// 1) Everything reachable from the object must be marked.</code></span>
+<span class="codeline" id="line-310"><code>	// This ensures that when we pass the object to its finalizer,</code></span>
+<span class="codeline" id="line-311"><code>	// everything the finalizer can reach will be retained.</code></span>
+<span class="codeline" id="line-312"><code>	//</code></span>
+<span class="codeline" id="line-313"><code>	// 2) Finalizer specials (which are not in the garbage</code></span>
+<span class="codeline" id="line-314"><code>	// collected heap) are roots. In practice, this means the fn</code></span>
+<span class="codeline" id="line-315"><code>	// field must be scanned.</code></span>
+<span class="codeline" id="line-316"><code>	sg := mheap_.sweepgen</code></span>
+<span class="codeline" id="line-317"><code></code></span>
+<span class="codeline" id="line-318"><code>	// Find the arena and page index into that arena for this shard.</code></span>
+<span class="codeline" id="line-319"><code>	ai := mheap_.markArenas[shard/(pagesPerArena/pagesPerSpanRoot)]</code></span>
+<span class="codeline" id="line-320"><code>	ha := mheap_.arenas[ai.l1()][ai.l2()]</code></span>
+<span class="codeline" id="line-321"><code>	arenaPage := uint(uintptr(shard) * pagesPerSpanRoot % pagesPerArena)</code></span>
+<span class="codeline" id="line-322"><code></code></span>
+<span class="codeline" id="line-323"><code>	// Construct slice of bitmap which we'll iterate over.</code></span>
+<span class="codeline" id="line-324"><code>	specialsbits := ha.pageSpecials[arenaPage/8:]</code></span>
+<span class="codeline" id="line-325"><code>	specialsbits = specialsbits[:pagesPerSpanRoot/8]</code></span>
+<span class="codeline" id="line-326"><code>	for i := range specialsbits {</code></span>
+<span class="codeline" id="line-327"><code>		// Find set bits, which correspond to spans with specials.</code></span>
+<span class="codeline" id="line-328"><code>		specials := atomic.Load8(&amp;specialsbits[i])</code></span>
+<span class="codeline" id="line-329"><code>		if specials == 0 {</code></span>
+<span class="codeline" id="line-330"><code>			continue</code></span>
+<span class="codeline" id="line-331"><code>		}</code></span>
+<span class="codeline" id="line-332"><code>		for j := uint(0); j &lt; 8; j++ {</code></span>
+<span class="codeline" id="line-333"><code>			if specials&amp;(1&lt;&lt;j) == 0 {</code></span>
+<span class="codeline" id="line-334"><code>				continue</code></span>
+<span class="codeline" id="line-335"><code>			}</code></span>
+<span class="codeline" id="line-336"><code>			// Find the span for this bit.</code></span>
+<span class="codeline" id="line-337"><code>			//</code></span>
+<span class="codeline" id="line-338"><code>			// This value is guaranteed to be non-nil because having</code></span>
+<span class="codeline" id="line-339"><code>			// specials implies that the span is in-use, and since we're</code></span>
+<span class="codeline" id="line-340"><code>			// currently marking we can be sure that we don't have to worry</code></span>
+<span class="codeline" id="line-341"><code>			// about the span being freed and re-used.</code></span>
+<span class="codeline" id="line-342"><code>			s := ha.spans[arenaPage+uint(i)*8+j]</code></span>
+<span class="codeline" id="line-343"><code></code></span>
+<span class="codeline" id="line-344"><code>			// The state must be mSpanInUse if the specials bit is set, so</code></span>
+<span class="codeline" id="line-345"><code>			// sanity check that.</code></span>
+<span class="codeline" id="line-346"><code>			if state := s.state.get(); state != mSpanInUse {</code></span>
+<span class="codeline" id="line-347"><code>				print("s.state = ", state, "\n")</code></span>
+<span class="codeline" id="line-348"><code>				throw("non in-use span found with specials bit set")</code></span>
+<span class="codeline" id="line-349"><code>			}</code></span>
+<span class="codeline" id="line-350"><code>			// Check that this span was swept (it may be cached or uncached).</code></span>
+<span class="codeline" id="line-351"><code>			if !useCheckmark &amp;&amp; !(s.sweepgen == sg || s.sweepgen == sg+3) {</code></span>
+<span class="codeline" id="line-352"><code>				// sweepgen was updated (+2) during non-checkmark GC pass</code></span>
+<span class="codeline" id="line-353"><code>				print("sweep ", s.sweepgen, " ", sg, "\n")</code></span>
+<span class="codeline" id="line-354"><code>				throw("gc: unswept span")</code></span>
+<span class="codeline" id="line-355"><code>			}</code></span>
+<span class="codeline" id="line-356"><code></code></span>
+<span class="codeline" id="line-357"><code>			// Lock the specials to prevent a special from being</code></span>
+<span class="codeline" id="line-358"><code>			// removed from the list while we're traversing it.</code></span>
+<span class="codeline" id="line-359"><code>			lock(&amp;s.speciallock)</code></span>
+<span class="codeline" id="line-360"><code>			for sp := s.specials; sp != nil; sp = sp.next {</code></span>
+<span class="codeline" id="line-361"><code>				if sp.kind != _KindSpecialFinalizer {</code></span>
+<span class="codeline" id="line-362"><code>					continue</code></span>
+<span class="codeline" id="line-363"><code>				}</code></span>
+<span class="codeline" id="line-364"><code>				// don't mark finalized object, but scan it so we</code></span>
+<span class="codeline" id="line-365"><code>				// retain everything it points to.</code></span>
+<span class="codeline" id="line-366"><code>				spf := (*specialfinalizer)(unsafe.Pointer(sp))</code></span>
+<span class="codeline" id="line-367"><code>				// A finalizer can be set for an inner byte of an object, find object beginning.</code></span>
+<span class="codeline" id="line-368"><code>				p := s.base() + uintptr(spf.special.offset)/s.elemsize*s.elemsize</code></span>
+<span class="codeline" id="line-369"><code></code></span>
+<span class="codeline" id="line-370"><code>				// Mark everything that can be reached from</code></span>
+<span class="codeline" id="line-371"><code>				// the object (but *not* the object itself or</code></span>
+<span class="codeline" id="line-372"><code>				// we'll never collect it).</code></span>
+<span class="codeline" id="line-373"><code>				scanobject(p, gcw)</code></span>
+<span class="codeline" id="line-374"><code></code></span>
+<span class="codeline" id="line-375"><code>				// The special itself is a root.</code></span>
+<span class="codeline" id="line-376"><code>				scanblock(uintptr(unsafe.Pointer(&amp;spf.fn)), sys.PtrSize, &amp;oneptrmask[0], gcw, nil)</code></span>
+<span class="codeline" id="line-377"><code>			}</code></span>
+<span class="codeline" id="line-378"><code>			unlock(&amp;s.speciallock)</code></span>
+<span class="codeline" id="line-379"><code>		}</code></span>
+<span class="codeline" id="line-380"><code>	}</code></span>
+<span class="codeline" id="line-381"><code>}</code></span>
+<span class="codeline" id="line-382"><code></code></span>
+<span class="codeline" id="line-383"><code>// gcAssistAlloc performs GC work to make gp's assist debt positive.</code></span>
+<span class="codeline" id="line-384"><code>// gp must be the calling user gorountine.</code></span>
+<span class="codeline" id="line-385"><code>//</code></span>
+<span class="codeline" id="line-386"><code>// This must be called with preemption enabled.</code></span>
+<span class="codeline" id="line-387"><code>func gcAssistAlloc(gp *g) {</code></span>
+<span class="codeline" id="line-388"><code>	// Don't assist in non-preemptible contexts. These are</code></span>
+<span class="codeline" id="line-389"><code>	// generally fragile and won't allow the assist to block.</code></span>
+<span class="codeline" id="line-390"><code>	if getg() == gp.m.g0 {</code></span>
+<span class="codeline" id="line-391"><code>		return</code></span>
+<span class="codeline" id="line-392"><code>	}</code></span>
+<span class="codeline" id="line-393"><code>	if mp := getg().m; mp.locks &gt; 0 || mp.preemptoff != "" {</code></span>
+<span class="codeline" id="line-394"><code>		return</code></span>
+<span class="codeline" id="line-395"><code>	}</code></span>
+<span class="codeline" id="line-396"><code></code></span>
+<span class="codeline" id="line-397"><code>	traced := false</code></span>
+<span class="codeline" id="line-398"><code>retry:</code></span>
+<span class="codeline" id="line-399"><code>	// Compute the amount of scan work we need to do to make the</code></span>
+<span class="codeline" id="line-400"><code>	// balance positive. When the required amount of work is low,</code></span>
+<span class="codeline" id="line-401"><code>	// we over-assist to build up credit for future allocations</code></span>
+<span class="codeline" id="line-402"><code>	// and amortize the cost of assisting.</code></span>
+<span class="codeline" id="line-403"><code>	assistWorkPerByte := float64frombits(atomic.Load64(&amp;gcController.assistWorkPerByte))</code></span>
+<span class="codeline" id="line-404"><code>	assistBytesPerWork := float64frombits(atomic.Load64(&amp;gcController.assistBytesPerWork))</code></span>
+<span class="codeline" id="line-405"><code>	debtBytes := -gp.gcAssistBytes</code></span>
+<span class="codeline" id="line-406"><code>	scanWork := int64(assistWorkPerByte * float64(debtBytes))</code></span>
+<span class="codeline" id="line-407"><code>	if scanWork &lt; gcOverAssistWork {</code></span>
+<span class="codeline" id="line-408"><code>		scanWork = gcOverAssistWork</code></span>
+<span class="codeline" id="line-409"><code>		debtBytes = int64(assistBytesPerWork * float64(scanWork))</code></span>
+<span class="codeline" id="line-410"><code>	}</code></span>
+<span class="codeline" id="line-411"><code></code></span>
+<span class="codeline" id="line-412"><code>	// Steal as much credit as we can from the background GC's</code></span>
+<span class="codeline" id="line-413"><code>	// scan credit. This is racy and may drop the background</code></span>
+<span class="codeline" id="line-414"><code>	// credit below 0 if two mutators steal at the same time. This</code></span>
+<span class="codeline" id="line-415"><code>	// will just cause steals to fail until credit is accumulated</code></span>
+<span class="codeline" id="line-416"><code>	// again, so in the long run it doesn't really matter, but we</code></span>
+<span class="codeline" id="line-417"><code>	// do have to handle the negative credit case.</code></span>
+<span class="codeline" id="line-418"><code>	bgScanCredit := atomic.Loadint64(&amp;gcController.bgScanCredit)</code></span>
+<span class="codeline" id="line-419"><code>	stolen := int64(0)</code></span>
+<span class="codeline" id="line-420"><code>	if bgScanCredit &gt; 0 {</code></span>
+<span class="codeline" id="line-421"><code>		if bgScanCredit &lt; scanWork {</code></span>
+<span class="codeline" id="line-422"><code>			stolen = bgScanCredit</code></span>
+<span class="codeline" id="line-423"><code>			gp.gcAssistBytes += 1 + int64(assistBytesPerWork*float64(stolen))</code></span>
+<span class="codeline" id="line-424"><code>		} else {</code></span>
+<span class="codeline" id="line-425"><code>			stolen = scanWork</code></span>
+<span class="codeline" id="line-426"><code>			gp.gcAssistBytes += debtBytes</code></span>
+<span class="codeline" id="line-427"><code>		}</code></span>
+<span class="codeline" id="line-428"><code>		atomic.Xaddint64(&amp;gcController.bgScanCredit, -stolen)</code></span>
+<span class="codeline" id="line-429"><code></code></span>
+<span class="codeline" id="line-430"><code>		scanWork -= stolen</code></span>
+<span class="codeline" id="line-431"><code></code></span>
+<span class="codeline" id="line-432"><code>		if scanWork == 0 {</code></span>
+<span class="codeline" id="line-433"><code>			// We were able to steal all of the credit we</code></span>
+<span class="codeline" id="line-434"><code>			// needed.</code></span>
+<span class="codeline" id="line-435"><code>			if traced {</code></span>
+<span class="codeline" id="line-436"><code>				traceGCMarkAssistDone()</code></span>
+<span class="codeline" id="line-437"><code>			}</code></span>
+<span class="codeline" id="line-438"><code>			return</code></span>
+<span class="codeline" id="line-439"><code>		}</code></span>
+<span class="codeline" id="line-440"><code>	}</code></span>
+<span class="codeline" id="line-441"><code></code></span>
+<span class="codeline" id="line-442"><code>	if trace.enabled &amp;&amp; !traced {</code></span>
+<span class="codeline" id="line-443"><code>		traced = true</code></span>
+<span class="codeline" id="line-444"><code>		traceGCMarkAssistStart()</code></span>
+<span class="codeline" id="line-445"><code>	}</code></span>
+<span class="codeline" id="line-446"><code></code></span>
+<span class="codeline" id="line-447"><code>	// Perform assist work</code></span>
+<span class="codeline" id="line-448"><code>	systemstack(func() {</code></span>
+<span class="codeline" id="line-449"><code>		gcAssistAlloc1(gp, scanWork)</code></span>
+<span class="codeline" id="line-450"><code>		// The user stack may have moved, so this can't touch</code></span>
+<span class="codeline" id="line-451"><code>		// anything on it until it returns from systemstack.</code></span>
+<span class="codeline" id="line-452"><code>	})</code></span>
+<span class="codeline" id="line-453"><code></code></span>
+<span class="codeline" id="line-454"><code>	completed := gp.param != nil</code></span>
+<span class="codeline" id="line-455"><code>	gp.param = nil</code></span>
+<span class="codeline" id="line-456"><code>	if completed {</code></span>
+<span class="codeline" id="line-457"><code>		gcMarkDone()</code></span>
+<span class="codeline" id="line-458"><code>	}</code></span>
+<span class="codeline" id="line-459"><code></code></span>
+<span class="codeline" id="line-460"><code>	if gp.gcAssistBytes &lt; 0 {</code></span>
+<span class="codeline" id="line-461"><code>		// We were unable steal enough credit or perform</code></span>
+<span class="codeline" id="line-462"><code>		// enough work to pay off the assist debt. We need to</code></span>
+<span class="codeline" id="line-463"><code>		// do one of these before letting the mutator allocate</code></span>
+<span class="codeline" id="line-464"><code>		// more to prevent over-allocation.</code></span>
+<span class="codeline" id="line-465"><code>		//</code></span>
+<span class="codeline" id="line-466"><code>		// If this is because we were preempted, reschedule</code></span>
+<span class="codeline" id="line-467"><code>		// and try some more.</code></span>
+<span class="codeline" id="line-468"><code>		if gp.preempt {</code></span>
+<span class="codeline" id="line-469"><code>			Gosched()</code></span>
+<span class="codeline" id="line-470"><code>			goto retry</code></span>
+<span class="codeline" id="line-471"><code>		}</code></span>
+<span class="codeline" id="line-472"><code></code></span>
+<span class="codeline" id="line-473"><code>		// Add this G to an assist queue and park. When the GC</code></span>
+<span class="codeline" id="line-474"><code>		// has more background credit, it will satisfy queued</code></span>
+<span class="codeline" id="line-475"><code>		// assists before flushing to the global credit pool.</code></span>
+<span class="codeline" id="line-476"><code>		//</code></span>
+<span class="codeline" id="line-477"><code>		// Note that this does *not* get woken up when more</code></span>
+<span class="codeline" id="line-478"><code>		// work is added to the work list. The theory is that</code></span>
+<span class="codeline" id="line-479"><code>		// there wasn't enough work to do anyway, so we might</code></span>
+<span class="codeline" id="line-480"><code>		// as well let background marking take care of the</code></span>
+<span class="codeline" id="line-481"><code>		// work that is available.</code></span>
+<span class="codeline" id="line-482"><code>		if !gcParkAssist() {</code></span>
+<span class="codeline" id="line-483"><code>			goto retry</code></span>
+<span class="codeline" id="line-484"><code>		}</code></span>
+<span class="codeline" id="line-485"><code></code></span>
+<span class="codeline" id="line-486"><code>		// At this point either background GC has satisfied</code></span>
+<span class="codeline" id="line-487"><code>		// this G's assist debt, or the GC cycle is over.</code></span>
+<span class="codeline" id="line-488"><code>	}</code></span>
+<span class="codeline" id="line-489"><code>	if traced {</code></span>
+<span class="codeline" id="line-490"><code>		traceGCMarkAssistDone()</code></span>
+<span class="codeline" id="line-491"><code>	}</code></span>
+<span class="codeline" id="line-492"><code>}</code></span>
+<span class="codeline" id="line-493"><code></code></span>
+<span class="codeline" id="line-494"><code>// gcAssistAlloc1 is the part of gcAssistAlloc that runs on the system</code></span>
+<span class="codeline" id="line-495"><code>// stack. This is a separate function to make it easier to see that</code></span>
+<span class="codeline" id="line-496"><code>// we're not capturing anything from the user stack, since the user</code></span>
+<span class="codeline" id="line-497"><code>// stack may move while we're in this function.</code></span>
+<span class="codeline" id="line-498"><code>//</code></span>
+<span class="codeline" id="line-499"><code>// gcAssistAlloc1 indicates whether this assist completed the mark</code></span>
+<span class="codeline" id="line-500"><code>// phase by setting gp.param to non-nil. This can't be communicated on</code></span>
+<span class="codeline" id="line-501"><code>// the stack since it may move.</code></span>
+<span class="codeline" id="line-502"><code>//</code></span>
+<span class="codeline" id="line-503"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-504"><code>func gcAssistAlloc1(gp *g, scanWork int64) {</code></span>
+<span class="codeline" id="line-505"><code>	// Clear the flag indicating that this assist completed the</code></span>
+<span class="codeline" id="line-506"><code>	// mark phase.</code></span>
+<span class="codeline" id="line-507"><code>	gp.param = nil</code></span>
+<span class="codeline" id="line-508"><code></code></span>
+<span class="codeline" id="line-509"><code>	if atomic.Load(&amp;gcBlackenEnabled) == 0 {</code></span>
+<span class="codeline" id="line-510"><code>		// The gcBlackenEnabled check in malloc races with the</code></span>
+<span class="codeline" id="line-511"><code>		// store that clears it but an atomic check in every malloc</code></span>
+<span class="codeline" id="line-512"><code>		// would be a performance hit.</code></span>
+<span class="codeline" id="line-513"><code>		// Instead we recheck it here on the non-preemptable system</code></span>
+<span class="codeline" id="line-514"><code>		// stack to determine if we should perform an assist.</code></span>
+<span class="codeline" id="line-515"><code></code></span>
+<span class="codeline" id="line-516"><code>		// GC is done, so ignore any remaining debt.</code></span>
+<span class="codeline" id="line-517"><code>		gp.gcAssistBytes = 0</code></span>
+<span class="codeline" id="line-518"><code>		return</code></span>
+<span class="codeline" id="line-519"><code>	}</code></span>
+<span class="codeline" id="line-520"><code>	// Track time spent in this assist. Since we're on the</code></span>
+<span class="codeline" id="line-521"><code>	// system stack, this is non-preemptible, so we can</code></span>
+<span class="codeline" id="line-522"><code>	// just measure start and end time.</code></span>
+<span class="codeline" id="line-523"><code>	startTime := nanotime()</code></span>
+<span class="codeline" id="line-524"><code></code></span>
+<span class="codeline" id="line-525"><code>	decnwait := atomic.Xadd(&amp;work.nwait, -1)</code></span>
+<span class="codeline" id="line-526"><code>	if decnwait == work.nproc {</code></span>
+<span class="codeline" id="line-527"><code>		println("runtime: work.nwait =", decnwait, "work.nproc=", work.nproc)</code></span>
+<span class="codeline" id="line-528"><code>		throw("nwait &gt; work.nprocs")</code></span>
+<span class="codeline" id="line-529"><code>	}</code></span>
+<span class="codeline" id="line-530"><code></code></span>
+<span class="codeline" id="line-531"><code>	// gcDrainN requires the caller to be preemptible.</code></span>
+<span class="codeline" id="line-532"><code>	casgstatus(gp, _Grunning, _Gwaiting)</code></span>
+<span class="codeline" id="line-533"><code>	gp.waitreason = waitReasonGCAssistMarking</code></span>
+<span class="codeline" id="line-534"><code></code></span>
+<span class="codeline" id="line-535"><code>	// drain own cached work first in the hopes that it</code></span>
+<span class="codeline" id="line-536"><code>	// will be more cache friendly.</code></span>
+<span class="codeline" id="line-537"><code>	gcw := &amp;getg().m.p.ptr().gcw</code></span>
+<span class="codeline" id="line-538"><code>	workDone := gcDrainN(gcw, scanWork)</code></span>
+<span class="codeline" id="line-539"><code></code></span>
+<span class="codeline" id="line-540"><code>	casgstatus(gp, _Gwaiting, _Grunning)</code></span>
+<span class="codeline" id="line-541"><code></code></span>
+<span class="codeline" id="line-542"><code>	// Record that we did this much scan work.</code></span>
+<span class="codeline" id="line-543"><code>	//</code></span>
+<span class="codeline" id="line-544"><code>	// Back out the number of bytes of assist credit that</code></span>
+<span class="codeline" id="line-545"><code>	// this scan work counts for. The "1+" is a poor man's</code></span>
+<span class="codeline" id="line-546"><code>	// round-up, to ensure this adds credit even if</code></span>
+<span class="codeline" id="line-547"><code>	// assistBytesPerWork is very low.</code></span>
+<span class="codeline" id="line-548"><code>	assistBytesPerWork := float64frombits(atomic.Load64(&amp;gcController.assistBytesPerWork))</code></span>
+<span class="codeline" id="line-549"><code>	gp.gcAssistBytes += 1 + int64(assistBytesPerWork*float64(workDone))</code></span>
+<span class="codeline" id="line-550"><code></code></span>
+<span class="codeline" id="line-551"><code>	// If this is the last worker and we ran out of work,</code></span>
+<span class="codeline" id="line-552"><code>	// signal a completion point.</code></span>
+<span class="codeline" id="line-553"><code>	incnwait := atomic.Xadd(&amp;work.nwait, +1)</code></span>
+<span class="codeline" id="line-554"><code>	if incnwait &gt; work.nproc {</code></span>
+<span class="codeline" id="line-555"><code>		println("runtime: work.nwait=", incnwait,</code></span>
+<span class="codeline" id="line-556"><code>			"work.nproc=", work.nproc)</code></span>
+<span class="codeline" id="line-557"><code>		throw("work.nwait &gt; work.nproc")</code></span>
+<span class="codeline" id="line-558"><code>	}</code></span>
+<span class="codeline" id="line-559"><code></code></span>
+<span class="codeline" id="line-560"><code>	if incnwait == work.nproc &amp;&amp; !gcMarkWorkAvailable(nil) {</code></span>
+<span class="codeline" id="line-561"><code>		// This has reached a background completion point. Set</code></span>
+<span class="codeline" id="line-562"><code>		// gp.param to a non-nil value to indicate this. It</code></span>
+<span class="codeline" id="line-563"><code>		// doesn't matter what we set it to (it just has to be</code></span>
+<span class="codeline" id="line-564"><code>		// a valid pointer).</code></span>
+<span class="codeline" id="line-565"><code>		gp.param = unsafe.Pointer(gp)</code></span>
+<span class="codeline" id="line-566"><code>	}</code></span>
+<span class="codeline" id="line-567"><code>	duration := nanotime() - startTime</code></span>
+<span class="codeline" id="line-568"><code>	_p_ := gp.m.p.ptr()</code></span>
+<span class="codeline" id="line-569"><code>	_p_.gcAssistTime += duration</code></span>
+<span class="codeline" id="line-570"><code>	if _p_.gcAssistTime &gt; gcAssistTimeSlack {</code></span>
+<span class="codeline" id="line-571"><code>		atomic.Xaddint64(&amp;gcController.assistTime, _p_.gcAssistTime)</code></span>
+<span class="codeline" id="line-572"><code>		_p_.gcAssistTime = 0</code></span>
+<span class="codeline" id="line-573"><code>	}</code></span>
+<span class="codeline" id="line-574"><code>}</code></span>
+<span class="codeline" id="line-575"><code></code></span>
+<span class="codeline" id="line-576"><code>// gcWakeAllAssists wakes all currently blocked assists. This is used</code></span>
+<span class="codeline" id="line-577"><code>// at the end of a GC cycle. gcBlackenEnabled must be false to prevent</code></span>
+<span class="codeline" id="line-578"><code>// new assists from going to sleep after this point.</code></span>
+<span class="codeline" id="line-579"><code>func gcWakeAllAssists() {</code></span>
+<span class="codeline" id="line-580"><code>	lock(&amp;work.assistQueue.lock)</code></span>
+<span class="codeline" id="line-581"><code>	list := work.assistQueue.q.popList()</code></span>
+<span class="codeline" id="line-582"><code>	injectglist(&amp;list)</code></span>
+<span class="codeline" id="line-583"><code>	unlock(&amp;work.assistQueue.lock)</code></span>
+<span class="codeline" id="line-584"><code>}</code></span>
+<span class="codeline" id="line-585"><code></code></span>
+<span class="codeline" id="line-586"><code>// gcParkAssist puts the current goroutine on the assist queue and parks.</code></span>
+<span class="codeline" id="line-587"><code>//</code></span>
+<span class="codeline" id="line-588"><code>// gcParkAssist reports whether the assist is now satisfied. If it</code></span>
+<span class="codeline" id="line-589"><code>// returns false, the caller must retry the assist.</code></span>
+<span class="codeline" id="line-590"><code>//</code></span>
+<span class="codeline" id="line-591"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-592"><code>func gcParkAssist() bool {</code></span>
+<span class="codeline" id="line-593"><code>	lock(&amp;work.assistQueue.lock)</code></span>
+<span class="codeline" id="line-594"><code>	// If the GC cycle finished while we were getting the lock,</code></span>
+<span class="codeline" id="line-595"><code>	// exit the assist. The cycle can't finish while we hold the</code></span>
+<span class="codeline" id="line-596"><code>	// lock.</code></span>
+<span class="codeline" id="line-597"><code>	if atomic.Load(&amp;gcBlackenEnabled) == 0 {</code></span>
+<span class="codeline" id="line-598"><code>		unlock(&amp;work.assistQueue.lock)</code></span>
+<span class="codeline" id="line-599"><code>		return true</code></span>
+<span class="codeline" id="line-600"><code>	}</code></span>
+<span class="codeline" id="line-601"><code></code></span>
+<span class="codeline" id="line-602"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-603"><code>	oldList := work.assistQueue.q</code></span>
+<span class="codeline" id="line-604"><code>	work.assistQueue.q.pushBack(gp)</code></span>
+<span class="codeline" id="line-605"><code></code></span>
+<span class="codeline" id="line-606"><code>	// Recheck for background credit now that this G is in</code></span>
+<span class="codeline" id="line-607"><code>	// the queue, but can still back out. This avoids a</code></span>
+<span class="codeline" id="line-608"><code>	// race in case background marking has flushed more</code></span>
+<span class="codeline" id="line-609"><code>	// credit since we checked above.</code></span>
+<span class="codeline" id="line-610"><code>	if atomic.Loadint64(&amp;gcController.bgScanCredit) &gt; 0 {</code></span>
+<span class="codeline" id="line-611"><code>		work.assistQueue.q = oldList</code></span>
+<span class="codeline" id="line-612"><code>		if oldList.tail != 0 {</code></span>
+<span class="codeline" id="line-613"><code>			oldList.tail.ptr().schedlink.set(nil)</code></span>
+<span class="codeline" id="line-614"><code>		}</code></span>
+<span class="codeline" id="line-615"><code>		unlock(&amp;work.assistQueue.lock)</code></span>
+<span class="codeline" id="line-616"><code>		return false</code></span>
+<span class="codeline" id="line-617"><code>	}</code></span>
+<span class="codeline" id="line-618"><code>	// Park.</code></span>
+<span class="codeline" id="line-619"><code>	goparkunlock(&amp;work.assistQueue.lock, waitReasonGCAssistWait, traceEvGoBlockGC, 2)</code></span>
+<span class="codeline" id="line-620"><code>	return true</code></span>
+<span class="codeline" id="line-621"><code>}</code></span>
+<span class="codeline" id="line-622"><code></code></span>
+<span class="codeline" id="line-623"><code>// gcFlushBgCredit flushes scanWork units of background scan work</code></span>
+<span class="codeline" id="line-624"><code>// credit. This first satisfies blocked assists on the</code></span>
+<span class="codeline" id="line-625"><code>// work.assistQueue and then flushes any remaining credit to</code></span>
+<span class="codeline" id="line-626"><code>// gcController.bgScanCredit.</code></span>
+<span class="codeline" id="line-627"><code>//</code></span>
+<span class="codeline" id="line-628"><code>// Write barriers are disallowed because this is used by gcDrain after</code></span>
+<span class="codeline" id="line-629"><code>// it has ensured that all work is drained and this must preserve that</code></span>
+<span class="codeline" id="line-630"><code>// condition.</code></span>
+<span class="codeline" id="line-631"><code>//</code></span>
+<span class="codeline" id="line-632"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-633"><code>func gcFlushBgCredit(scanWork int64) {</code></span>
+<span class="codeline" id="line-634"><code>	if work.assistQueue.q.empty() {</code></span>
+<span class="codeline" id="line-635"><code>		// Fast path; there are no blocked assists. There's a</code></span>
+<span class="codeline" id="line-636"><code>		// small window here where an assist may add itself to</code></span>
+<span class="codeline" id="line-637"><code>		// the blocked queue and park. If that happens, we'll</code></span>
+<span class="codeline" id="line-638"><code>		// just get it on the next flush.</code></span>
+<span class="codeline" id="line-639"><code>		atomic.Xaddint64(&amp;gcController.bgScanCredit, scanWork)</code></span>
+<span class="codeline" id="line-640"><code>		return</code></span>
+<span class="codeline" id="line-641"><code>	}</code></span>
+<span class="codeline" id="line-642"><code></code></span>
+<span class="codeline" id="line-643"><code>	assistBytesPerWork := float64frombits(atomic.Load64(&amp;gcController.assistBytesPerWork))</code></span>
+<span class="codeline" id="line-644"><code>	scanBytes := int64(float64(scanWork) * assistBytesPerWork)</code></span>
+<span class="codeline" id="line-645"><code></code></span>
+<span class="codeline" id="line-646"><code>	lock(&amp;work.assistQueue.lock)</code></span>
+<span class="codeline" id="line-647"><code>	for !work.assistQueue.q.empty() &amp;&amp; scanBytes &gt; 0 {</code></span>
+<span class="codeline" id="line-648"><code>		gp := work.assistQueue.q.pop()</code></span>
+<span class="codeline" id="line-649"><code>		// Note that gp.gcAssistBytes is negative because gp</code></span>
+<span class="codeline" id="line-650"><code>		// is in debt. Think carefully about the signs below.</code></span>
+<span class="codeline" id="line-651"><code>		if scanBytes+gp.gcAssistBytes &gt;= 0 {</code></span>
+<span class="codeline" id="line-652"><code>			// Satisfy this entire assist debt.</code></span>
+<span class="codeline" id="line-653"><code>			scanBytes += gp.gcAssistBytes</code></span>
+<span class="codeline" id="line-654"><code>			gp.gcAssistBytes = 0</code></span>
+<span class="codeline" id="line-655"><code>			// It's important that we *not* put gp in</code></span>
+<span class="codeline" id="line-656"><code>			// runnext. Otherwise, it's possible for user</code></span>
+<span class="codeline" id="line-657"><code>			// code to exploit the GC worker's high</code></span>
+<span class="codeline" id="line-658"><code>			// scheduler priority to get itself always run</code></span>
+<span class="codeline" id="line-659"><code>			// before other goroutines and always in the</code></span>
+<span class="codeline" id="line-660"><code>			// fresh quantum started by GC.</code></span>
+<span class="codeline" id="line-661"><code>			ready(gp, 0, false)</code></span>
+<span class="codeline" id="line-662"><code>		} else {</code></span>
+<span class="codeline" id="line-663"><code>			// Partially satisfy this assist.</code></span>
+<span class="codeline" id="line-664"><code>			gp.gcAssistBytes += scanBytes</code></span>
+<span class="codeline" id="line-665"><code>			scanBytes = 0</code></span>
+<span class="codeline" id="line-666"><code>			// As a heuristic, we move this assist to the</code></span>
+<span class="codeline" id="line-667"><code>			// back of the queue so that large assists</code></span>
+<span class="codeline" id="line-668"><code>			// can't clog up the assist queue and</code></span>
+<span class="codeline" id="line-669"><code>			// substantially delay small assists.</code></span>
+<span class="codeline" id="line-670"><code>			work.assistQueue.q.pushBack(gp)</code></span>
+<span class="codeline" id="line-671"><code>			break</code></span>
+<span class="codeline" id="line-672"><code>		}</code></span>
+<span class="codeline" id="line-673"><code>	}</code></span>
+<span class="codeline" id="line-674"><code></code></span>
+<span class="codeline" id="line-675"><code>	if scanBytes &gt; 0 {</code></span>
+<span class="codeline" id="line-676"><code>		// Convert from scan bytes back to work.</code></span>
+<span class="codeline" id="line-677"><code>		assistWorkPerByte := float64frombits(atomic.Load64(&amp;gcController.assistWorkPerByte))</code></span>
+<span class="codeline" id="line-678"><code>		scanWork = int64(float64(scanBytes) * assistWorkPerByte)</code></span>
+<span class="codeline" id="line-679"><code>		atomic.Xaddint64(&amp;gcController.bgScanCredit, scanWork)</code></span>
+<span class="codeline" id="line-680"><code>	}</code></span>
+<span class="codeline" id="line-681"><code>	unlock(&amp;work.assistQueue.lock)</code></span>
+<span class="codeline" id="line-682"><code>}</code></span>
+<span class="codeline" id="line-683"><code></code></span>
+<span class="codeline" id="line-684"><code>// scanstack scans gp's stack, greying all pointers found on the stack.</code></span>
+<span class="codeline" id="line-685"><code>//</code></span>
+<span class="codeline" id="line-686"><code>// scanstack will also shrink the stack if it is safe to do so. If it</code></span>
+<span class="codeline" id="line-687"><code>// is not, it schedules a stack shrink for the next synchronous safe</code></span>
+<span class="codeline" id="line-688"><code>// point.</code></span>
+<span class="codeline" id="line-689"><code>//</code></span>
+<span class="codeline" id="line-690"><code>// scanstack is marked go:systemstack because it must not be preempted</code></span>
+<span class="codeline" id="line-691"><code>// while using a workbuf.</code></span>
+<span class="codeline" id="line-692"><code>//</code></span>
+<span class="codeline" id="line-693"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-694"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-695"><code>func scanstack(gp *g, gcw *gcWork) {</code></span>
+<span class="codeline" id="line-696"><code>	if readgstatus(gp)&amp;_Gscan == 0 {</code></span>
+<span class="codeline" id="line-697"><code>		print("runtime:scanstack: gp=", gp, ", goid=", gp.goid, ", gp-&gt;atomicstatus=", hex(readgstatus(gp)), "\n")</code></span>
+<span class="codeline" id="line-698"><code>		throw("scanstack - bad status")</code></span>
+<span class="codeline" id="line-699"><code>	}</code></span>
+<span class="codeline" id="line-700"><code></code></span>
+<span class="codeline" id="line-701"><code>	switch readgstatus(gp) &amp;^ _Gscan {</code></span>
+<span class="codeline" id="line-702"><code>	default:</code></span>
+<span class="codeline" id="line-703"><code>		print("runtime: gp=", gp, ", goid=", gp.goid, ", gp-&gt;atomicstatus=", readgstatus(gp), "\n")</code></span>
+<span class="codeline" id="line-704"><code>		throw("mark - bad status")</code></span>
+<span class="codeline" id="line-705"><code>	case _Gdead:</code></span>
+<span class="codeline" id="line-706"><code>		return</code></span>
+<span class="codeline" id="line-707"><code>	case _Grunning:</code></span>
+<span class="codeline" id="line-708"><code>		print("runtime: gp=", gp, ", goid=", gp.goid, ", gp-&gt;atomicstatus=", readgstatus(gp), "\n")</code></span>
+<span class="codeline" id="line-709"><code>		throw("scanstack: goroutine not stopped")</code></span>
+<span class="codeline" id="line-710"><code>	case _Grunnable, _Gsyscall, _Gwaiting:</code></span>
+<span class="codeline" id="line-711"><code>		// ok</code></span>
+<span class="codeline" id="line-712"><code>	}</code></span>
+<span class="codeline" id="line-713"><code></code></span>
+<span class="codeline" id="line-714"><code>	if gp == getg() {</code></span>
+<span class="codeline" id="line-715"><code>		throw("can't scan our own stack")</code></span>
+<span class="codeline" id="line-716"><code>	}</code></span>
+<span class="codeline" id="line-717"><code></code></span>
+<span class="codeline" id="line-718"><code>	if isShrinkStackSafe(gp) {</code></span>
+<span class="codeline" id="line-719"><code>		// Shrink the stack if not much of it is being used.</code></span>
+<span class="codeline" id="line-720"><code>		shrinkstack(gp)</code></span>
+<span class="codeline" id="line-721"><code>	} else {</code></span>
+<span class="codeline" id="line-722"><code>		// Otherwise, shrink the stack at the next sync safe point.</code></span>
+<span class="codeline" id="line-723"><code>		gp.preemptShrink = true</code></span>
+<span class="codeline" id="line-724"><code>	}</code></span>
+<span class="codeline" id="line-725"><code></code></span>
+<span class="codeline" id="line-726"><code>	var state stackScanState</code></span>
+<span class="codeline" id="line-727"><code>	state.stack = gp.stack</code></span>
+<span class="codeline" id="line-728"><code></code></span>
+<span class="codeline" id="line-729"><code>	if stackTraceDebug {</code></span>
+<span class="codeline" id="line-730"><code>		println("stack trace goroutine", gp.goid)</code></span>
+<span class="codeline" id="line-731"><code>	}</code></span>
+<span class="codeline" id="line-732"><code></code></span>
+<span class="codeline" id="line-733"><code>	if debugScanConservative &amp;&amp; gp.asyncSafePoint {</code></span>
+<span class="codeline" id="line-734"><code>		print("scanning async preempted goroutine ", gp.goid, " stack [", hex(gp.stack.lo), ",", hex(gp.stack.hi), ")\n")</code></span>
+<span class="codeline" id="line-735"><code>	}</code></span>
+<span class="codeline" id="line-736"><code></code></span>
+<span class="codeline" id="line-737"><code>	// Scan the saved context register. This is effectively a live</code></span>
+<span class="codeline" id="line-738"><code>	// register that gets moved back and forth between the</code></span>
+<span class="codeline" id="line-739"><code>	// register and sched.ctxt without a write barrier.</code></span>
+<span class="codeline" id="line-740"><code>	if gp.sched.ctxt != nil {</code></span>
+<span class="codeline" id="line-741"><code>		scanblock(uintptr(unsafe.Pointer(&amp;gp.sched.ctxt)), sys.PtrSize, &amp;oneptrmask[0], gcw, &amp;state)</code></span>
+<span class="codeline" id="line-742"><code>	}</code></span>
+<span class="codeline" id="line-743"><code></code></span>
+<span class="codeline" id="line-744"><code>	// Scan the stack. Accumulate a list of stack objects.</code></span>
+<span class="codeline" id="line-745"><code>	scanframe := func(frame *stkframe, unused unsafe.Pointer) bool {</code></span>
+<span class="codeline" id="line-746"><code>		scanframeworker(frame, &amp;state, gcw)</code></span>
+<span class="codeline" id="line-747"><code>		return true</code></span>
+<span class="codeline" id="line-748"><code>	}</code></span>
+<span class="codeline" id="line-749"><code>	gentraceback(^uintptr(0), ^uintptr(0), 0, gp, 0, nil, 0x7fffffff, scanframe, nil, 0)</code></span>
+<span class="codeline" id="line-750"><code></code></span>
+<span class="codeline" id="line-751"><code>	// Find additional pointers that point into the stack from the heap.</code></span>
+<span class="codeline" id="line-752"><code>	// Currently this includes defers and panics. See also function copystack.</code></span>
+<span class="codeline" id="line-753"><code></code></span>
+<span class="codeline" id="line-754"><code>	// Find and trace all defer arguments.</code></span>
+<span class="codeline" id="line-755"><code>	tracebackdefers(gp, scanframe, nil)</code></span>
+<span class="codeline" id="line-756"><code></code></span>
+<span class="codeline" id="line-757"><code>	// Find and trace other pointers in defer records.</code></span>
+<span class="codeline" id="line-758"><code>	for d := gp._defer; d != nil; d = d.link {</code></span>
+<span class="codeline" id="line-759"><code>		if d.fn != nil {</code></span>
+<span class="codeline" id="line-760"><code>			// tracebackdefers above does not scan the func value, which could</code></span>
+<span class="codeline" id="line-761"><code>			// be a stack allocated closure. See issue 30453.</code></span>
+<span class="codeline" id="line-762"><code>			scanblock(uintptr(unsafe.Pointer(&amp;d.fn)), sys.PtrSize, &amp;oneptrmask[0], gcw, &amp;state)</code></span>
+<span class="codeline" id="line-763"><code>		}</code></span>
+<span class="codeline" id="line-764"><code>		if d.link != nil {</code></span>
+<span class="codeline" id="line-765"><code>			// The link field of a stack-allocated defer record might point</code></span>
+<span class="codeline" id="line-766"><code>			// to a heap-allocated defer record. Keep that heap record live.</code></span>
+<span class="codeline" id="line-767"><code>			scanblock(uintptr(unsafe.Pointer(&amp;d.link)), sys.PtrSize, &amp;oneptrmask[0], gcw, &amp;state)</code></span>
+<span class="codeline" id="line-768"><code>		}</code></span>
+<span class="codeline" id="line-769"><code>		// Retain defers records themselves.</code></span>
+<span class="codeline" id="line-770"><code>		// Defer records might not be reachable from the G through regular heap</code></span>
+<span class="codeline" id="line-771"><code>		// tracing because the defer linked list might weave between the stack and the heap.</code></span>
+<span class="codeline" id="line-772"><code>		if d.heap {</code></span>
+<span class="codeline" id="line-773"><code>			scanblock(uintptr(unsafe.Pointer(&amp;d)), sys.PtrSize, &amp;oneptrmask[0], gcw, &amp;state)</code></span>
+<span class="codeline" id="line-774"><code>		}</code></span>
+<span class="codeline" id="line-775"><code>	}</code></span>
+<span class="codeline" id="line-776"><code>	if gp._panic != nil {</code></span>
+<span class="codeline" id="line-777"><code>		// Panics are always stack allocated.</code></span>
+<span class="codeline" id="line-778"><code>		state.putPtr(uintptr(unsafe.Pointer(gp._panic)), false)</code></span>
+<span class="codeline" id="line-779"><code>	}</code></span>
+<span class="codeline" id="line-780"><code></code></span>
+<span class="codeline" id="line-781"><code>	// Find and scan all reachable stack objects.</code></span>
+<span class="codeline" id="line-782"><code>	//</code></span>
+<span class="codeline" id="line-783"><code>	// The state's pointer queue prioritizes precise pointers over</code></span>
+<span class="codeline" id="line-784"><code>	// conservative pointers so that we'll prefer scanning stack</code></span>
+<span class="codeline" id="line-785"><code>	// objects precisely.</code></span>
+<span class="codeline" id="line-786"><code>	state.buildIndex()</code></span>
+<span class="codeline" id="line-787"><code>	for {</code></span>
+<span class="codeline" id="line-788"><code>		p, conservative := state.getPtr()</code></span>
+<span class="codeline" id="line-789"><code>		if p == 0 {</code></span>
+<span class="codeline" id="line-790"><code>			break</code></span>
+<span class="codeline" id="line-791"><code>		}</code></span>
+<span class="codeline" id="line-792"><code>		obj := state.findObject(p)</code></span>
+<span class="codeline" id="line-793"><code>		if obj == nil {</code></span>
+<span class="codeline" id="line-794"><code>			continue</code></span>
+<span class="codeline" id="line-795"><code>		}</code></span>
+<span class="codeline" id="line-796"><code>		t := obj.typ</code></span>
+<span class="codeline" id="line-797"><code>		if t == nil {</code></span>
+<span class="codeline" id="line-798"><code>			// We've already scanned this object.</code></span>
+<span class="codeline" id="line-799"><code>			continue</code></span>
+<span class="codeline" id="line-800"><code>		}</code></span>
+<span class="codeline" id="line-801"><code>		obj.setType(nil) // Don't scan it again.</code></span>
+<span class="codeline" id="line-802"><code>		if stackTraceDebug {</code></span>
+<span class="codeline" id="line-803"><code>			printlock()</code></span>
+<span class="codeline" id="line-804"><code>			print("  live stkobj at", hex(state.stack.lo+uintptr(obj.off)), "of type", t.string())</code></span>
+<span class="codeline" id="line-805"><code>			if conservative {</code></span>
+<span class="codeline" id="line-806"><code>				print(" (conservative)")</code></span>
+<span class="codeline" id="line-807"><code>			}</code></span>
+<span class="codeline" id="line-808"><code>			println()</code></span>
+<span class="codeline" id="line-809"><code>			printunlock()</code></span>
+<span class="codeline" id="line-810"><code>		}</code></span>
+<span class="codeline" id="line-811"><code>		gcdata := t.gcdata</code></span>
+<span class="codeline" id="line-812"><code>		var s *mspan</code></span>
+<span class="codeline" id="line-813"><code>		if t.kind&amp;kindGCProg != 0 {</code></span>
+<span class="codeline" id="line-814"><code>			// This path is pretty unlikely, an object large enough</code></span>
+<span class="codeline" id="line-815"><code>			// to have a GC program allocated on the stack.</code></span>
+<span class="codeline" id="line-816"><code>			// We need some space to unpack the program into a straight</code></span>
+<span class="codeline" id="line-817"><code>			// bitmask, which we allocate/free here.</code></span>
+<span class="codeline" id="line-818"><code>			// TODO: it would be nice if there were a way to run a GC</code></span>
+<span class="codeline" id="line-819"><code>			// program without having to store all its bits. We'd have</code></span>
+<span class="codeline" id="line-820"><code>			// to change from a Lempel-Ziv style program to something else.</code></span>
+<span class="codeline" id="line-821"><code>			// Or we can forbid putting objects on stacks if they require</code></span>
+<span class="codeline" id="line-822"><code>			// a gc program (see issue 27447).</code></span>
+<span class="codeline" id="line-823"><code>			s = materializeGCProg(t.ptrdata, gcdata)</code></span>
+<span class="codeline" id="line-824"><code>			gcdata = (*byte)(unsafe.Pointer(s.startAddr))</code></span>
+<span class="codeline" id="line-825"><code>		}</code></span>
+<span class="codeline" id="line-826"><code></code></span>
+<span class="codeline" id="line-827"><code>		b := state.stack.lo + uintptr(obj.off)</code></span>
+<span class="codeline" id="line-828"><code>		if conservative {</code></span>
+<span class="codeline" id="line-829"><code>			scanConservative(b, t.ptrdata, gcdata, gcw, &amp;state)</code></span>
+<span class="codeline" id="line-830"><code>		} else {</code></span>
+<span class="codeline" id="line-831"><code>			scanblock(b, t.ptrdata, gcdata, gcw, &amp;state)</code></span>
+<span class="codeline" id="line-832"><code>		}</code></span>
+<span class="codeline" id="line-833"><code></code></span>
+<span class="codeline" id="line-834"><code>		if s != nil {</code></span>
+<span class="codeline" id="line-835"><code>			dematerializeGCProg(s)</code></span>
+<span class="codeline" id="line-836"><code>		}</code></span>
+<span class="codeline" id="line-837"><code>	}</code></span>
+<span class="codeline" id="line-838"><code></code></span>
+<span class="codeline" id="line-839"><code>	// Deallocate object buffers.</code></span>
+<span class="codeline" id="line-840"><code>	// (Pointer buffers were all deallocated in the loop above.)</code></span>
+<span class="codeline" id="line-841"><code>	for state.head != nil {</code></span>
+<span class="codeline" id="line-842"><code>		x := state.head</code></span>
+<span class="codeline" id="line-843"><code>		state.head = x.next</code></span>
+<span class="codeline" id="line-844"><code>		if stackTraceDebug {</code></span>
+<span class="codeline" id="line-845"><code>			for i := 0; i &lt; x.nobj; i++ {</code></span>
+<span class="codeline" id="line-846"><code>				obj := &amp;x.obj[i]</code></span>
+<span class="codeline" id="line-847"><code>				if obj.typ == nil { // reachable</code></span>
+<span class="codeline" id="line-848"><code>					continue</code></span>
+<span class="codeline" id="line-849"><code>				}</code></span>
+<span class="codeline" id="line-850"><code>				println("  dead stkobj at", hex(gp.stack.lo+uintptr(obj.off)), "of type", obj.typ.string())</code></span>
+<span class="codeline" id="line-851"><code>				// Note: not necessarily really dead - only reachable-from-ptr dead.</code></span>
+<span class="codeline" id="line-852"><code>			}</code></span>
+<span class="codeline" id="line-853"><code>		}</code></span>
+<span class="codeline" id="line-854"><code>		x.nobj = 0</code></span>
+<span class="codeline" id="line-855"><code>		putempty((*workbuf)(unsafe.Pointer(x)))</code></span>
+<span class="codeline" id="line-856"><code>	}</code></span>
+<span class="codeline" id="line-857"><code>	if state.buf != nil || state.cbuf != nil || state.freeBuf != nil {</code></span>
+<span class="codeline" id="line-858"><code>		throw("remaining pointer buffers")</code></span>
+<span class="codeline" id="line-859"><code>	}</code></span>
+<span class="codeline" id="line-860"><code>}</code></span>
+<span class="codeline" id="line-861"><code></code></span>
+<span class="codeline" id="line-862"><code>// Scan a stack frame: local variables and function arguments/results.</code></span>
+<span class="codeline" id="line-863"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-864"><code>func scanframeworker(frame *stkframe, state *stackScanState, gcw *gcWork) {</code></span>
+<span class="codeline" id="line-865"><code>	if _DebugGC &gt; 1 &amp;&amp; frame.continpc != 0 {</code></span>
+<span class="codeline" id="line-866"><code>		print("scanframe ", funcname(frame.fn), "\n")</code></span>
+<span class="codeline" id="line-867"><code>	}</code></span>
+<span class="codeline" id="line-868"><code></code></span>
+<span class="codeline" id="line-869"><code>	isAsyncPreempt := frame.fn.valid() &amp;&amp; frame.fn.funcID == funcID_asyncPreempt</code></span>
+<span class="codeline" id="line-870"><code>	isDebugCall := frame.fn.valid() &amp;&amp; frame.fn.funcID == funcID_debugCallV1</code></span>
+<span class="codeline" id="line-871"><code>	if state.conservative || isAsyncPreempt || isDebugCall {</code></span>
+<span class="codeline" id="line-872"><code>		if debugScanConservative {</code></span>
+<span class="codeline" id="line-873"><code>			println("conservatively scanning function", funcname(frame.fn), "at PC", hex(frame.continpc))</code></span>
+<span class="codeline" id="line-874"><code>		}</code></span>
+<span class="codeline" id="line-875"><code></code></span>
+<span class="codeline" id="line-876"><code>		// Conservatively scan the frame. Unlike the precise</code></span>
+<span class="codeline" id="line-877"><code>		// case, this includes the outgoing argument space</code></span>
+<span class="codeline" id="line-878"><code>		// since we may have stopped while this function was</code></span>
+<span class="codeline" id="line-879"><code>		// setting up a call.</code></span>
+<span class="codeline" id="line-880"><code>		//</code></span>
+<span class="codeline" id="line-881"><code>		// TODO: We could narrow this down if the compiler</code></span>
+<span class="codeline" id="line-882"><code>		// produced a single map per function of stack slots</code></span>
+<span class="codeline" id="line-883"><code>		// and registers that ever contain a pointer.</code></span>
+<span class="codeline" id="line-884"><code>		if frame.varp != 0 {</code></span>
+<span class="codeline" id="line-885"><code>			size := frame.varp - frame.sp</code></span>
+<span class="codeline" id="line-886"><code>			if size &gt; 0 {</code></span>
+<span class="codeline" id="line-887"><code>				scanConservative(frame.sp, size, nil, gcw, state)</code></span>
+<span class="codeline" id="line-888"><code>			}</code></span>
+<span class="codeline" id="line-889"><code>		}</code></span>
+<span class="codeline" id="line-890"><code></code></span>
+<span class="codeline" id="line-891"><code>		// Scan arguments to this frame.</code></span>
+<span class="codeline" id="line-892"><code>		if frame.arglen != 0 {</code></span>
+<span class="codeline" id="line-893"><code>			// TODO: We could pass the entry argument map</code></span>
+<span class="codeline" id="line-894"><code>			// to narrow this down further.</code></span>
+<span class="codeline" id="line-895"><code>			scanConservative(frame.argp, frame.arglen, nil, gcw, state)</code></span>
+<span class="codeline" id="line-896"><code>		}</code></span>
+<span class="codeline" id="line-897"><code></code></span>
+<span class="codeline" id="line-898"><code>		if isAsyncPreempt || isDebugCall {</code></span>
+<span class="codeline" id="line-899"><code>			// This function's frame contained the</code></span>
+<span class="codeline" id="line-900"><code>			// registers for the asynchronously stopped</code></span>
+<span class="codeline" id="line-901"><code>			// parent frame. Scan the parent</code></span>
+<span class="codeline" id="line-902"><code>			// conservatively.</code></span>
+<span class="codeline" id="line-903"><code>			state.conservative = true</code></span>
+<span class="codeline" id="line-904"><code>		} else {</code></span>
+<span class="codeline" id="line-905"><code>			// We only wanted to scan those two frames</code></span>
+<span class="codeline" id="line-906"><code>			// conservatively. Clear the flag for future</code></span>
+<span class="codeline" id="line-907"><code>			// frames.</code></span>
+<span class="codeline" id="line-908"><code>			state.conservative = false</code></span>
+<span class="codeline" id="line-909"><code>		}</code></span>
+<span class="codeline" id="line-910"><code>		return</code></span>
+<span class="codeline" id="line-911"><code>	}</code></span>
+<span class="codeline" id="line-912"><code></code></span>
+<span class="codeline" id="line-913"><code>	locals, args, objs := getStackMap(frame, &amp;state.cache, false)</code></span>
+<span class="codeline" id="line-914"><code></code></span>
+<span class="codeline" id="line-915"><code>	// Scan local variables if stack frame has been allocated.</code></span>
+<span class="codeline" id="line-916"><code>	if locals.n &gt; 0 {</code></span>
+<span class="codeline" id="line-917"><code>		size := uintptr(locals.n) * sys.PtrSize</code></span>
+<span class="codeline" id="line-918"><code>		scanblock(frame.varp-size, size, locals.bytedata, gcw, state)</code></span>
+<span class="codeline" id="line-919"><code>	}</code></span>
+<span class="codeline" id="line-920"><code></code></span>
+<span class="codeline" id="line-921"><code>	// Scan arguments.</code></span>
+<span class="codeline" id="line-922"><code>	if args.n &gt; 0 {</code></span>
+<span class="codeline" id="line-923"><code>		scanblock(frame.argp, uintptr(args.n)*sys.PtrSize, args.bytedata, gcw, state)</code></span>
+<span class="codeline" id="line-924"><code>	}</code></span>
+<span class="codeline" id="line-925"><code></code></span>
+<span class="codeline" id="line-926"><code>	// Add all stack objects to the stack object list.</code></span>
+<span class="codeline" id="line-927"><code>	if frame.varp != 0 {</code></span>
+<span class="codeline" id="line-928"><code>		// varp is 0 for defers, where there are no locals.</code></span>
+<span class="codeline" id="line-929"><code>		// In that case, there can't be a pointer to its args, either.</code></span>
+<span class="codeline" id="line-930"><code>		// (And all args would be scanned above anyway.)</code></span>
+<span class="codeline" id="line-931"><code>		for _, obj := range objs {</code></span>
+<span class="codeline" id="line-932"><code>			off := obj.off</code></span>
+<span class="codeline" id="line-933"><code>			base := frame.varp // locals base pointer</code></span>
+<span class="codeline" id="line-934"><code>			if off &gt;= 0 {</code></span>
+<span class="codeline" id="line-935"><code>				base = frame.argp // arguments and return values base pointer</code></span>
+<span class="codeline" id="line-936"><code>			}</code></span>
+<span class="codeline" id="line-937"><code>			ptr := base + uintptr(off)</code></span>
+<span class="codeline" id="line-938"><code>			if ptr &lt; frame.sp {</code></span>
+<span class="codeline" id="line-939"><code>				// object hasn't been allocated in the frame yet.</code></span>
+<span class="codeline" id="line-940"><code>				continue</code></span>
+<span class="codeline" id="line-941"><code>			}</code></span>
+<span class="codeline" id="line-942"><code>			if stackTraceDebug {</code></span>
+<span class="codeline" id="line-943"><code>				println("stkobj at", hex(ptr), "of type", obj.typ.string())</code></span>
+<span class="codeline" id="line-944"><code>			}</code></span>
+<span class="codeline" id="line-945"><code>			state.addObject(ptr, obj.typ)</code></span>
+<span class="codeline" id="line-946"><code>		}</code></span>
+<span class="codeline" id="line-947"><code>	}</code></span>
+<span class="codeline" id="line-948"><code>}</code></span>
+<span class="codeline" id="line-949"><code></code></span>
+<span class="codeline" id="line-950"><code>type gcDrainFlags int</code></span>
+<span class="codeline" id="line-951"><code></code></span>
+<span class="codeline" id="line-952"><code>const (</code></span>
+<span class="codeline" id="line-953"><code>	gcDrainUntilPreempt gcDrainFlags = 1 &lt;&lt; iota</code></span>
+<span class="codeline" id="line-954"><code>	gcDrainFlushBgCredit</code></span>
+<span class="codeline" id="line-955"><code>	gcDrainIdle</code></span>
+<span class="codeline" id="line-956"><code>	gcDrainFractional</code></span>
+<span class="codeline" id="line-957"><code>)</code></span>
+<span class="codeline" id="line-958"><code></code></span>
+<span class="codeline" id="line-959"><code>// gcDrain scans roots and objects in work buffers, blackening grey</code></span>
+<span class="codeline" id="line-960"><code>// objects until it is unable to get more work. It may return before</code></span>
+<span class="codeline" id="line-961"><code>// GC is done; it's the caller's responsibility to balance work from</code></span>
+<span class="codeline" id="line-962"><code>// other Ps.</code></span>
+<span class="codeline" id="line-963"><code>//</code></span>
+<span class="codeline" id="line-964"><code>// If flags&amp;gcDrainUntilPreempt != 0, gcDrain returns when g.preempt</code></span>
+<span class="codeline" id="line-965"><code>// is set.</code></span>
+<span class="codeline" id="line-966"><code>//</code></span>
+<span class="codeline" id="line-967"><code>// If flags&amp;gcDrainIdle != 0, gcDrain returns when there is other work</code></span>
+<span class="codeline" id="line-968"><code>// to do.</code></span>
+<span class="codeline" id="line-969"><code>//</code></span>
+<span class="codeline" id="line-970"><code>// If flags&amp;gcDrainFractional != 0, gcDrain self-preempts when</code></span>
+<span class="codeline" id="line-971"><code>// pollFractionalWorkerExit() returns true. This implies</code></span>
+<span class="codeline" id="line-972"><code>// gcDrainNoBlock.</code></span>
+<span class="codeline" id="line-973"><code>//</code></span>
+<span class="codeline" id="line-974"><code>// If flags&amp;gcDrainFlushBgCredit != 0, gcDrain flushes scan work</code></span>
+<span class="codeline" id="line-975"><code>// credit to gcController.bgScanCredit every gcCreditSlack units of</code></span>
+<span class="codeline" id="line-976"><code>// scan work.</code></span>
+<span class="codeline" id="line-977"><code>//</code></span>
+<span class="codeline" id="line-978"><code>// gcDrain will always return if there is a pending STW.</code></span>
+<span class="codeline" id="line-979"><code>//</code></span>
+<span class="codeline" id="line-980"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-981"><code>func gcDrain(gcw *gcWork, flags gcDrainFlags) {</code></span>
+<span class="codeline" id="line-982"><code>	if !writeBarrier.needed {</code></span>
+<span class="codeline" id="line-983"><code>		throw("gcDrain phase incorrect")</code></span>
+<span class="codeline" id="line-984"><code>	}</code></span>
+<span class="codeline" id="line-985"><code></code></span>
+<span class="codeline" id="line-986"><code>	gp := getg().m.curg</code></span>
+<span class="codeline" id="line-987"><code>	preemptible := flags&amp;gcDrainUntilPreempt != 0</code></span>
+<span class="codeline" id="line-988"><code>	flushBgCredit := flags&amp;gcDrainFlushBgCredit != 0</code></span>
+<span class="codeline" id="line-989"><code>	idle := flags&amp;gcDrainIdle != 0</code></span>
+<span class="codeline" id="line-990"><code></code></span>
+<span class="codeline" id="line-991"><code>	initScanWork := gcw.scanWork</code></span>
+<span class="codeline" id="line-992"><code></code></span>
+<span class="codeline" id="line-993"><code>	// checkWork is the scan work before performing the next</code></span>
+<span class="codeline" id="line-994"><code>	// self-preempt check.</code></span>
+<span class="codeline" id="line-995"><code>	checkWork := int64(1&lt;&lt;63 - 1)</code></span>
+<span class="codeline" id="line-996"><code>	var check func() bool</code></span>
+<span class="codeline" id="line-997"><code>	if flags&amp;(gcDrainIdle|gcDrainFractional) != 0 {</code></span>
+<span class="codeline" id="line-998"><code>		checkWork = initScanWork + drainCheckThreshold</code></span>
+<span class="codeline" id="line-999"><code>		if idle {</code></span>
+<span class="codeline" id="line-1000"><code>			check = pollWork</code></span>
+<span class="codeline" id="line-1001"><code>		} else if flags&amp;gcDrainFractional != 0 {</code></span>
+<span class="codeline" id="line-1002"><code>			check = pollFractionalWorkerExit</code></span>
+<span class="codeline" id="line-1003"><code>		}</code></span>
+<span class="codeline" id="line-1004"><code>	}</code></span>
+<span class="codeline" id="line-1005"><code></code></span>
+<span class="codeline" id="line-1006"><code>	// Drain root marking jobs.</code></span>
+<span class="codeline" id="line-1007"><code>	if work.markrootNext &lt; work.markrootJobs {</code></span>
+<span class="codeline" id="line-1008"><code>		// Stop if we're preemptible or if someone wants to STW.</code></span>
+<span class="codeline" id="line-1009"><code>		for !(gp.preempt &amp;&amp; (preemptible || atomic.Load(&amp;sched.gcwaiting) != 0)) {</code></span>
+<span class="codeline" id="line-1010"><code>			job := atomic.Xadd(&amp;work.markrootNext, +1) - 1</code></span>
+<span class="codeline" id="line-1011"><code>			if job &gt;= work.markrootJobs {</code></span>
+<span class="codeline" id="line-1012"><code>				break</code></span>
+<span class="codeline" id="line-1013"><code>			}</code></span>
+<span class="codeline" id="line-1014"><code>			markroot(gcw, job)</code></span>
+<span class="codeline" id="line-1015"><code>			if check != nil &amp;&amp; check() {</code></span>
+<span class="codeline" id="line-1016"><code>				goto done</code></span>
+<span class="codeline" id="line-1017"><code>			}</code></span>
+<span class="codeline" id="line-1018"><code>		}</code></span>
+<span class="codeline" id="line-1019"><code>	}</code></span>
+<span class="codeline" id="line-1020"><code></code></span>
+<span class="codeline" id="line-1021"><code>	// Drain heap marking jobs.</code></span>
+<span class="codeline" id="line-1022"><code>	// Stop if we're preemptible or if someone wants to STW.</code></span>
+<span class="codeline" id="line-1023"><code>	for !(gp.preempt &amp;&amp; (preemptible || atomic.Load(&amp;sched.gcwaiting) != 0)) {</code></span>
+<span class="codeline" id="line-1024"><code>		// Try to keep work available on the global queue. We used to</code></span>
+<span class="codeline" id="line-1025"><code>		// check if there were waiting workers, but it's better to</code></span>
+<span class="codeline" id="line-1026"><code>		// just keep work available than to make workers wait. In the</code></span>
+<span class="codeline" id="line-1027"><code>		// worst case, we'll do O(log(_WorkbufSize)) unnecessary</code></span>
+<span class="codeline" id="line-1028"><code>		// balances.</code></span>
+<span class="codeline" id="line-1029"><code>		if work.full == 0 {</code></span>
+<span class="codeline" id="line-1030"><code>			gcw.balance()</code></span>
+<span class="codeline" id="line-1031"><code>		}</code></span>
+<span class="codeline" id="line-1032"><code></code></span>
+<span class="codeline" id="line-1033"><code>		b := gcw.tryGetFast()</code></span>
+<span class="codeline" id="line-1034"><code>		if b == 0 {</code></span>
+<span class="codeline" id="line-1035"><code>			b = gcw.tryGet()</code></span>
+<span class="codeline" id="line-1036"><code>			if b == 0 {</code></span>
+<span class="codeline" id="line-1037"><code>				// Flush the write barrier</code></span>
+<span class="codeline" id="line-1038"><code>				// buffer; this may create</code></span>
+<span class="codeline" id="line-1039"><code>				// more work.</code></span>
+<span class="codeline" id="line-1040"><code>				wbBufFlush(nil, 0)</code></span>
+<span class="codeline" id="line-1041"><code>				b = gcw.tryGet()</code></span>
+<span class="codeline" id="line-1042"><code>			}</code></span>
+<span class="codeline" id="line-1043"><code>		}</code></span>
+<span class="codeline" id="line-1044"><code>		if b == 0 {</code></span>
+<span class="codeline" id="line-1045"><code>			// Unable to get work.</code></span>
+<span class="codeline" id="line-1046"><code>			break</code></span>
+<span class="codeline" id="line-1047"><code>		}</code></span>
+<span class="codeline" id="line-1048"><code>		scanobject(b, gcw)</code></span>
+<span class="codeline" id="line-1049"><code></code></span>
+<span class="codeline" id="line-1050"><code>		// Flush background scan work credit to the global</code></span>
+<span class="codeline" id="line-1051"><code>		// account if we've accumulated enough locally so</code></span>
+<span class="codeline" id="line-1052"><code>		// mutator assists can draw on it.</code></span>
+<span class="codeline" id="line-1053"><code>		if gcw.scanWork &gt;= gcCreditSlack {</code></span>
+<span class="codeline" id="line-1054"><code>			atomic.Xaddint64(&amp;gcController.scanWork, gcw.scanWork)</code></span>
+<span class="codeline" id="line-1055"><code>			if flushBgCredit {</code></span>
+<span class="codeline" id="line-1056"><code>				gcFlushBgCredit(gcw.scanWork - initScanWork)</code></span>
+<span class="codeline" id="line-1057"><code>				initScanWork = 0</code></span>
+<span class="codeline" id="line-1058"><code>			}</code></span>
+<span class="codeline" id="line-1059"><code>			checkWork -= gcw.scanWork</code></span>
+<span class="codeline" id="line-1060"><code>			gcw.scanWork = 0</code></span>
+<span class="codeline" id="line-1061"><code></code></span>
+<span class="codeline" id="line-1062"><code>			if checkWork &lt;= 0 {</code></span>
+<span class="codeline" id="line-1063"><code>				checkWork += drainCheckThreshold</code></span>
+<span class="codeline" id="line-1064"><code>				if check != nil &amp;&amp; check() {</code></span>
+<span class="codeline" id="line-1065"><code>					break</code></span>
+<span class="codeline" id="line-1066"><code>				}</code></span>
+<span class="codeline" id="line-1067"><code>			}</code></span>
+<span class="codeline" id="line-1068"><code>		}</code></span>
+<span class="codeline" id="line-1069"><code>	}</code></span>
+<span class="codeline" id="line-1070"><code></code></span>
+<span class="codeline" id="line-1071"><code>done:</code></span>
+<span class="codeline" id="line-1072"><code>	// Flush remaining scan work credit.</code></span>
+<span class="codeline" id="line-1073"><code>	if gcw.scanWork &gt; 0 {</code></span>
+<span class="codeline" id="line-1074"><code>		atomic.Xaddint64(&amp;gcController.scanWork, gcw.scanWork)</code></span>
+<span class="codeline" id="line-1075"><code>		if flushBgCredit {</code></span>
+<span class="codeline" id="line-1076"><code>			gcFlushBgCredit(gcw.scanWork - initScanWork)</code></span>
+<span class="codeline" id="line-1077"><code>		}</code></span>
+<span class="codeline" id="line-1078"><code>		gcw.scanWork = 0</code></span>
+<span class="codeline" id="line-1079"><code>	}</code></span>
+<span class="codeline" id="line-1080"><code>}</code></span>
+<span class="codeline" id="line-1081"><code></code></span>
+<span class="codeline" id="line-1082"><code>// gcDrainN blackens grey objects until it has performed roughly</code></span>
+<span class="codeline" id="line-1083"><code>// scanWork units of scan work or the G is preempted. This is</code></span>
+<span class="codeline" id="line-1084"><code>// best-effort, so it may perform less work if it fails to get a work</code></span>
+<span class="codeline" id="line-1085"><code>// buffer. Otherwise, it will perform at least n units of work, but</code></span>
+<span class="codeline" id="line-1086"><code>// may perform more because scanning is always done in whole object</code></span>
+<span class="codeline" id="line-1087"><code>// increments. It returns the amount of scan work performed.</code></span>
+<span class="codeline" id="line-1088"><code>//</code></span>
+<span class="codeline" id="line-1089"><code>// The caller goroutine must be in a preemptible state (e.g.,</code></span>
+<span class="codeline" id="line-1090"><code>// _Gwaiting) to prevent deadlocks during stack scanning. As a</code></span>
+<span class="codeline" id="line-1091"><code>// consequence, this must be called on the system stack.</code></span>
+<span class="codeline" id="line-1092"><code>//</code></span>
+<span class="codeline" id="line-1093"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-1094"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-1095"><code>func gcDrainN(gcw *gcWork, scanWork int64) int64 {</code></span>
+<span class="codeline" id="line-1096"><code>	if !writeBarrier.needed {</code></span>
+<span class="codeline" id="line-1097"><code>		throw("gcDrainN phase incorrect")</code></span>
+<span class="codeline" id="line-1098"><code>	}</code></span>
+<span class="codeline" id="line-1099"><code></code></span>
+<span class="codeline" id="line-1100"><code>	// There may already be scan work on the gcw, which we don't</code></span>
+<span class="codeline" id="line-1101"><code>	// want to claim was done by this call.</code></span>
+<span class="codeline" id="line-1102"><code>	workFlushed := -gcw.scanWork</code></span>
+<span class="codeline" id="line-1103"><code></code></span>
+<span class="codeline" id="line-1104"><code>	gp := getg().m.curg</code></span>
+<span class="codeline" id="line-1105"><code>	for !gp.preempt &amp;&amp; workFlushed+gcw.scanWork &lt; scanWork {</code></span>
+<span class="codeline" id="line-1106"><code>		// See gcDrain comment.</code></span>
+<span class="codeline" id="line-1107"><code>		if work.full == 0 {</code></span>
+<span class="codeline" id="line-1108"><code>			gcw.balance()</code></span>
+<span class="codeline" id="line-1109"><code>		}</code></span>
+<span class="codeline" id="line-1110"><code></code></span>
+<span class="codeline" id="line-1111"><code>		// This might be a good place to add prefetch code...</code></span>
+<span class="codeline" id="line-1112"><code>		// if(wbuf.nobj &gt; 4) {</code></span>
+<span class="codeline" id="line-1113"><code>		//         PREFETCH(wbuf-&gt;obj[wbuf.nobj - 3];</code></span>
+<span class="codeline" id="line-1114"><code>		//  }</code></span>
+<span class="codeline" id="line-1115"><code>		//</code></span>
+<span class="codeline" id="line-1116"><code>		b := gcw.tryGetFast()</code></span>
+<span class="codeline" id="line-1117"><code>		if b == 0 {</code></span>
+<span class="codeline" id="line-1118"><code>			b = gcw.tryGet()</code></span>
+<span class="codeline" id="line-1119"><code>			if b == 0 {</code></span>
+<span class="codeline" id="line-1120"><code>				// Flush the write barrier buffer;</code></span>
+<span class="codeline" id="line-1121"><code>				// this may create more work.</code></span>
+<span class="codeline" id="line-1122"><code>				wbBufFlush(nil, 0)</code></span>
+<span class="codeline" id="line-1123"><code>				b = gcw.tryGet()</code></span>
+<span class="codeline" id="line-1124"><code>			}</code></span>
+<span class="codeline" id="line-1125"><code>		}</code></span>
+<span class="codeline" id="line-1126"><code></code></span>
+<span class="codeline" id="line-1127"><code>		if b == 0 {</code></span>
+<span class="codeline" id="line-1128"><code>			// Try to do a root job.</code></span>
+<span class="codeline" id="line-1129"><code>			//</code></span>
+<span class="codeline" id="line-1130"><code>			// TODO: Assists should get credit for this</code></span>
+<span class="codeline" id="line-1131"><code>			// work.</code></span>
+<span class="codeline" id="line-1132"><code>			if work.markrootNext &lt; work.markrootJobs {</code></span>
+<span class="codeline" id="line-1133"><code>				job := atomic.Xadd(&amp;work.markrootNext, +1) - 1</code></span>
+<span class="codeline" id="line-1134"><code>				if job &lt; work.markrootJobs {</code></span>
+<span class="codeline" id="line-1135"><code>					markroot(gcw, job)</code></span>
+<span class="codeline" id="line-1136"><code>					continue</code></span>
+<span class="codeline" id="line-1137"><code>				}</code></span>
+<span class="codeline" id="line-1138"><code>			}</code></span>
+<span class="codeline" id="line-1139"><code>			// No heap or root jobs.</code></span>
+<span class="codeline" id="line-1140"><code>			break</code></span>
+<span class="codeline" id="line-1141"><code>		}</code></span>
+<span class="codeline" id="line-1142"><code>		scanobject(b, gcw)</code></span>
+<span class="codeline" id="line-1143"><code></code></span>
+<span class="codeline" id="line-1144"><code>		// Flush background scan work credit.</code></span>
+<span class="codeline" id="line-1145"><code>		if gcw.scanWork &gt;= gcCreditSlack {</code></span>
+<span class="codeline" id="line-1146"><code>			atomic.Xaddint64(&amp;gcController.scanWork, gcw.scanWork)</code></span>
+<span class="codeline" id="line-1147"><code>			workFlushed += gcw.scanWork</code></span>
+<span class="codeline" id="line-1148"><code>			gcw.scanWork = 0</code></span>
+<span class="codeline" id="line-1149"><code>		}</code></span>
+<span class="codeline" id="line-1150"><code>	}</code></span>
+<span class="codeline" id="line-1151"><code></code></span>
+<span class="codeline" id="line-1152"><code>	// Unlike gcDrain, there's no need to flush remaining work</code></span>
+<span class="codeline" id="line-1153"><code>	// here because this never flushes to bgScanCredit and</code></span>
+<span class="codeline" id="line-1154"><code>	// gcw.dispose will flush any remaining work to scanWork.</code></span>
+<span class="codeline" id="line-1155"><code></code></span>
+<span class="codeline" id="line-1156"><code>	return workFlushed + gcw.scanWork</code></span>
+<span class="codeline" id="line-1157"><code>}</code></span>
+<span class="codeline" id="line-1158"><code></code></span>
+<span class="codeline" id="line-1159"><code>// scanblock scans b as scanobject would, but using an explicit</code></span>
+<span class="codeline" id="line-1160"><code>// pointer bitmap instead of the heap bitmap.</code></span>
+<span class="codeline" id="line-1161"><code>//</code></span>
+<span class="codeline" id="line-1162"><code>// This is used to scan non-heap roots, so it does not update</code></span>
+<span class="codeline" id="line-1163"><code>// gcw.bytesMarked or gcw.scanWork.</code></span>
+<span class="codeline" id="line-1164"><code>//</code></span>
+<span class="codeline" id="line-1165"><code>// If stk != nil, possible stack pointers are also reported to stk.putPtr.</code></span>
+<span class="codeline" id="line-1166"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-1167"><code>func scanblock(b0, n0 uintptr, ptrmask *uint8, gcw *gcWork, stk *stackScanState) {</code></span>
+<span class="codeline" id="line-1168"><code>	// Use local copies of original parameters, so that a stack trace</code></span>
+<span class="codeline" id="line-1169"><code>	// due to one of the throws below shows the original block</code></span>
+<span class="codeline" id="line-1170"><code>	// base and extent.</code></span>
+<span class="codeline" id="line-1171"><code>	b := b0</code></span>
+<span class="codeline" id="line-1172"><code>	n := n0</code></span>
+<span class="codeline" id="line-1173"><code></code></span>
+<span class="codeline" id="line-1174"><code>	for i := uintptr(0); i &lt; n; {</code></span>
+<span class="codeline" id="line-1175"><code>		// Find bits for the next word.</code></span>
+<span class="codeline" id="line-1176"><code>		bits := uint32(*addb(ptrmask, i/(sys.PtrSize*8)))</code></span>
+<span class="codeline" id="line-1177"><code>		if bits == 0 {</code></span>
+<span class="codeline" id="line-1178"><code>			i += sys.PtrSize * 8</code></span>
+<span class="codeline" id="line-1179"><code>			continue</code></span>
+<span class="codeline" id="line-1180"><code>		}</code></span>
+<span class="codeline" id="line-1181"><code>		for j := 0; j &lt; 8 &amp;&amp; i &lt; n; j++ {</code></span>
+<span class="codeline" id="line-1182"><code>			if bits&amp;1 != 0 {</code></span>
+<span class="codeline" id="line-1183"><code>				// Same work as in scanobject; see comments there.</code></span>
+<span class="codeline" id="line-1184"><code>				p := *(*uintptr)(unsafe.Pointer(b + i))</code></span>
+<span class="codeline" id="line-1185"><code>				if p != 0 {</code></span>
+<span class="codeline" id="line-1186"><code>					if obj, span, objIndex := findObject(p, b, i); obj != 0 {</code></span>
+<span class="codeline" id="line-1187"><code>						greyobject(obj, b, i, span, gcw, objIndex)</code></span>
+<span class="codeline" id="line-1188"><code>					} else if stk != nil &amp;&amp; p &gt;= stk.stack.lo &amp;&amp; p &lt; stk.stack.hi {</code></span>
+<span class="codeline" id="line-1189"><code>						stk.putPtr(p, false)</code></span>
+<span class="codeline" id="line-1190"><code>					}</code></span>
+<span class="codeline" id="line-1191"><code>				}</code></span>
+<span class="codeline" id="line-1192"><code>			}</code></span>
+<span class="codeline" id="line-1193"><code>			bits &gt;&gt;= 1</code></span>
+<span class="codeline" id="line-1194"><code>			i += sys.PtrSize</code></span>
+<span class="codeline" id="line-1195"><code>		}</code></span>
+<span class="codeline" id="line-1196"><code>	}</code></span>
+<span class="codeline" id="line-1197"><code>}</code></span>
+<span class="codeline" id="line-1198"><code></code></span>
+<span class="codeline" id="line-1199"><code>// scanobject scans the object starting at b, adding pointers to gcw.</code></span>
+<span class="codeline" id="line-1200"><code>// b must point to the beginning of a heap object or an oblet.</code></span>
+<span class="codeline" id="line-1201"><code>// scanobject consults the GC bitmap for the pointer mask and the</code></span>
+<span class="codeline" id="line-1202"><code>// spans for the size of the object.</code></span>
+<span class="codeline" id="line-1203"><code>//</code></span>
+<span class="codeline" id="line-1204"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-1205"><code>func scanobject(b uintptr, gcw *gcWork) {</code></span>
+<span class="codeline" id="line-1206"><code>	// Find the bits for b and the size of the object at b.</code></span>
+<span class="codeline" id="line-1207"><code>	//</code></span>
+<span class="codeline" id="line-1208"><code>	// b is either the beginning of an object, in which case this</code></span>
+<span class="codeline" id="line-1209"><code>	// is the size of the object to scan, or it points to an</code></span>
+<span class="codeline" id="line-1210"><code>	// oblet, in which case we compute the size to scan below.</code></span>
+<span class="codeline" id="line-1211"><code>	hbits := heapBitsForAddr(b)</code></span>
+<span class="codeline" id="line-1212"><code>	s := spanOfUnchecked(b)</code></span>
+<span class="codeline" id="line-1213"><code>	n := s.elemsize</code></span>
+<span class="codeline" id="line-1214"><code>	if n == 0 {</code></span>
+<span class="codeline" id="line-1215"><code>		throw("scanobject n == 0")</code></span>
+<span class="codeline" id="line-1216"><code>	}</code></span>
+<span class="codeline" id="line-1217"><code></code></span>
+<span class="codeline" id="line-1218"><code>	if n &gt; maxObletBytes {</code></span>
+<span class="codeline" id="line-1219"><code>		// Large object. Break into oblets for better</code></span>
+<span class="codeline" id="line-1220"><code>		// parallelism and lower latency.</code></span>
+<span class="codeline" id="line-1221"><code>		if b == s.base() {</code></span>
+<span class="codeline" id="line-1222"><code>			// It's possible this is a noscan object (not</code></span>
+<span class="codeline" id="line-1223"><code>			// from greyobject, but from other code</code></span>
+<span class="codeline" id="line-1224"><code>			// paths), in which case we must *not* enqueue</code></span>
+<span class="codeline" id="line-1225"><code>			// oblets since their bitmaps will be</code></span>
+<span class="codeline" id="line-1226"><code>			// uninitialized.</code></span>
+<span class="codeline" id="line-1227"><code>			if s.spanclass.noscan() {</code></span>
+<span class="codeline" id="line-1228"><code>				// Bypass the whole scan.</code></span>
+<span class="codeline" id="line-1229"><code>				gcw.bytesMarked += uint64(n)</code></span>
+<span class="codeline" id="line-1230"><code>				return</code></span>
+<span class="codeline" id="line-1231"><code>			}</code></span>
+<span class="codeline" id="line-1232"><code></code></span>
+<span class="codeline" id="line-1233"><code>			// Enqueue the other oblets to scan later.</code></span>
+<span class="codeline" id="line-1234"><code>			// Some oblets may be in b's scalar tail, but</code></span>
+<span class="codeline" id="line-1235"><code>			// these will be marked as "no more pointers",</code></span>
+<span class="codeline" id="line-1236"><code>			// so we'll drop out immediately when we go to</code></span>
+<span class="codeline" id="line-1237"><code>			// scan those.</code></span>
+<span class="codeline" id="line-1238"><code>			for oblet := b + maxObletBytes; oblet &lt; s.base()+s.elemsize; oblet += maxObletBytes {</code></span>
+<span class="codeline" id="line-1239"><code>				if !gcw.putFast(oblet) {</code></span>
+<span class="codeline" id="line-1240"><code>					gcw.put(oblet)</code></span>
+<span class="codeline" id="line-1241"><code>				}</code></span>
+<span class="codeline" id="line-1242"><code>			}</code></span>
+<span class="codeline" id="line-1243"><code>		}</code></span>
+<span class="codeline" id="line-1244"><code></code></span>
+<span class="codeline" id="line-1245"><code>		// Compute the size of the oblet. Since this object</code></span>
+<span class="codeline" id="line-1246"><code>		// must be a large object, s.base() is the beginning</code></span>
+<span class="codeline" id="line-1247"><code>		// of the object.</code></span>
+<span class="codeline" id="line-1248"><code>		n = s.base() + s.elemsize - b</code></span>
+<span class="codeline" id="line-1249"><code>		if n &gt; maxObletBytes {</code></span>
+<span class="codeline" id="line-1250"><code>			n = maxObletBytes</code></span>
+<span class="codeline" id="line-1251"><code>		}</code></span>
+<span class="codeline" id="line-1252"><code>	}</code></span>
+<span class="codeline" id="line-1253"><code></code></span>
+<span class="codeline" id="line-1254"><code>	var i uintptr</code></span>
+<span class="codeline" id="line-1255"><code>	for i = 0; i &lt; n; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-1256"><code>		// Find bits for this word.</code></span>
+<span class="codeline" id="line-1257"><code>		if i != 0 {</code></span>
+<span class="codeline" id="line-1258"><code>			// Avoid needless hbits.next() on last iteration.</code></span>
+<span class="codeline" id="line-1259"><code>			hbits = hbits.next()</code></span>
+<span class="codeline" id="line-1260"><code>		}</code></span>
+<span class="codeline" id="line-1261"><code>		// Load bits once. See CL 22712 and issue 16973 for discussion.</code></span>
+<span class="codeline" id="line-1262"><code>		bits := hbits.bits()</code></span>
+<span class="codeline" id="line-1263"><code>		if bits&amp;bitScan == 0 {</code></span>
+<span class="codeline" id="line-1264"><code>			break // no more pointers in this object</code></span>
+<span class="codeline" id="line-1265"><code>		}</code></span>
+<span class="codeline" id="line-1266"><code>		if bits&amp;bitPointer == 0 {</code></span>
+<span class="codeline" id="line-1267"><code>			continue // not a pointer</code></span>
+<span class="codeline" id="line-1268"><code>		}</code></span>
+<span class="codeline" id="line-1269"><code></code></span>
+<span class="codeline" id="line-1270"><code>		// Work here is duplicated in scanblock and above.</code></span>
+<span class="codeline" id="line-1271"><code>		// If you make changes here, make changes there too.</code></span>
+<span class="codeline" id="line-1272"><code>		obj := *(*uintptr)(unsafe.Pointer(b + i))</code></span>
+<span class="codeline" id="line-1273"><code></code></span>
+<span class="codeline" id="line-1274"><code>		// At this point we have extracted the next potential pointer.</code></span>
+<span class="codeline" id="line-1275"><code>		// Quickly filter out nil and pointers back to the current object.</code></span>
+<span class="codeline" id="line-1276"><code>		if obj != 0 &amp;&amp; obj-b &gt;= n {</code></span>
+<span class="codeline" id="line-1277"><code>			// Test if obj points into the Go heap and, if so,</code></span>
+<span class="codeline" id="line-1278"><code>			// mark the object.</code></span>
+<span class="codeline" id="line-1279"><code>			//</code></span>
+<span class="codeline" id="line-1280"><code>			// Note that it's possible for findObject to</code></span>
+<span class="codeline" id="line-1281"><code>			// fail if obj points to a just-allocated heap</code></span>
+<span class="codeline" id="line-1282"><code>			// object because of a race with growing the</code></span>
+<span class="codeline" id="line-1283"><code>			// heap. In this case, we know the object was</code></span>
+<span class="codeline" id="line-1284"><code>			// just allocated and hence will be marked by</code></span>
+<span class="codeline" id="line-1285"><code>			// allocation itself.</code></span>
+<span class="codeline" id="line-1286"><code>			if obj, span, objIndex := findObject(obj, b, i); obj != 0 {</code></span>
+<span class="codeline" id="line-1287"><code>				greyobject(obj, b, i, span, gcw, objIndex)</code></span>
+<span class="codeline" id="line-1288"><code>			}</code></span>
+<span class="codeline" id="line-1289"><code>		}</code></span>
+<span class="codeline" id="line-1290"><code>	}</code></span>
+<span class="codeline" id="line-1291"><code>	gcw.bytesMarked += uint64(n)</code></span>
+<span class="codeline" id="line-1292"><code>	gcw.scanWork += int64(i)</code></span>
+<span class="codeline" id="line-1293"><code>}</code></span>
+<span class="codeline" id="line-1294"><code></code></span>
+<span class="codeline" id="line-1295"><code>// scanConservative scans block [b, b+n) conservatively, treating any</code></span>
+<span class="codeline" id="line-1296"><code>// pointer-like value in the block as a pointer.</code></span>
+<span class="codeline" id="line-1297"><code>//</code></span>
+<span class="codeline" id="line-1298"><code>// If ptrmask != nil, only words that are marked in ptrmask are</code></span>
+<span class="codeline" id="line-1299"><code>// considered as potential pointers.</code></span>
+<span class="codeline" id="line-1300"><code>//</code></span>
+<span class="codeline" id="line-1301"><code>// If state != nil, it's assumed that [b, b+n) is a block in the stack</code></span>
+<span class="codeline" id="line-1302"><code>// and may contain pointers to stack objects.</code></span>
+<span class="codeline" id="line-1303"><code>func scanConservative(b, n uintptr, ptrmask *uint8, gcw *gcWork, state *stackScanState) {</code></span>
+<span class="codeline" id="line-1304"><code>	if debugScanConservative {</code></span>
+<span class="codeline" id="line-1305"><code>		printlock()</code></span>
+<span class="codeline" id="line-1306"><code>		print("conservatively scanning [", hex(b), ",", hex(b+n), ")\n")</code></span>
+<span class="codeline" id="line-1307"><code>		hexdumpWords(b, b+n, func(p uintptr) byte {</code></span>
+<span class="codeline" id="line-1308"><code>			if ptrmask != nil {</code></span>
+<span class="codeline" id="line-1309"><code>				word := (p - b) / sys.PtrSize</code></span>
+<span class="codeline" id="line-1310"><code>				bits := *addb(ptrmask, word/8)</code></span>
+<span class="codeline" id="line-1311"><code>				if (bits&gt;&gt;(word%8))&amp;1 == 0 {</code></span>
+<span class="codeline" id="line-1312"><code>					return '$'</code></span>
+<span class="codeline" id="line-1313"><code>				}</code></span>
+<span class="codeline" id="line-1314"><code>			}</code></span>
+<span class="codeline" id="line-1315"><code></code></span>
+<span class="codeline" id="line-1316"><code>			val := *(*uintptr)(unsafe.Pointer(p))</code></span>
+<span class="codeline" id="line-1317"><code>			if state != nil &amp;&amp; state.stack.lo &lt;= val &amp;&amp; val &lt; state.stack.hi {</code></span>
+<span class="codeline" id="line-1318"><code>				return '@'</code></span>
+<span class="codeline" id="line-1319"><code>			}</code></span>
+<span class="codeline" id="line-1320"><code></code></span>
+<span class="codeline" id="line-1321"><code>			span := spanOfHeap(val)</code></span>
+<span class="codeline" id="line-1322"><code>			if span == nil {</code></span>
+<span class="codeline" id="line-1323"><code>				return ' '</code></span>
+<span class="codeline" id="line-1324"><code>			}</code></span>
+<span class="codeline" id="line-1325"><code>			idx := span.objIndex(val)</code></span>
+<span class="codeline" id="line-1326"><code>			if span.isFree(idx) {</code></span>
+<span class="codeline" id="line-1327"><code>				return ' '</code></span>
+<span class="codeline" id="line-1328"><code>			}</code></span>
+<span class="codeline" id="line-1329"><code>			return '*'</code></span>
+<span class="codeline" id="line-1330"><code>		})</code></span>
+<span class="codeline" id="line-1331"><code>		printunlock()</code></span>
+<span class="codeline" id="line-1332"><code>	}</code></span>
+<span class="codeline" id="line-1333"><code></code></span>
+<span class="codeline" id="line-1334"><code>	for i := uintptr(0); i &lt; n; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-1335"><code>		if ptrmask != nil {</code></span>
+<span class="codeline" id="line-1336"><code>			word := i / sys.PtrSize</code></span>
+<span class="codeline" id="line-1337"><code>			bits := *addb(ptrmask, word/8)</code></span>
+<span class="codeline" id="line-1338"><code>			if bits == 0 {</code></span>
+<span class="codeline" id="line-1339"><code>				// Skip 8 words (the loop increment will do the 8th)</code></span>
+<span class="codeline" id="line-1340"><code>				//</code></span>
+<span class="codeline" id="line-1341"><code>				// This must be the first time we've</code></span>
+<span class="codeline" id="line-1342"><code>				// seen this word of ptrmask, so i</code></span>
+<span class="codeline" id="line-1343"><code>				// must be 8-word-aligned, but check</code></span>
+<span class="codeline" id="line-1344"><code>				// our reasoning just in case.</code></span>
+<span class="codeline" id="line-1345"><code>				if i%(sys.PtrSize*8) != 0 {</code></span>
+<span class="codeline" id="line-1346"><code>					throw("misaligned mask")</code></span>
+<span class="codeline" id="line-1347"><code>				}</code></span>
+<span class="codeline" id="line-1348"><code>				i += sys.PtrSize*8 - sys.PtrSize</code></span>
+<span class="codeline" id="line-1349"><code>				continue</code></span>
+<span class="codeline" id="line-1350"><code>			}</code></span>
+<span class="codeline" id="line-1351"><code>			if (bits&gt;&gt;(word%8))&amp;1 == 0 {</code></span>
+<span class="codeline" id="line-1352"><code>				continue</code></span>
+<span class="codeline" id="line-1353"><code>			}</code></span>
+<span class="codeline" id="line-1354"><code>		}</code></span>
+<span class="codeline" id="line-1355"><code></code></span>
+<span class="codeline" id="line-1356"><code>		val := *(*uintptr)(unsafe.Pointer(b + i))</code></span>
+<span class="codeline" id="line-1357"><code></code></span>
+<span class="codeline" id="line-1358"><code>		// Check if val points into the stack.</code></span>
+<span class="codeline" id="line-1359"><code>		if state != nil &amp;&amp; state.stack.lo &lt;= val &amp;&amp; val &lt; state.stack.hi {</code></span>
+<span class="codeline" id="line-1360"><code>			// val may point to a stack object. This</code></span>
+<span class="codeline" id="line-1361"><code>			// object may be dead from last cycle and</code></span>
+<span class="codeline" id="line-1362"><code>			// hence may contain pointers to unallocated</code></span>
+<span class="codeline" id="line-1363"><code>			// objects, but unlike heap objects we can't</code></span>
+<span class="codeline" id="line-1364"><code>			// tell if it's already dead. Hence, if all</code></span>
+<span class="codeline" id="line-1365"><code>			// pointers to this object are from</code></span>
+<span class="codeline" id="line-1366"><code>			// conservative scanning, we have to scan it</code></span>
+<span class="codeline" id="line-1367"><code>			// defensively, too.</code></span>
+<span class="codeline" id="line-1368"><code>			state.putPtr(val, true)</code></span>
+<span class="codeline" id="line-1369"><code>			continue</code></span>
+<span class="codeline" id="line-1370"><code>		}</code></span>
+<span class="codeline" id="line-1371"><code></code></span>
+<span class="codeline" id="line-1372"><code>		// Check if val points to a heap span.</code></span>
+<span class="codeline" id="line-1373"><code>		span := spanOfHeap(val)</code></span>
+<span class="codeline" id="line-1374"><code>		if span == nil {</code></span>
+<span class="codeline" id="line-1375"><code>			continue</code></span>
+<span class="codeline" id="line-1376"><code>		}</code></span>
+<span class="codeline" id="line-1377"><code></code></span>
+<span class="codeline" id="line-1378"><code>		// Check if val points to an allocated object.</code></span>
+<span class="codeline" id="line-1379"><code>		idx := span.objIndex(val)</code></span>
+<span class="codeline" id="line-1380"><code>		if span.isFree(idx) {</code></span>
+<span class="codeline" id="line-1381"><code>			continue</code></span>
+<span class="codeline" id="line-1382"><code>		}</code></span>
+<span class="codeline" id="line-1383"><code></code></span>
+<span class="codeline" id="line-1384"><code>		// val points to an allocated object. Mark it.</code></span>
+<span class="codeline" id="line-1385"><code>		obj := span.base() + idx*span.elemsize</code></span>
+<span class="codeline" id="line-1386"><code>		greyobject(obj, b, i, span, gcw, idx)</code></span>
+<span class="codeline" id="line-1387"><code>	}</code></span>
+<span class="codeline" id="line-1388"><code>}</code></span>
+<span class="codeline" id="line-1389"><code></code></span>
+<span class="codeline" id="line-1390"><code>// Shade the object if it isn't already.</code></span>
+<span class="codeline" id="line-1391"><code>// The object is not nil and known to be in the heap.</code></span>
+<span class="codeline" id="line-1392"><code>// Preemption must be disabled.</code></span>
+<span class="codeline" id="line-1393"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-1394"><code>func shade(b uintptr) {</code></span>
+<span class="codeline" id="line-1395"><code>	if obj, span, objIndex := findObject(b, 0, 0); obj != 0 {</code></span>
+<span class="codeline" id="line-1396"><code>		gcw := &amp;getg().m.p.ptr().gcw</code></span>
+<span class="codeline" id="line-1397"><code>		greyobject(obj, 0, 0, span, gcw, objIndex)</code></span>
+<span class="codeline" id="line-1398"><code>	}</code></span>
+<span class="codeline" id="line-1399"><code>}</code></span>
+<span class="codeline" id="line-1400"><code></code></span>
+<span class="codeline" id="line-1401"><code>// obj is the start of an object with mark mbits.</code></span>
+<span class="codeline" id="line-1402"><code>// If it isn't already marked, mark it and enqueue into gcw.</code></span>
+<span class="codeline" id="line-1403"><code>// base and off are for debugging only and could be removed.</code></span>
+<span class="codeline" id="line-1404"><code>//</code></span>
+<span class="codeline" id="line-1405"><code>// See also wbBufFlush1, which partially duplicates this logic.</code></span>
+<span class="codeline" id="line-1406"><code>//</code></span>
+<span class="codeline" id="line-1407"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-1408"><code>func greyobject(obj, base, off uintptr, span *mspan, gcw *gcWork, objIndex uintptr) {</code></span>
+<span class="codeline" id="line-1409"><code>	// obj should be start of allocation, and so must be at least pointer-aligned.</code></span>
+<span class="codeline" id="line-1410"><code>	if obj&amp;(sys.PtrSize-1) != 0 {</code></span>
+<span class="codeline" id="line-1411"><code>		throw("greyobject: obj not pointer-aligned")</code></span>
+<span class="codeline" id="line-1412"><code>	}</code></span>
+<span class="codeline" id="line-1413"><code>	mbits := span.markBitsForIndex(objIndex)</code></span>
+<span class="codeline" id="line-1414"><code></code></span>
+<span class="codeline" id="line-1415"><code>	if useCheckmark {</code></span>
+<span class="codeline" id="line-1416"><code>		if setCheckmark(obj, base, off, mbits) {</code></span>
+<span class="codeline" id="line-1417"><code>			// Already marked.</code></span>
+<span class="codeline" id="line-1418"><code>			return</code></span>
+<span class="codeline" id="line-1419"><code>		}</code></span>
+<span class="codeline" id="line-1420"><code>	} else {</code></span>
+<span class="codeline" id="line-1421"><code>		if debug.gccheckmark &gt; 0 &amp;&amp; span.isFree(objIndex) {</code></span>
+<span class="codeline" id="line-1422"><code>			print("runtime: marking free object ", hex(obj), " found at *(", hex(base), "+", hex(off), ")\n")</code></span>
+<span class="codeline" id="line-1423"><code>			gcDumpObject("base", base, off)</code></span>
+<span class="codeline" id="line-1424"><code>			gcDumpObject("obj", obj, ^uintptr(0))</code></span>
+<span class="codeline" id="line-1425"><code>			getg().m.traceback = 2</code></span>
+<span class="codeline" id="line-1426"><code>			throw("marking free object")</code></span>
+<span class="codeline" id="line-1427"><code>		}</code></span>
+<span class="codeline" id="line-1428"><code></code></span>
+<span class="codeline" id="line-1429"><code>		// If marked we have nothing to do.</code></span>
+<span class="codeline" id="line-1430"><code>		if mbits.isMarked() {</code></span>
+<span class="codeline" id="line-1431"><code>			return</code></span>
+<span class="codeline" id="line-1432"><code>		}</code></span>
+<span class="codeline" id="line-1433"><code>		mbits.setMarked()</code></span>
+<span class="codeline" id="line-1434"><code></code></span>
+<span class="codeline" id="line-1435"><code>		// Mark span.</code></span>
+<span class="codeline" id="line-1436"><code>		arena, pageIdx, pageMask := pageIndexOf(span.base())</code></span>
+<span class="codeline" id="line-1437"><code>		if arena.pageMarks[pageIdx]&amp;pageMask == 0 {</code></span>
+<span class="codeline" id="line-1438"><code>			atomic.Or8(&amp;arena.pageMarks[pageIdx], pageMask)</code></span>
+<span class="codeline" id="line-1439"><code>		}</code></span>
+<span class="codeline" id="line-1440"><code></code></span>
+<span class="codeline" id="line-1441"><code>		// If this is a noscan object, fast-track it to black</code></span>
+<span class="codeline" id="line-1442"><code>		// instead of greying it.</code></span>
+<span class="codeline" id="line-1443"><code>		if span.spanclass.noscan() {</code></span>
+<span class="codeline" id="line-1444"><code>			gcw.bytesMarked += uint64(span.elemsize)</code></span>
+<span class="codeline" id="line-1445"><code>			return</code></span>
+<span class="codeline" id="line-1446"><code>		}</code></span>
+<span class="codeline" id="line-1447"><code>	}</code></span>
+<span class="codeline" id="line-1448"><code></code></span>
+<span class="codeline" id="line-1449"><code>	// Queue the obj for scanning. The PREFETCH(obj) logic has been removed but</code></span>
+<span class="codeline" id="line-1450"><code>	// seems like a nice optimization that can be added back in.</code></span>
+<span class="codeline" id="line-1451"><code>	// There needs to be time between the PREFETCH and the use.</code></span>
+<span class="codeline" id="line-1452"><code>	// Previously we put the obj in an 8 element buffer that is drained at a rate</code></span>
+<span class="codeline" id="line-1453"><code>	// to give the PREFETCH time to do its work.</code></span>
+<span class="codeline" id="line-1454"><code>	// Use of PREFETCHNTA might be more appropriate than PREFETCH</code></span>
+<span class="codeline" id="line-1455"><code>	if !gcw.putFast(obj) {</code></span>
+<span class="codeline" id="line-1456"><code>		gcw.put(obj)</code></span>
+<span class="codeline" id="line-1457"><code>	}</code></span>
+<span class="codeline" id="line-1458"><code>}</code></span>
+<span class="codeline" id="line-1459"><code></code></span>
+<span class="codeline" id="line-1460"><code>// gcDumpObject dumps the contents of obj for debugging and marks the</code></span>
+<span class="codeline" id="line-1461"><code>// field at byte offset off in obj.</code></span>
+<span class="codeline" id="line-1462"><code>func gcDumpObject(label string, obj, off uintptr) {</code></span>
+<span class="codeline" id="line-1463"><code>	s := spanOf(obj)</code></span>
+<span class="codeline" id="line-1464"><code>	print(label, "=", hex(obj))</code></span>
+<span class="codeline" id="line-1465"><code>	if s == nil {</code></span>
+<span class="codeline" id="line-1466"><code>		print(" s=nil\n")</code></span>
+<span class="codeline" id="line-1467"><code>		return</code></span>
+<span class="codeline" id="line-1468"><code>	}</code></span>
+<span class="codeline" id="line-1469"><code>	print(" s.base()=", hex(s.base()), " s.limit=", hex(s.limit), " s.spanclass=", s.spanclass, " s.elemsize=", s.elemsize, " s.state=")</code></span>
+<span class="codeline" id="line-1470"><code>	if state := s.state.get(); 0 &lt;= state &amp;&amp; int(state) &lt; len(mSpanStateNames) {</code></span>
+<span class="codeline" id="line-1471"><code>		print(mSpanStateNames[state], "\n")</code></span>
+<span class="codeline" id="line-1472"><code>	} else {</code></span>
+<span class="codeline" id="line-1473"><code>		print("unknown(", state, ")\n")</code></span>
+<span class="codeline" id="line-1474"><code>	}</code></span>
+<span class="codeline" id="line-1475"><code></code></span>
+<span class="codeline" id="line-1476"><code>	skipped := false</code></span>
+<span class="codeline" id="line-1477"><code>	size := s.elemsize</code></span>
+<span class="codeline" id="line-1478"><code>	if s.state.get() == mSpanManual &amp;&amp; size == 0 {</code></span>
+<span class="codeline" id="line-1479"><code>		// We're printing something from a stack frame. We</code></span>
+<span class="codeline" id="line-1480"><code>		// don't know how big it is, so just show up to an</code></span>
+<span class="codeline" id="line-1481"><code>		// including off.</code></span>
+<span class="codeline" id="line-1482"><code>		size = off + sys.PtrSize</code></span>
+<span class="codeline" id="line-1483"><code>	}</code></span>
+<span class="codeline" id="line-1484"><code>	for i := uintptr(0); i &lt; size; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-1485"><code>		// For big objects, just print the beginning (because</code></span>
+<span class="codeline" id="line-1486"><code>		// that usually hints at the object's type) and the</code></span>
+<span class="codeline" id="line-1487"><code>		// fields around off.</code></span>
+<span class="codeline" id="line-1488"><code>		if !(i &lt; 128*sys.PtrSize || off-16*sys.PtrSize &lt; i &amp;&amp; i &lt; off+16*sys.PtrSize) {</code></span>
+<span class="codeline" id="line-1489"><code>			skipped = true</code></span>
+<span class="codeline" id="line-1490"><code>			continue</code></span>
+<span class="codeline" id="line-1491"><code>		}</code></span>
+<span class="codeline" id="line-1492"><code>		if skipped {</code></span>
+<span class="codeline" id="line-1493"><code>			print(" ...\n")</code></span>
+<span class="codeline" id="line-1494"><code>			skipped = false</code></span>
+<span class="codeline" id="line-1495"><code>		}</code></span>
+<span class="codeline" id="line-1496"><code>		print(" *(", label, "+", i, ") = ", hex(*(*uintptr)(unsafe.Pointer(obj + i))))</code></span>
+<span class="codeline" id="line-1497"><code>		if i == off {</code></span>
+<span class="codeline" id="line-1498"><code>			print(" &lt;==")</code></span>
+<span class="codeline" id="line-1499"><code>		}</code></span>
+<span class="codeline" id="line-1500"><code>		print("\n")</code></span>
+<span class="codeline" id="line-1501"><code>	}</code></span>
+<span class="codeline" id="line-1502"><code>	if skipped {</code></span>
+<span class="codeline" id="line-1503"><code>		print(" ...\n")</code></span>
+<span class="codeline" id="line-1504"><code>	}</code></span>
+<span class="codeline" id="line-1505"><code>}</code></span>
+<span class="codeline" id="line-1506"><code></code></span>
+<span class="codeline" id="line-1507"><code>// gcmarknewobject marks a newly allocated object black. obj must</code></span>
+<span class="codeline" id="line-1508"><code>// not contain any non-nil pointers.</code></span>
+<span class="codeline" id="line-1509"><code>//</code></span>
+<span class="codeline" id="line-1510"><code>// This is nosplit so it can manipulate a gcWork without preemption.</code></span>
+<span class="codeline" id="line-1511"><code>//</code></span>
+<span class="codeline" id="line-1512"><code>//go:nowritebarrier</code></span>
+<span class="codeline" id="line-1513"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-1514"><code>func gcmarknewobject(span *mspan, obj, size, scanSize uintptr) {</code></span>
+<span class="codeline" id="line-1515"><code>	if useCheckmark { // The world should be stopped so this should not happen.</code></span>
+<span class="codeline" id="line-1516"><code>		throw("gcmarknewobject called while doing checkmark")</code></span>
+<span class="codeline" id="line-1517"><code>	}</code></span>
+<span class="codeline" id="line-1518"><code></code></span>
+<span class="codeline" id="line-1519"><code>	// Mark object.</code></span>
+<span class="codeline" id="line-1520"><code>	objIndex := span.objIndex(obj)</code></span>
+<span class="codeline" id="line-1521"><code>	span.markBitsForIndex(objIndex).setMarked()</code></span>
+<span class="codeline" id="line-1522"><code></code></span>
+<span class="codeline" id="line-1523"><code>	// Mark span.</code></span>
+<span class="codeline" id="line-1524"><code>	arena, pageIdx, pageMask := pageIndexOf(span.base())</code></span>
+<span class="codeline" id="line-1525"><code>	if arena.pageMarks[pageIdx]&amp;pageMask == 0 {</code></span>
+<span class="codeline" id="line-1526"><code>		atomic.Or8(&amp;arena.pageMarks[pageIdx], pageMask)</code></span>
+<span class="codeline" id="line-1527"><code>	}</code></span>
+<span class="codeline" id="line-1528"><code></code></span>
+<span class="codeline" id="line-1529"><code>	gcw := &amp;getg().m.p.ptr().gcw</code></span>
+<span class="codeline" id="line-1530"><code>	gcw.bytesMarked += uint64(size)</code></span>
+<span class="codeline" id="line-1531"><code>	gcw.scanWork += int64(scanSize)</code></span>
+<span class="codeline" id="line-1532"><code>}</code></span>
+<span class="codeline" id="line-1533"><code></code></span>
+<span class="codeline" id="line-1534"><code>// gcMarkTinyAllocs greys all active tiny alloc blocks.</code></span>
+<span class="codeline" id="line-1535"><code>//</code></span>
+<span class="codeline" id="line-1536"><code>// The world must be stopped.</code></span>
+<span class="codeline" id="line-1537"><code>func gcMarkTinyAllocs() {</code></span>
+<span class="codeline" id="line-1538"><code>	assertWorldStopped()</code></span>
+<span class="codeline" id="line-1539"><code></code></span>
+<span class="codeline" id="line-1540"><code>	for _, p := range allp {</code></span>
+<span class="codeline" id="line-1541"><code>		c := p.mcache</code></span>
+<span class="codeline" id="line-1542"><code>		if c == nil || c.tiny == 0 {</code></span>
+<span class="codeline" id="line-1543"><code>			continue</code></span>
+<span class="codeline" id="line-1544"><code>		}</code></span>
+<span class="codeline" id="line-1545"><code>		_, span, objIndex := findObject(c.tiny, 0, 0)</code></span>
+<span class="codeline" id="line-1546"><code>		gcw := &amp;p.gcw</code></span>
+<span class="codeline" id="line-1547"><code>		greyobject(c.tiny, 0, 0, span, gcw, objIndex)</code></span>
+<span class="codeline" id="line-1548"><code>	}</code></span>
+<span class="codeline" id="line-1549"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

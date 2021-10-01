@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: env_posix.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	env_posix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2012 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd js,wasm linux netbsd openbsd solaris windows plan9</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package runtime</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>func gogetenv(key string) string {</code></span>
+<span class="codeline" id="line-12"><code>	env := environ()</code></span>
+<span class="codeline" id="line-13"><code>	if env == nil {</code></span>
+<span class="codeline" id="line-14"><code>		throw("getenv before env init")</code></span>
+<span class="codeline" id="line-15"><code>	}</code></span>
+<span class="codeline" id="line-16"><code>	for _, s := range env {</code></span>
+<span class="codeline" id="line-17"><code>		if len(s) &gt; len(key) &amp;&amp; s[len(key)] == '=' &amp;&amp; envKeyEqual(s[:len(key)], key) {</code></span>
+<span class="codeline" id="line-18"><code>			return s[len(key)+1:]</code></span>
+<span class="codeline" id="line-19"><code>		}</code></span>
+<span class="codeline" id="line-20"><code>	}</code></span>
+<span class="codeline" id="line-21"><code>	return ""</code></span>
+<span class="codeline" id="line-22"><code>}</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>// envKeyEqual reports whether a == b, with ASCII-only case insensitivity</code></span>
+<span class="codeline" id="line-25"><code>// on Windows. The two strings must have the same length.</code></span>
+<span class="codeline" id="line-26"><code>func envKeyEqual(a, b string) bool {</code></span>
+<span class="codeline" id="line-27"><code>	if GOOS == "windows" { // case insensitive</code></span>
+<span class="codeline" id="line-28"><code>		for i := 0; i &lt; len(a); i++ {</code></span>
+<span class="codeline" id="line-29"><code>			ca, cb := a[i], b[i]</code></span>
+<span class="codeline" id="line-30"><code>			if ca == cb || lowerASCII(ca) == lowerASCII(cb) {</code></span>
+<span class="codeline" id="line-31"><code>				continue</code></span>
+<span class="codeline" id="line-32"><code>			}</code></span>
+<span class="codeline" id="line-33"><code>			return false</code></span>
+<span class="codeline" id="line-34"><code>		}</code></span>
+<span class="codeline" id="line-35"><code>		return true</code></span>
+<span class="codeline" id="line-36"><code>	}</code></span>
+<span class="codeline" id="line-37"><code>	return a == b</code></span>
+<span class="codeline" id="line-38"><code>}</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>func lowerASCII(c byte) byte {</code></span>
+<span class="codeline" id="line-41"><code>	if 'A' &lt;= c &amp;&amp; c &lt;= 'Z' {</code></span>
+<span class="codeline" id="line-42"><code>		return c + ('a' - 'A')</code></span>
+<span class="codeline" id="line-43"><code>	}</code></span>
+<span class="codeline" id="line-44"><code>	return c</code></span>
+<span class="codeline" id="line-45"><code>}</code></span>
+<span class="codeline" id="line-46"><code></code></span>
+<span class="codeline" id="line-47"><code>var _cgo_setenv unsafe.Pointer   // pointer to C function</code></span>
+<span class="codeline" id="line-48"><code>var _cgo_unsetenv unsafe.Pointer // pointer to C function</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>// Update the C environment if cgo is loaded.</code></span>
+<span class="codeline" id="line-51"><code>// Called from syscall.Setenv.</code></span>
+<span class="codeline" id="line-52"><code>//go:linkname syscall_setenv_c syscall.setenv_c</code></span>
+<span class="codeline" id="line-53"><code>func syscall_setenv_c(k string, v string) {</code></span>
+<span class="codeline" id="line-54"><code>	if _cgo_setenv == nil {</code></span>
+<span class="codeline" id="line-55"><code>		return</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code>	arg := [2]unsafe.Pointer{cstring(k), cstring(v)}</code></span>
+<span class="codeline" id="line-58"><code>	asmcgocall(_cgo_setenv, unsafe.Pointer(&amp;arg))</code></span>
+<span class="codeline" id="line-59"><code>}</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>// Update the C environment if cgo is loaded.</code></span>
+<span class="codeline" id="line-62"><code>// Called from syscall.unsetenv.</code></span>
+<span class="codeline" id="line-63"><code>//go:linkname syscall_unsetenv_c syscall.unsetenv_c</code></span>
+<span class="codeline" id="line-64"><code>func syscall_unsetenv_c(k string) {</code></span>
+<span class="codeline" id="line-65"><code>	if _cgo_unsetenv == nil {</code></span>
+<span class="codeline" id="line-66"><code>		return</code></span>
+<span class="codeline" id="line-67"><code>	}</code></span>
+<span class="codeline" id="line-68"><code>	arg := [1]unsafe.Pointer{cstring(k)}</code></span>
+<span class="codeline" id="line-69"><code>	asmcgocall(_cgo_unsetenv, unsafe.Pointer(&amp;arg))</code></span>
+<span class="codeline" id="line-70"><code>}</code></span>
+<span class="codeline" id="line-71"><code></code></span>
+<span class="codeline" id="line-72"><code>func cstring(s string) unsafe.Pointer {</code></span>
+<span class="codeline" id="line-73"><code>	p := make([]byte, len(s)+1)</code></span>
+<span class="codeline" id="line-74"><code>	copy(p, s)</code></span>
+<span class="codeline" id="line-75"><code>	return unsafe.Pointer(&amp;p[0])</code></span>
+<span class="codeline" id="line-76"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: dirent.go in package syscall</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	dirent.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/syscall.html">syscall</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd js,wasm linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package syscall</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// readInt returns the size-bytes unsigned integer in native byte order at offset off.</code></span>
+<span class="codeline" id="line-12"><code>func readInt(b []byte, off, size uintptr) (u uint64, ok bool) {</code></span>
+<span class="codeline" id="line-13"><code>	if len(b) &lt; int(off+size) {</code></span>
+<span class="codeline" id="line-14"><code>		return 0, false</code></span>
+<span class="codeline" id="line-15"><code>	}</code></span>
+<span class="codeline" id="line-16"><code>	if isBigEndian {</code></span>
+<span class="codeline" id="line-17"><code>		return readIntBE(b[off:], size), true</code></span>
+<span class="codeline" id="line-18"><code>	}</code></span>
+<span class="codeline" id="line-19"><code>	return readIntLE(b[off:], size), true</code></span>
+<span class="codeline" id="line-20"><code>}</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>func readIntBE(b []byte, size uintptr) uint64 {</code></span>
+<span class="codeline" id="line-23"><code>	switch size {</code></span>
+<span class="codeline" id="line-24"><code>	case 1:</code></span>
+<span class="codeline" id="line-25"><code>		return uint64(b[0])</code></span>
+<span class="codeline" id="line-26"><code>	case 2:</code></span>
+<span class="codeline" id="line-27"><code>		_ = b[1] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-28"><code>		return uint64(b[1]) | uint64(b[0])&lt;&lt;8</code></span>
+<span class="codeline" id="line-29"><code>	case 4:</code></span>
+<span class="codeline" id="line-30"><code>		_ = b[3] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-31"><code>		return uint64(b[3]) | uint64(b[2])&lt;&lt;8 | uint64(b[1])&lt;&lt;16 | uint64(b[0])&lt;&lt;24</code></span>
+<span class="codeline" id="line-32"><code>	case 8:</code></span>
+<span class="codeline" id="line-33"><code>		_ = b[7] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-34"><code>		return uint64(b[7]) | uint64(b[6])&lt;&lt;8 | uint64(b[5])&lt;&lt;16 | uint64(b[4])&lt;&lt;24 |</code></span>
+<span class="codeline" id="line-35"><code>			uint64(b[3])&lt;&lt;32 | uint64(b[2])&lt;&lt;40 | uint64(b[1])&lt;&lt;48 | uint64(b[0])&lt;&lt;56</code></span>
+<span class="codeline" id="line-36"><code>	default:</code></span>
+<span class="codeline" id="line-37"><code>		panic("syscall: readInt with unsupported size")</code></span>
+<span class="codeline" id="line-38"><code>	}</code></span>
+<span class="codeline" id="line-39"><code>}</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>func readIntLE(b []byte, size uintptr) uint64 {</code></span>
+<span class="codeline" id="line-42"><code>	switch size {</code></span>
+<span class="codeline" id="line-43"><code>	case 1:</code></span>
+<span class="codeline" id="line-44"><code>		return uint64(b[0])</code></span>
+<span class="codeline" id="line-45"><code>	case 2:</code></span>
+<span class="codeline" id="line-46"><code>		_ = b[1] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-47"><code>		return uint64(b[0]) | uint64(b[1])&lt;&lt;8</code></span>
+<span class="codeline" id="line-48"><code>	case 4:</code></span>
+<span class="codeline" id="line-49"><code>		_ = b[3] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-50"><code>		return uint64(b[0]) | uint64(b[1])&lt;&lt;8 | uint64(b[2])&lt;&lt;16 | uint64(b[3])&lt;&lt;24</code></span>
+<span class="codeline" id="line-51"><code>	case 8:</code></span>
+<span class="codeline" id="line-52"><code>		_ = b[7] // bounds check hint to compiler; see golang.org/issue/14808</code></span>
+<span class="codeline" id="line-53"><code>		return uint64(b[0]) | uint64(b[1])&lt;&lt;8 | uint64(b[2])&lt;&lt;16 | uint64(b[3])&lt;&lt;24 |</code></span>
+<span class="codeline" id="line-54"><code>			uint64(b[4])&lt;&lt;32 | uint64(b[5])&lt;&lt;40 | uint64(b[6])&lt;&lt;48 | uint64(b[7])&lt;&lt;56</code></span>
+<span class="codeline" id="line-55"><code>	default:</code></span>
+<span class="codeline" id="line-56"><code>		panic("syscall: readInt with unsupported size")</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code>}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>// ParseDirent parses up to max directory entries in buf,</code></span>
+<span class="codeline" id="line-61"><code>// appending the names to names. It returns the number of</code></span>
+<span class="codeline" id="line-62"><code>// bytes consumed from buf, the number of entries added</code></span>
+<span class="codeline" id="line-63"><code>// to names, and the new names slice.</code></span>
+<span class="codeline" id="line-64"><code>func ParseDirent(buf []byte, max int, names []string) (consumed int, count int, newnames []string) {</code></span>
+<span class="codeline" id="line-65"><code>	origlen := len(buf)</code></span>
+<span class="codeline" id="line-66"><code>	count = 0</code></span>
+<span class="codeline" id="line-67"><code>	for max != 0 &amp;&amp; len(buf) &gt; 0 {</code></span>
+<span class="codeline" id="line-68"><code>		reclen, ok := direntReclen(buf)</code></span>
+<span class="codeline" id="line-69"><code>		if !ok || reclen &gt; uint64(len(buf)) {</code></span>
+<span class="codeline" id="line-70"><code>			return origlen, count, names</code></span>
+<span class="codeline" id="line-71"><code>		}</code></span>
+<span class="codeline" id="line-72"><code>		rec := buf[:reclen]</code></span>
+<span class="codeline" id="line-73"><code>		buf = buf[reclen:]</code></span>
+<span class="codeline" id="line-74"><code>		ino, ok := direntIno(rec)</code></span>
+<span class="codeline" id="line-75"><code>		if !ok {</code></span>
+<span class="codeline" id="line-76"><code>			break</code></span>
+<span class="codeline" id="line-77"><code>		}</code></span>
+<span class="codeline" id="line-78"><code>		if ino == 0 { // File absent in directory.</code></span>
+<span class="codeline" id="line-79"><code>			continue</code></span>
+<span class="codeline" id="line-80"><code>		}</code></span>
+<span class="codeline" id="line-81"><code>		const namoff = uint64(unsafe.Offsetof(Dirent{}.Name))</code></span>
+<span class="codeline" id="line-82"><code>		namlen, ok := direntNamlen(rec)</code></span>
+<span class="codeline" id="line-83"><code>		if !ok || namoff+namlen &gt; uint64(len(rec)) {</code></span>
+<span class="codeline" id="line-84"><code>			break</code></span>
+<span class="codeline" id="line-85"><code>		}</code></span>
+<span class="codeline" id="line-86"><code>		name := rec[namoff : namoff+namlen]</code></span>
+<span class="codeline" id="line-87"><code>		for i, c := range name {</code></span>
+<span class="codeline" id="line-88"><code>			if c == 0 {</code></span>
+<span class="codeline" id="line-89"><code>				name = name[:i]</code></span>
+<span class="codeline" id="line-90"><code>				break</code></span>
+<span class="codeline" id="line-91"><code>			}</code></span>
+<span class="codeline" id="line-92"><code>		}</code></span>
+<span class="codeline" id="line-93"><code>		// Check for useless names before allocating a string.</code></span>
+<span class="codeline" id="line-94"><code>		if string(name) == "." || string(name) == ".." {</code></span>
+<span class="codeline" id="line-95"><code>			continue</code></span>
+<span class="codeline" id="line-96"><code>		}</code></span>
+<span class="codeline" id="line-97"><code>		max--</code></span>
+<span class="codeline" id="line-98"><code>		count++</code></span>
+<span class="codeline" id="line-99"><code>		names = append(names, string(name))</code></span>
+<span class="codeline" id="line-100"><code>	}</code></span>
+<span class="codeline" id="line-101"><code>	return origlen - len(buf), count, names</code></span>
+<span class="codeline" id="line-102"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

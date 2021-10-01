@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: debugcall.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	debugcall.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build amd64</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package runtime</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>const (</code></span>
+<span class="codeline" id="line-12"><code>	debugCallSystemStack = "executing on Go runtime stack"</code></span>
+<span class="codeline" id="line-13"><code>	debugCallUnknownFunc = "call from unknown function"</code></span>
+<span class="codeline" id="line-14"><code>	debugCallRuntime     = "call from within the Go runtime"</code></span>
+<span class="codeline" id="line-15"><code>	debugCallUnsafePoint = "call not at safe point"</code></span>
+<span class="codeline" id="line-16"><code>)</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>func debugCallV1()</code></span>
+<span class="codeline" id="line-19"><code>func debugCallPanicked(val interface{})</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>// debugCallCheck checks whether it is safe to inject a debugger</code></span>
+<span class="codeline" id="line-22"><code>// function call with return PC pc. If not, it returns a string</code></span>
+<span class="codeline" id="line-23"><code>// explaining why.</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-26"><code>func debugCallCheck(pc uintptr) string {</code></span>
+<span class="codeline" id="line-27"><code>	// No user calls from the system stack.</code></span>
+<span class="codeline" id="line-28"><code>	if getg() != getg().m.curg {</code></span>
+<span class="codeline" id="line-29"><code>		return debugCallSystemStack</code></span>
+<span class="codeline" id="line-30"><code>	}</code></span>
+<span class="codeline" id="line-31"><code>	if sp := getcallersp(); !(getg().stack.lo &lt; sp &amp;&amp; sp &lt;= getg().stack.hi) {</code></span>
+<span class="codeline" id="line-32"><code>		// Fast syscalls (nanotime) and racecall switch to the</code></span>
+<span class="codeline" id="line-33"><code>		// g0 stack without switching g. We can't safely make</code></span>
+<span class="codeline" id="line-34"><code>		// a call in this state. (We can't even safely</code></span>
+<span class="codeline" id="line-35"><code>		// systemstack.)</code></span>
+<span class="codeline" id="line-36"><code>		return debugCallSystemStack</code></span>
+<span class="codeline" id="line-37"><code>	}</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>	// Switch to the system stack to avoid overflowing the user</code></span>
+<span class="codeline" id="line-40"><code>	// stack.</code></span>
+<span class="codeline" id="line-41"><code>	var ret string</code></span>
+<span class="codeline" id="line-42"><code>	systemstack(func() {</code></span>
+<span class="codeline" id="line-43"><code>		f := findfunc(pc)</code></span>
+<span class="codeline" id="line-44"><code>		if !f.valid() {</code></span>
+<span class="codeline" id="line-45"><code>			ret = debugCallUnknownFunc</code></span>
+<span class="codeline" id="line-46"><code>			return</code></span>
+<span class="codeline" id="line-47"><code>		}</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>		name := funcname(f)</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>		switch name {</code></span>
+<span class="codeline" id="line-52"><code>		case "debugCall32",</code></span>
+<span class="codeline" id="line-53"><code>			"debugCall64",</code></span>
+<span class="codeline" id="line-54"><code>			"debugCall128",</code></span>
+<span class="codeline" id="line-55"><code>			"debugCall256",</code></span>
+<span class="codeline" id="line-56"><code>			"debugCall512",</code></span>
+<span class="codeline" id="line-57"><code>			"debugCall1024",</code></span>
+<span class="codeline" id="line-58"><code>			"debugCall2048",</code></span>
+<span class="codeline" id="line-59"><code>			"debugCall4096",</code></span>
+<span class="codeline" id="line-60"><code>			"debugCall8192",</code></span>
+<span class="codeline" id="line-61"><code>			"debugCall16384",</code></span>
+<span class="codeline" id="line-62"><code>			"debugCall32768",</code></span>
+<span class="codeline" id="line-63"><code>			"debugCall65536":</code></span>
+<span class="codeline" id="line-64"><code>			// These functions are allowed so that the debugger can initiate multiple function calls.</code></span>
+<span class="codeline" id="line-65"><code>			// See: https://golang.org/cl/161137/</code></span>
+<span class="codeline" id="line-66"><code>			return</code></span>
+<span class="codeline" id="line-67"><code>		}</code></span>
+<span class="codeline" id="line-68"><code></code></span>
+<span class="codeline" id="line-69"><code>		// Disallow calls from the runtime. We could</code></span>
+<span class="codeline" id="line-70"><code>		// potentially make this condition tighter (e.g., not</code></span>
+<span class="codeline" id="line-71"><code>		// when locks are held), but there are enough tightly</code></span>
+<span class="codeline" id="line-72"><code>		// coded sequences (e.g., defer handling) that it's</code></span>
+<span class="codeline" id="line-73"><code>		// better to play it safe.</code></span>
+<span class="codeline" id="line-74"><code>		if pfx := "runtime."; len(name) &gt; len(pfx) &amp;&amp; name[:len(pfx)] == pfx {</code></span>
+<span class="codeline" id="line-75"><code>			ret = debugCallRuntime</code></span>
+<span class="codeline" id="line-76"><code>			return</code></span>
+<span class="codeline" id="line-77"><code>		}</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>		// Check that this isn't an unsafe-point.</code></span>
+<span class="codeline" id="line-80"><code>		if pc != f.entry {</code></span>
+<span class="codeline" id="line-81"><code>			pc--</code></span>
+<span class="codeline" id="line-82"><code>		}</code></span>
+<span class="codeline" id="line-83"><code>		up := pcdatavalue(f, _PCDATA_UnsafePoint, pc, nil)</code></span>
+<span class="codeline" id="line-84"><code>		if up != _PCDATA_UnsafePointSafe {</code></span>
+<span class="codeline" id="line-85"><code>			// Not at a safe point.</code></span>
+<span class="codeline" id="line-86"><code>			ret = debugCallUnsafePoint</code></span>
+<span class="codeline" id="line-87"><code>		}</code></span>
+<span class="codeline" id="line-88"><code>	})</code></span>
+<span class="codeline" id="line-89"><code>	return ret</code></span>
+<span class="codeline" id="line-90"><code>}</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>// debugCallWrap starts a new goroutine to run a debug call and blocks</code></span>
+<span class="codeline" id="line-93"><code>// the calling goroutine. On the goroutine, it prepares to recover</code></span>
+<span class="codeline" id="line-94"><code>// panics from the debug call, and then calls the call dispatching</code></span>
+<span class="codeline" id="line-95"><code>// function at PC dispatch.</code></span>
+<span class="codeline" id="line-96"><code>//</code></span>
+<span class="codeline" id="line-97"><code>// This must be deeply nosplit because there are untyped values on the</code></span>
+<span class="codeline" id="line-98"><code>// stack from debugCallV1.</code></span>
+<span class="codeline" id="line-99"><code>//</code></span>
+<span class="codeline" id="line-100"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-101"><code>func debugCallWrap(dispatch uintptr) {</code></span>
+<span class="codeline" id="line-102"><code>	var lockedm bool</code></span>
+<span class="codeline" id="line-103"><code>	var lockedExt uint32</code></span>
+<span class="codeline" id="line-104"><code>	callerpc := getcallerpc()</code></span>
+<span class="codeline" id="line-105"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>	// Create a new goroutine to execute the call on. Run this on</code></span>
+<span class="codeline" id="line-108"><code>	// the system stack to avoid growing our stack.</code></span>
+<span class="codeline" id="line-109"><code>	systemstack(func() {</code></span>
+<span class="codeline" id="line-110"><code>		var args struct {</code></span>
+<span class="codeline" id="line-111"><code>			dispatch uintptr</code></span>
+<span class="codeline" id="line-112"><code>			callingG *g</code></span>
+<span class="codeline" id="line-113"><code>		}</code></span>
+<span class="codeline" id="line-114"><code>		args.dispatch = dispatch</code></span>
+<span class="codeline" id="line-115"><code>		args.callingG = gp</code></span>
+<span class="codeline" id="line-116"><code>		fn := debugCallWrap1</code></span>
+<span class="codeline" id="line-117"><code>		newg := newproc1(*(**funcval)(unsafe.Pointer(&amp;fn)), unsafe.Pointer(&amp;args), int32(unsafe.Sizeof(args)), gp, callerpc)</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>		// If the current G is locked, then transfer that</code></span>
+<span class="codeline" id="line-120"><code>		// locked-ness to the new goroutine.</code></span>
+<span class="codeline" id="line-121"><code>		if gp.lockedm != 0 {</code></span>
+<span class="codeline" id="line-122"><code>			// Save lock state to restore later.</code></span>
+<span class="codeline" id="line-123"><code>			mp := gp.m</code></span>
+<span class="codeline" id="line-124"><code>			if mp != gp.lockedm.ptr() {</code></span>
+<span class="codeline" id="line-125"><code>				throw("inconsistent lockedm")</code></span>
+<span class="codeline" id="line-126"><code>			}</code></span>
+<span class="codeline" id="line-127"><code></code></span>
+<span class="codeline" id="line-128"><code>			lockedm = true</code></span>
+<span class="codeline" id="line-129"><code>			lockedExt = mp.lockedExt</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>			// Transfer external lock count to internal so</code></span>
+<span class="codeline" id="line-132"><code>			// it can't be unlocked from the debug call.</code></span>
+<span class="codeline" id="line-133"><code>			mp.lockedInt++</code></span>
+<span class="codeline" id="line-134"><code>			mp.lockedExt = 0</code></span>
+<span class="codeline" id="line-135"><code></code></span>
+<span class="codeline" id="line-136"><code>			mp.lockedg.set(newg)</code></span>
+<span class="codeline" id="line-137"><code>			newg.lockedm.set(mp)</code></span>
+<span class="codeline" id="line-138"><code>			gp.lockedm = 0</code></span>
+<span class="codeline" id="line-139"><code>		}</code></span>
+<span class="codeline" id="line-140"><code></code></span>
+<span class="codeline" id="line-141"><code>		// Mark the calling goroutine as being at an async</code></span>
+<span class="codeline" id="line-142"><code>		// safe-point, since it has a few conservative frames</code></span>
+<span class="codeline" id="line-143"><code>		// at the bottom of the stack. This also prevents</code></span>
+<span class="codeline" id="line-144"><code>		// stack shrinks.</code></span>
+<span class="codeline" id="line-145"><code>		gp.asyncSafePoint = true</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>		// Stash newg away so we can execute it below (mcall's</code></span>
+<span class="codeline" id="line-148"><code>		// closure can't capture anything).</code></span>
+<span class="codeline" id="line-149"><code>		gp.schedlink.set(newg)</code></span>
+<span class="codeline" id="line-150"><code>	})</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>	// Switch to the new goroutine.</code></span>
+<span class="codeline" id="line-153"><code>	mcall(func(gp *g) {</code></span>
+<span class="codeline" id="line-154"><code>		// Get newg.</code></span>
+<span class="codeline" id="line-155"><code>		newg := gp.schedlink.ptr()</code></span>
+<span class="codeline" id="line-156"><code>		gp.schedlink = 0</code></span>
+<span class="codeline" id="line-157"><code></code></span>
+<span class="codeline" id="line-158"><code>		// Park the calling goroutine.</code></span>
+<span class="codeline" id="line-159"><code>		gp.waitreason = waitReasonDebugCall</code></span>
+<span class="codeline" id="line-160"><code>		if trace.enabled {</code></span>
+<span class="codeline" id="line-161"><code>			traceGoPark(traceEvGoBlock, 1)</code></span>
+<span class="codeline" id="line-162"><code>		}</code></span>
+<span class="codeline" id="line-163"><code>		casgstatus(gp, _Grunning, _Gwaiting)</code></span>
+<span class="codeline" id="line-164"><code>		dropg()</code></span>
+<span class="codeline" id="line-165"><code></code></span>
+<span class="codeline" id="line-166"><code>		// Directly execute the new goroutine. The debug</code></span>
+<span class="codeline" id="line-167"><code>		// protocol will continue on the new goroutine, so</code></span>
+<span class="codeline" id="line-168"><code>		// it's important we not just let the scheduler do</code></span>
+<span class="codeline" id="line-169"><code>		// this or it may resume a different goroutine.</code></span>
+<span class="codeline" id="line-170"><code>		execute(newg, true)</code></span>
+<span class="codeline" id="line-171"><code>	})</code></span>
+<span class="codeline" id="line-172"><code></code></span>
+<span class="codeline" id="line-173"><code>	// We'll resume here when the call returns.</code></span>
+<span class="codeline" id="line-174"><code></code></span>
+<span class="codeline" id="line-175"><code>	// Restore locked state.</code></span>
+<span class="codeline" id="line-176"><code>	if lockedm {</code></span>
+<span class="codeline" id="line-177"><code>		mp := gp.m</code></span>
+<span class="codeline" id="line-178"><code>		mp.lockedExt = lockedExt</code></span>
+<span class="codeline" id="line-179"><code>		mp.lockedInt--</code></span>
+<span class="codeline" id="line-180"><code>		mp.lockedg.set(gp)</code></span>
+<span class="codeline" id="line-181"><code>		gp.lockedm.set(mp)</code></span>
+<span class="codeline" id="line-182"><code>	}</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>	gp.asyncSafePoint = false</code></span>
+<span class="codeline" id="line-185"><code>}</code></span>
+<span class="codeline" id="line-186"><code></code></span>
+<span class="codeline" id="line-187"><code>// debugCallWrap1 is the continuation of debugCallWrap on the callee</code></span>
+<span class="codeline" id="line-188"><code>// goroutine.</code></span>
+<span class="codeline" id="line-189"><code>func debugCallWrap1(dispatch uintptr, callingG *g) {</code></span>
+<span class="codeline" id="line-190"><code>	// Dispatch call and trap panics.</code></span>
+<span class="codeline" id="line-191"><code>	debugCallWrap2(dispatch)</code></span>
+<span class="codeline" id="line-192"><code></code></span>
+<span class="codeline" id="line-193"><code>	// Resume the caller goroutine.</code></span>
+<span class="codeline" id="line-194"><code>	getg().schedlink.set(callingG)</code></span>
+<span class="codeline" id="line-195"><code>	mcall(func(gp *g) {</code></span>
+<span class="codeline" id="line-196"><code>		callingG := gp.schedlink.ptr()</code></span>
+<span class="codeline" id="line-197"><code>		gp.schedlink = 0</code></span>
+<span class="codeline" id="line-198"><code></code></span>
+<span class="codeline" id="line-199"><code>		// Unlock this goroutine from the M if necessary. The</code></span>
+<span class="codeline" id="line-200"><code>		// calling G will relock.</code></span>
+<span class="codeline" id="line-201"><code>		if gp.lockedm != 0 {</code></span>
+<span class="codeline" id="line-202"><code>			gp.lockedm = 0</code></span>
+<span class="codeline" id="line-203"><code>			gp.m.lockedg = 0</code></span>
+<span class="codeline" id="line-204"><code>		}</code></span>
+<span class="codeline" id="line-205"><code></code></span>
+<span class="codeline" id="line-206"><code>		// Switch back to the calling goroutine. At some point</code></span>
+<span class="codeline" id="line-207"><code>		// the scheduler will schedule us again and we'll</code></span>
+<span class="codeline" id="line-208"><code>		// finish exiting.</code></span>
+<span class="codeline" id="line-209"><code>		if trace.enabled {</code></span>
+<span class="codeline" id="line-210"><code>			traceGoSched()</code></span>
+<span class="codeline" id="line-211"><code>		}</code></span>
+<span class="codeline" id="line-212"><code>		casgstatus(gp, _Grunning, _Grunnable)</code></span>
+<span class="codeline" id="line-213"><code>		dropg()</code></span>
+<span class="codeline" id="line-214"><code>		lock(&amp;sched.lock)</code></span>
+<span class="codeline" id="line-215"><code>		globrunqput(gp)</code></span>
+<span class="codeline" id="line-216"><code>		unlock(&amp;sched.lock)</code></span>
+<span class="codeline" id="line-217"><code></code></span>
+<span class="codeline" id="line-218"><code>		if trace.enabled {</code></span>
+<span class="codeline" id="line-219"><code>			traceGoUnpark(callingG, 0)</code></span>
+<span class="codeline" id="line-220"><code>		}</code></span>
+<span class="codeline" id="line-221"><code>		casgstatus(callingG, _Gwaiting, _Grunnable)</code></span>
+<span class="codeline" id="line-222"><code>		execute(callingG, true)</code></span>
+<span class="codeline" id="line-223"><code>	})</code></span>
+<span class="codeline" id="line-224"><code>}</code></span>
+<span class="codeline" id="line-225"><code></code></span>
+<span class="codeline" id="line-226"><code>func debugCallWrap2(dispatch uintptr) {</code></span>
+<span class="codeline" id="line-227"><code>	// Call the dispatch function and trap panics.</code></span>
+<span class="codeline" id="line-228"><code>	var dispatchF func()</code></span>
+<span class="codeline" id="line-229"><code>	dispatchFV := funcval{dispatch}</code></span>
+<span class="codeline" id="line-230"><code>	*(*unsafe.Pointer)(unsafe.Pointer(&amp;dispatchF)) = noescape(unsafe.Pointer(&amp;dispatchFV))</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>	var ok bool</code></span>
+<span class="codeline" id="line-233"><code>	defer func() {</code></span>
+<span class="codeline" id="line-234"><code>		if !ok {</code></span>
+<span class="codeline" id="line-235"><code>			err := recover()</code></span>
+<span class="codeline" id="line-236"><code>			debugCallPanicked(err)</code></span>
+<span class="codeline" id="line-237"><code>		}</code></span>
+<span class="codeline" id="line-238"><code>	}()</code></span>
+<span class="codeline" id="line-239"><code>	dispatchF()</code></span>
+<span class="codeline" id="line-240"><code>	ok = true</code></span>
+<span class="codeline" id="line-241"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

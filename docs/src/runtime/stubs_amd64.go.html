@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: stubs_amd64.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	stubs_amd64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Called from compiled code; declared for vet; do NOT call from Go.</code></span>
+<span class="codeline" id="line-8"><code>func gcWriteBarrierCX()</code></span>
+<span class="codeline" id="line-9"><code>func gcWriteBarrierDX()</code></span>
+<span class="codeline" id="line-10"><code>func gcWriteBarrierBX()</code></span>
+<span class="codeline" id="line-11"><code>func gcWriteBarrierBP()</code></span>
+<span class="codeline" id="line-12"><code>func gcWriteBarrierSI()</code></span>
+<span class="codeline" id="line-13"><code>func gcWriteBarrierR8()</code></span>
+<span class="codeline" id="line-14"><code>func gcWriteBarrierR9()</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>// stackcheck checks that SP is in range [g-&gt;stack.lo, g-&gt;stack.hi).</code></span>
+<span class="codeline" id="line-17"><code>func stackcheck()</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>// Called from assembly only; declared for go vet.</code></span>
+<span class="codeline" id="line-20"><code>func settls() // argument in DI</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>// Retpolines, used by -spectre=ret flag in cmd/asm, cmd/compile.</code></span>
+<span class="codeline" id="line-23"><code>func retpolineAX()</code></span>
+<span class="codeline" id="line-24"><code>func retpolineCX()</code></span>
+<span class="codeline" id="line-25"><code>func retpolineDX()</code></span>
+<span class="codeline" id="line-26"><code>func retpolineBX()</code></span>
+<span class="codeline" id="line-27"><code>func retpolineBP()</code></span>
+<span class="codeline" id="line-28"><code>func retpolineSI()</code></span>
+<span class="codeline" id="line-29"><code>func retpolineDI()</code></span>
+<span class="codeline" id="line-30"><code>func retpolineR8()</code></span>
+<span class="codeline" id="line-31"><code>func retpolineR9()</code></span>
+<span class="codeline" id="line-32"><code>func retpolineR10()</code></span>
+<span class="codeline" id="line-33"><code>func retpolineR11()</code></span>
+<span class="codeline" id="line-34"><code>func retpolineR12()</code></span>
+<span class="codeline" id="line-35"><code>func retpolineR13()</code></span>
+<span class="codeline" id="line-36"><code>func retpolineR14()</code></span>
+<span class="codeline" id="line-37"><code>func retpolineR15()</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sqrt.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sqrt.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// The original C code and the long comment below are</code></span>
+<span class="codeline" id="line-8"><code>// from FreeBSD's /usr/src/lib/msun/src/e_sqrt.c and</code></span>
+<span class="codeline" id="line-9"><code>// came with this notice. The go code is a simplified</code></span>
+<span class="codeline" id="line-10"><code>// version of the original C.</code></span>
+<span class="codeline" id="line-11"><code>//</code></span>
+<span class="codeline" id="line-12"><code>// ====================================================</code></span>
+<span class="codeline" id="line-13"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-16"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-17"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-18"><code>// is preserved.</code></span>
+<span class="codeline" id="line-19"><code>// ====================================================</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// __ieee754_sqrt(x)</code></span>
+<span class="codeline" id="line-22"><code>// Return correctly rounded sqrt.</code></span>
+<span class="codeline" id="line-23"><code>//           -----------------------------------------</code></span>
+<span class="codeline" id="line-24"><code>//           | Use the hardware sqrt if you have one |</code></span>
+<span class="codeline" id="line-25"><code>//           -----------------------------------------</code></span>
+<span class="codeline" id="line-26"><code>// Method:</code></span>
+<span class="codeline" id="line-27"><code>//   Bit by bit method using integer arithmetic. (Slow, but portable)</code></span>
+<span class="codeline" id="line-28"><code>//   1. Normalization</code></span>
+<span class="codeline" id="line-29"><code>//      Scale x to y in [1,4) with even powers of 2:</code></span>
+<span class="codeline" id="line-30"><code>//      find an integer k such that  1 &lt;= (y=x*2**(2k)) &lt; 4, then</code></span>
+<span class="codeline" id="line-31"><code>//              sqrt(x) = 2**k * sqrt(y)</code></span>
+<span class="codeline" id="line-32"><code>//   2. Bit by bit computation</code></span>
+<span class="codeline" id="line-33"><code>//      Let q  = sqrt(y) truncated to i bit after binary point (q = 1),</code></span>
+<span class="codeline" id="line-34"><code>//           i                                                   0</code></span>
+<span class="codeline" id="line-35"><code>//                                     i+1         2</code></span>
+<span class="codeline" id="line-36"><code>//          s  = 2*q , and      y  =  2   * ( y - q  ).          (1)</code></span>
+<span class="codeline" id="line-37"><code>//           i      i            i                 i</code></span>
+<span class="codeline" id="line-38"><code>//</code></span>
+<span class="codeline" id="line-39"><code>//      To compute q    from q , one checks whether</code></span>
+<span class="codeline" id="line-40"><code>//                  i+1       i</code></span>
+<span class="codeline" id="line-41"><code>//</code></span>
+<span class="codeline" id="line-42"><code>//                            -(i+1) 2</code></span>
+<span class="codeline" id="line-43"><code>//                      (q + 2      )  &lt;= y.                     (2)</code></span>
+<span class="codeline" id="line-44"><code>//                        i</code></span>
+<span class="codeline" id="line-45"><code>//                                                            -(i+1)</code></span>
+<span class="codeline" id="line-46"><code>//      If (2) is false, then q   = q ; otherwise q   = q  + 2      .</code></span>
+<span class="codeline" id="line-47"><code>//                             i+1   i             i+1   i</code></span>
+<span class="codeline" id="line-48"><code>//</code></span>
+<span class="codeline" id="line-49"><code>//      With some algebraic manipulation, it is not difficult to see</code></span>
+<span class="codeline" id="line-50"><code>//      that (2) is equivalent to</code></span>
+<span class="codeline" id="line-51"><code>//                             -(i+1)</code></span>
+<span class="codeline" id="line-52"><code>//                      s  +  2       &lt;= y                       (3)</code></span>
+<span class="codeline" id="line-53"><code>//                       i                i</code></span>
+<span class="codeline" id="line-54"><code>//</code></span>
+<span class="codeline" id="line-55"><code>//      The advantage of (3) is that s  and y  can be computed by</code></span>
+<span class="codeline" id="line-56"><code>//                                    i      i</code></span>
+<span class="codeline" id="line-57"><code>//      the following recurrence formula:</code></span>
+<span class="codeline" id="line-58"><code>//          if (3) is false</code></span>
+<span class="codeline" id="line-59"><code>//</code></span>
+<span class="codeline" id="line-60"><code>//          s     =  s  ,       y    = y   ;                     (4)</code></span>
+<span class="codeline" id="line-61"><code>//           i+1      i          i+1    i</code></span>
+<span class="codeline" id="line-62"><code>//</code></span>
+<span class="codeline" id="line-63"><code>//      otherwise,</code></span>
+<span class="codeline" id="line-64"><code>//                         -i                      -(i+1)</code></span>
+<span class="codeline" id="line-65"><code>//          s     =  s  + 2  ,  y    = y  -  s  - 2              (5)</code></span>
+<span class="codeline" id="line-66"><code>//           i+1      i          i+1    i     i</code></span>
+<span class="codeline" id="line-67"><code>//</code></span>
+<span class="codeline" id="line-68"><code>//      One may easily use induction to prove (4) and (5).</code></span>
+<span class="codeline" id="line-69"><code>//      Note. Since the left hand side of (3) contain only i+2 bits,</code></span>
+<span class="codeline" id="line-70"><code>//            it is not necessary to do a full (53-bit) comparison</code></span>
+<span class="codeline" id="line-71"><code>//            in (3).</code></span>
+<span class="codeline" id="line-72"><code>//   3. Final rounding</code></span>
+<span class="codeline" id="line-73"><code>//      After generating the 53 bits result, we compute one more bit.</code></span>
+<span class="codeline" id="line-74"><code>//      Together with the remainder, we can decide whether the</code></span>
+<span class="codeline" id="line-75"><code>//      result is exact, bigger than 1/2ulp, or less than 1/2ulp</code></span>
+<span class="codeline" id="line-76"><code>//      (it will never equal to 1/2ulp).</code></span>
+<span class="codeline" id="line-77"><code>//      The rounding mode can be detected by checking whether</code></span>
+<span class="codeline" id="line-78"><code>//      huge + tiny is equal to huge, and whether huge - tiny is</code></span>
+<span class="codeline" id="line-79"><code>//      equal to huge for some floating point number "huge" and "tiny".</code></span>
+<span class="codeline" id="line-80"><code>//</code></span>
+<span class="codeline" id="line-81"><code>//</code></span>
+<span class="codeline" id="line-82"><code>// Notes:  Rounding mode detection omitted. The constants "mask", "shift",</code></span>
+<span class="codeline" id="line-83"><code>// and "bias" are found in src/math/bits.go</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>// Sqrt returns the square root of x.</code></span>
+<span class="codeline" id="line-86"><code>//</code></span>
+<span class="codeline" id="line-87"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-88"><code>//	Sqrt(+Inf) = +Inf</code></span>
+<span class="codeline" id="line-89"><code>//	Sqrt(±0) = ±0</code></span>
+<span class="codeline" id="line-90"><code>//	Sqrt(x &lt; 0) = NaN</code></span>
+<span class="codeline" id="line-91"><code>//	Sqrt(NaN) = NaN</code></span>
+<span class="codeline" id="line-92"><code>func Sqrt(x float64) float64</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>// Note: Sqrt is implemented in assembly on some systems.</code></span>
+<span class="codeline" id="line-95"><code>// Others have assembly stubs that jump to func sqrt below.</code></span>
+<span class="codeline" id="line-96"><code>// On systems where Sqrt is a single instruction, the compiler</code></span>
+<span class="codeline" id="line-97"><code>// may turn a direct call into a direct use of that instruction instead.</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>func sqrt(x float64) float64 {</code></span>
+<span class="codeline" id="line-100"><code>	// special cases</code></span>
+<span class="codeline" id="line-101"><code>	switch {</code></span>
+<span class="codeline" id="line-102"><code>	case x == 0 || IsNaN(x) || IsInf(x, 1):</code></span>
+<span class="codeline" id="line-103"><code>		return x</code></span>
+<span class="codeline" id="line-104"><code>	case x &lt; 0:</code></span>
+<span class="codeline" id="line-105"><code>		return NaN()</code></span>
+<span class="codeline" id="line-106"><code>	}</code></span>
+<span class="codeline" id="line-107"><code>	ix := Float64bits(x)</code></span>
+<span class="codeline" id="line-108"><code>	// normalize x</code></span>
+<span class="codeline" id="line-109"><code>	exp := int((ix &gt;&gt; shift) &amp; mask)</code></span>
+<span class="codeline" id="line-110"><code>	if exp == 0 { // subnormal x</code></span>
+<span class="codeline" id="line-111"><code>		for ix&amp;(1&lt;&lt;shift) == 0 {</code></span>
+<span class="codeline" id="line-112"><code>			ix &lt;&lt;= 1</code></span>
+<span class="codeline" id="line-113"><code>			exp--</code></span>
+<span class="codeline" id="line-114"><code>		}</code></span>
+<span class="codeline" id="line-115"><code>		exp++</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code>	exp -= bias // unbias exponent</code></span>
+<span class="codeline" id="line-118"><code>	ix &amp;^= mask &lt;&lt; shift</code></span>
+<span class="codeline" id="line-119"><code>	ix |= 1 &lt;&lt; shift</code></span>
+<span class="codeline" id="line-120"><code>	if exp&amp;1 == 1 { // odd exp, double x to make it even</code></span>
+<span class="codeline" id="line-121"><code>		ix &lt;&lt;= 1</code></span>
+<span class="codeline" id="line-122"><code>	}</code></span>
+<span class="codeline" id="line-123"><code>	exp &gt;&gt;= 1 // exp = exp/2, exponent of square root</code></span>
+<span class="codeline" id="line-124"><code>	// generate sqrt(x) bit by bit</code></span>
+<span class="codeline" id="line-125"><code>	ix &lt;&lt;= 1</code></span>
+<span class="codeline" id="line-126"><code>	var q, s uint64               // q = sqrt(x)</code></span>
+<span class="codeline" id="line-127"><code>	r := uint64(1 &lt;&lt; (shift + 1)) // r = moving bit from MSB to LSB</code></span>
+<span class="codeline" id="line-128"><code>	for r != 0 {</code></span>
+<span class="codeline" id="line-129"><code>		t := s + r</code></span>
+<span class="codeline" id="line-130"><code>		if t &lt;= ix {</code></span>
+<span class="codeline" id="line-131"><code>			s = t + r</code></span>
+<span class="codeline" id="line-132"><code>			ix -= t</code></span>
+<span class="codeline" id="line-133"><code>			q += r</code></span>
+<span class="codeline" id="line-134"><code>		}</code></span>
+<span class="codeline" id="line-135"><code>		ix &lt;&lt;= 1</code></span>
+<span class="codeline" id="line-136"><code>		r &gt;&gt;= 1</code></span>
+<span class="codeline" id="line-137"><code>	}</code></span>
+<span class="codeline" id="line-138"><code>	// final rounding</code></span>
+<span class="codeline" id="line-139"><code>	if ix != 0 { // remainder, result not exact</code></span>
+<span class="codeline" id="line-140"><code>		q += q &amp; 1 // round according to extra bit</code></span>
+<span class="codeline" id="line-141"><code>	}</code></span>
+<span class="codeline" id="line-142"><code>	ix = q&gt;&gt;1 + uint64(exp-1+bias)&lt;&lt;shift // significand + biased exponent</code></span>
+<span class="codeline" id="line-143"><code>	return Float64frombits(ix)</code></span>
+<span class="codeline" id="line-144"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

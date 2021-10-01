@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: fd_unix.go in package internal/poll</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	fd_unix.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/internal/poll.html">internal/poll</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd js,wasm linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package poll</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"io"</code></span>
+<span class="codeline" id="line-11"><code>	"sync/atomic"</code></span>
+<span class="codeline" id="line-12"><code>	"syscall"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// FD is a file descriptor. The net and os packages use this type as a</code></span>
+<span class="codeline" id="line-16"><code>// field of a larger type representing a network connection or OS file.</code></span>
+<span class="codeline" id="line-17"><code>type FD struct {</code></span>
+<span class="codeline" id="line-18"><code>	// Lock sysfd and serialize access to Read and Write methods.</code></span>
+<span class="codeline" id="line-19"><code>	fdmu fdMutex</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>	// System file descriptor. Immutable until Close.</code></span>
+<span class="codeline" id="line-22"><code>	Sysfd int</code></span>
+<span class="codeline" id="line-23"><code></code></span>
+<span class="codeline" id="line-24"><code>	// I/O poller.</code></span>
+<span class="codeline" id="line-25"><code>	pd pollDesc</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>	// Writev cache.</code></span>
+<span class="codeline" id="line-28"><code>	iovecs *[]syscall.Iovec</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>	// Semaphore signaled when file is closed.</code></span>
+<span class="codeline" id="line-31"><code>	csema uint32</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	// Non-zero if this file has been set to blocking mode.</code></span>
+<span class="codeline" id="line-34"><code>	isBlocking uint32</code></span>
+<span class="codeline" id="line-35"><code></code></span>
+<span class="codeline" id="line-36"><code>	// Whether this is a streaming descriptor, as opposed to a</code></span>
+<span class="codeline" id="line-37"><code>	// packet-based descriptor like a UDP socket. Immutable.</code></span>
+<span class="codeline" id="line-38"><code>	IsStream bool</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>	// Whether a zero byte read indicates EOF. This is false for a</code></span>
+<span class="codeline" id="line-41"><code>	// message based socket connection.</code></span>
+<span class="codeline" id="line-42"><code>	ZeroReadIsEOF bool</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	// Whether this is a file rather than a network socket.</code></span>
+<span class="codeline" id="line-45"><code>	isFile bool</code></span>
+<span class="codeline" id="line-46"><code>}</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>// Init initializes the FD. The Sysfd field should already be set.</code></span>
+<span class="codeline" id="line-49"><code>// This can be called multiple times on a single FD.</code></span>
+<span class="codeline" id="line-50"><code>// The net argument is a network name from the net package (e.g., "tcp"),</code></span>
+<span class="codeline" id="line-51"><code>// or "file".</code></span>
+<span class="codeline" id="line-52"><code>// Set pollable to true if fd should be managed by runtime netpoll.</code></span>
+<span class="codeline" id="line-53"><code>func (fd *FD) Init(net string, pollable bool) error {</code></span>
+<span class="codeline" id="line-54"><code>	// We don't actually care about the various network types.</code></span>
+<span class="codeline" id="line-55"><code>	if net == "file" {</code></span>
+<span class="codeline" id="line-56"><code>		fd.isFile = true</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code>	if !pollable {</code></span>
+<span class="codeline" id="line-59"><code>		fd.isBlocking = 1</code></span>
+<span class="codeline" id="line-60"><code>		return nil</code></span>
+<span class="codeline" id="line-61"><code>	}</code></span>
+<span class="codeline" id="line-62"><code>	err := fd.pd.init(fd)</code></span>
+<span class="codeline" id="line-63"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-64"><code>		// If we could not initialize the runtime poller,</code></span>
+<span class="codeline" id="line-65"><code>		// assume we are using blocking mode.</code></span>
+<span class="codeline" id="line-66"><code>		fd.isBlocking = 1</code></span>
+<span class="codeline" id="line-67"><code>	}</code></span>
+<span class="codeline" id="line-68"><code>	return err</code></span>
+<span class="codeline" id="line-69"><code>}</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>// Destroy closes the file descriptor. This is called when there are</code></span>
+<span class="codeline" id="line-72"><code>// no remaining references.</code></span>
+<span class="codeline" id="line-73"><code>func (fd *FD) destroy() error {</code></span>
+<span class="codeline" id="line-74"><code>	// Poller may want to unregister fd in readiness notification mechanism,</code></span>
+<span class="codeline" id="line-75"><code>	// so this must be executed before CloseFunc.</code></span>
+<span class="codeline" id="line-76"><code>	fd.pd.close()</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>	// We don't use ignoringEINTR here because POSIX does not define</code></span>
+<span class="codeline" id="line-79"><code>	// whether the descriptor is closed if close returns EINTR.</code></span>
+<span class="codeline" id="line-80"><code>	// If the descriptor is indeed closed, using a loop would race</code></span>
+<span class="codeline" id="line-81"><code>	// with some other goroutine opening a new descriptor.</code></span>
+<span class="codeline" id="line-82"><code>	// (The Linux kernel guarantees that it is closed on an EINTR error.)</code></span>
+<span class="codeline" id="line-83"><code>	err := CloseFunc(fd.Sysfd)</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>	fd.Sysfd = -1</code></span>
+<span class="codeline" id="line-86"><code>	runtime_Semrelease(&amp;fd.csema)</code></span>
+<span class="codeline" id="line-87"><code>	return err</code></span>
+<span class="codeline" id="line-88"><code>}</code></span>
+<span class="codeline" id="line-89"><code></code></span>
+<span class="codeline" id="line-90"><code>// Close closes the FD. The underlying file descriptor is closed by the</code></span>
+<span class="codeline" id="line-91"><code>// destroy method when there are no remaining references.</code></span>
+<span class="codeline" id="line-92"><code>func (fd *FD) Close() error {</code></span>
+<span class="codeline" id="line-93"><code>	if !fd.fdmu.increfAndClose() {</code></span>
+<span class="codeline" id="line-94"><code>		return errClosing(fd.isFile)</code></span>
+<span class="codeline" id="line-95"><code>	}</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>	// Unblock any I/O.  Once it all unblocks and returns,</code></span>
+<span class="codeline" id="line-98"><code>	// so that it cannot be referring to fd.sysfd anymore,</code></span>
+<span class="codeline" id="line-99"><code>	// the final decref will close fd.sysfd. This should happen</code></span>
+<span class="codeline" id="line-100"><code>	// fairly quickly, since all the I/O is non-blocking, and any</code></span>
+<span class="codeline" id="line-101"><code>	// attempts to block in the pollDesc will return errClosing(fd.isFile).</code></span>
+<span class="codeline" id="line-102"><code>	fd.pd.evict()</code></span>
+<span class="codeline" id="line-103"><code></code></span>
+<span class="codeline" id="line-104"><code>	// The call to decref will call destroy if there are no other</code></span>
+<span class="codeline" id="line-105"><code>	// references.</code></span>
+<span class="codeline" id="line-106"><code>	err := fd.decref()</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>	// Wait until the descriptor is closed. If this was the only</code></span>
+<span class="codeline" id="line-109"><code>	// reference, it is already closed. Only wait if the file has</code></span>
+<span class="codeline" id="line-110"><code>	// not been set to blocking mode, as otherwise any current I/O</code></span>
+<span class="codeline" id="line-111"><code>	// may be blocking, and that would block the Close.</code></span>
+<span class="codeline" id="line-112"><code>	// No need for an atomic read of isBlocking, increfAndClose means</code></span>
+<span class="codeline" id="line-113"><code>	// we have exclusive access to fd.</code></span>
+<span class="codeline" id="line-114"><code>	if fd.isBlocking == 0 {</code></span>
+<span class="codeline" id="line-115"><code>		runtime_Semacquire(&amp;fd.csema)</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code></code></span>
+<span class="codeline" id="line-118"><code>	return err</code></span>
+<span class="codeline" id="line-119"><code>}</code></span>
+<span class="codeline" id="line-120"><code></code></span>
+<span class="codeline" id="line-121"><code>// SetBlocking puts the file into blocking mode.</code></span>
+<span class="codeline" id="line-122"><code>func (fd *FD) SetBlocking() error {</code></span>
+<span class="codeline" id="line-123"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-124"><code>		return err</code></span>
+<span class="codeline" id="line-125"><code>	}</code></span>
+<span class="codeline" id="line-126"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-127"><code>	// Atomic store so that concurrent calls to SetBlocking</code></span>
+<span class="codeline" id="line-128"><code>	// do not cause a race condition. isBlocking only ever goes</code></span>
+<span class="codeline" id="line-129"><code>	// from 0 to 1 so there is no real race here.</code></span>
+<span class="codeline" id="line-130"><code>	atomic.StoreUint32(&amp;fd.isBlocking, 1)</code></span>
+<span class="codeline" id="line-131"><code>	return syscall.SetNonblock(fd.Sysfd, false)</code></span>
+<span class="codeline" id="line-132"><code>}</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>// Darwin and FreeBSD can't read or write 2GB+ files at a time,</code></span>
+<span class="codeline" id="line-135"><code>// even on 64-bit systems.</code></span>
+<span class="codeline" id="line-136"><code>// The same is true of socket implementations on many systems.</code></span>
+<span class="codeline" id="line-137"><code>// See golang.org/issue/7812 and golang.org/issue/16266.</code></span>
+<span class="codeline" id="line-138"><code>// Use 1GB instead of, say, 2GB-1, to keep subsequent reads aligned.</code></span>
+<span class="codeline" id="line-139"><code>const maxRW = 1 &lt;&lt; 30</code></span>
+<span class="codeline" id="line-140"><code></code></span>
+<span class="codeline" id="line-141"><code>// Read implements io.Reader.</code></span>
+<span class="codeline" id="line-142"><code>func (fd *FD) Read(p []byte) (int, error) {</code></span>
+<span class="codeline" id="line-143"><code>	if err := fd.readLock(); err != nil {</code></span>
+<span class="codeline" id="line-144"><code>		return 0, err</code></span>
+<span class="codeline" id="line-145"><code>	}</code></span>
+<span class="codeline" id="line-146"><code>	defer fd.readUnlock()</code></span>
+<span class="codeline" id="line-147"><code>	if len(p) == 0 {</code></span>
+<span class="codeline" id="line-148"><code>		// If the caller wanted a zero byte read, return immediately</code></span>
+<span class="codeline" id="line-149"><code>		// without trying (but after acquiring the readLock).</code></span>
+<span class="codeline" id="line-150"><code>		// Otherwise syscall.Read returns 0, nil which looks like</code></span>
+<span class="codeline" id="line-151"><code>		// io.EOF.</code></span>
+<span class="codeline" id="line-152"><code>		// TODO(bradfitz): make it wait for readability? (Issue 15735)</code></span>
+<span class="codeline" id="line-153"><code>		return 0, nil</code></span>
+<span class="codeline" id="line-154"><code>	}</code></span>
+<span class="codeline" id="line-155"><code>	if err := fd.pd.prepareRead(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-156"><code>		return 0, err</code></span>
+<span class="codeline" id="line-157"><code>	}</code></span>
+<span class="codeline" id="line-158"><code>	if fd.IsStream &amp;&amp; len(p) &gt; maxRW {</code></span>
+<span class="codeline" id="line-159"><code>		p = p[:maxRW]</code></span>
+<span class="codeline" id="line-160"><code>	}</code></span>
+<span class="codeline" id="line-161"><code>	for {</code></span>
+<span class="codeline" id="line-162"><code>		n, err := ignoringEINTRIO(syscall.Read, fd.Sysfd, p)</code></span>
+<span class="codeline" id="line-163"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-164"><code>			n = 0</code></span>
+<span class="codeline" id="line-165"><code>			if err == syscall.EAGAIN &amp;&amp; fd.pd.pollable() {</code></span>
+<span class="codeline" id="line-166"><code>				if err = fd.pd.waitRead(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-167"><code>					continue</code></span>
+<span class="codeline" id="line-168"><code>				}</code></span>
+<span class="codeline" id="line-169"><code>			}</code></span>
+<span class="codeline" id="line-170"><code>		}</code></span>
+<span class="codeline" id="line-171"><code>		err = fd.eofError(n, err)</code></span>
+<span class="codeline" id="line-172"><code>		return n, err</code></span>
+<span class="codeline" id="line-173"><code>	}</code></span>
+<span class="codeline" id="line-174"><code>}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>// Pread wraps the pread system call.</code></span>
+<span class="codeline" id="line-177"><code>func (fd *FD) Pread(p []byte, off int64) (int, error) {</code></span>
+<span class="codeline" id="line-178"><code>	// Call incref, not readLock, because since pread specifies the</code></span>
+<span class="codeline" id="line-179"><code>	// offset it is independent from other reads.</code></span>
+<span class="codeline" id="line-180"><code>	// Similarly, using the poller doesn't make sense for pread.</code></span>
+<span class="codeline" id="line-181"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-182"><code>		return 0, err</code></span>
+<span class="codeline" id="line-183"><code>	}</code></span>
+<span class="codeline" id="line-184"><code>	if fd.IsStream &amp;&amp; len(p) &gt; maxRW {</code></span>
+<span class="codeline" id="line-185"><code>		p = p[:maxRW]</code></span>
+<span class="codeline" id="line-186"><code>	}</code></span>
+<span class="codeline" id="line-187"><code>	var (</code></span>
+<span class="codeline" id="line-188"><code>		n   int</code></span>
+<span class="codeline" id="line-189"><code>		err error</code></span>
+<span class="codeline" id="line-190"><code>	)</code></span>
+<span class="codeline" id="line-191"><code>	for {</code></span>
+<span class="codeline" id="line-192"><code>		n, err = syscall.Pread(fd.Sysfd, p, off)</code></span>
+<span class="codeline" id="line-193"><code>		if err != syscall.EINTR {</code></span>
+<span class="codeline" id="line-194"><code>			break</code></span>
+<span class="codeline" id="line-195"><code>		}</code></span>
+<span class="codeline" id="line-196"><code>	}</code></span>
+<span class="codeline" id="line-197"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-198"><code>		n = 0</code></span>
+<span class="codeline" id="line-199"><code>	}</code></span>
+<span class="codeline" id="line-200"><code>	fd.decref()</code></span>
+<span class="codeline" id="line-201"><code>	err = fd.eofError(n, err)</code></span>
+<span class="codeline" id="line-202"><code>	return n, err</code></span>
+<span class="codeline" id="line-203"><code>}</code></span>
+<span class="codeline" id="line-204"><code></code></span>
+<span class="codeline" id="line-205"><code>// ReadFrom wraps the recvfrom network call.</code></span>
+<span class="codeline" id="line-206"><code>func (fd *FD) ReadFrom(p []byte) (int, syscall.Sockaddr, error) {</code></span>
+<span class="codeline" id="line-207"><code>	if err := fd.readLock(); err != nil {</code></span>
+<span class="codeline" id="line-208"><code>		return 0, nil, err</code></span>
+<span class="codeline" id="line-209"><code>	}</code></span>
+<span class="codeline" id="line-210"><code>	defer fd.readUnlock()</code></span>
+<span class="codeline" id="line-211"><code>	if err := fd.pd.prepareRead(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-212"><code>		return 0, nil, err</code></span>
+<span class="codeline" id="line-213"><code>	}</code></span>
+<span class="codeline" id="line-214"><code>	for {</code></span>
+<span class="codeline" id="line-215"><code>		n, sa, err := syscall.Recvfrom(fd.Sysfd, p, 0)</code></span>
+<span class="codeline" id="line-216"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-217"><code>			if err == syscall.EINTR {</code></span>
+<span class="codeline" id="line-218"><code>				continue</code></span>
+<span class="codeline" id="line-219"><code>			}</code></span>
+<span class="codeline" id="line-220"><code>			n = 0</code></span>
+<span class="codeline" id="line-221"><code>			if err == syscall.EAGAIN &amp;&amp; fd.pd.pollable() {</code></span>
+<span class="codeline" id="line-222"><code>				if err = fd.pd.waitRead(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-223"><code>					continue</code></span>
+<span class="codeline" id="line-224"><code>				}</code></span>
+<span class="codeline" id="line-225"><code>			}</code></span>
+<span class="codeline" id="line-226"><code>		}</code></span>
+<span class="codeline" id="line-227"><code>		err = fd.eofError(n, err)</code></span>
+<span class="codeline" id="line-228"><code>		return n, sa, err</code></span>
+<span class="codeline" id="line-229"><code>	}</code></span>
+<span class="codeline" id="line-230"><code>}</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>// ReadMsg wraps the recvmsg network call.</code></span>
+<span class="codeline" id="line-233"><code>func (fd *FD) ReadMsg(p []byte, oob []byte) (int, int, int, syscall.Sockaddr, error) {</code></span>
+<span class="codeline" id="line-234"><code>	if err := fd.readLock(); err != nil {</code></span>
+<span class="codeline" id="line-235"><code>		return 0, 0, 0, nil, err</code></span>
+<span class="codeline" id="line-236"><code>	}</code></span>
+<span class="codeline" id="line-237"><code>	defer fd.readUnlock()</code></span>
+<span class="codeline" id="line-238"><code>	if err := fd.pd.prepareRead(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-239"><code>		return 0, 0, 0, nil, err</code></span>
+<span class="codeline" id="line-240"><code>	}</code></span>
+<span class="codeline" id="line-241"><code>	for {</code></span>
+<span class="codeline" id="line-242"><code>		n, oobn, flags, sa, err := syscall.Recvmsg(fd.Sysfd, p, oob, 0)</code></span>
+<span class="codeline" id="line-243"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-244"><code>			if err == syscall.EINTR {</code></span>
+<span class="codeline" id="line-245"><code>				continue</code></span>
+<span class="codeline" id="line-246"><code>			}</code></span>
+<span class="codeline" id="line-247"><code>			// TODO(dfc) should n and oobn be set to 0</code></span>
+<span class="codeline" id="line-248"><code>			if err == syscall.EAGAIN &amp;&amp; fd.pd.pollable() {</code></span>
+<span class="codeline" id="line-249"><code>				if err = fd.pd.waitRead(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-250"><code>					continue</code></span>
+<span class="codeline" id="line-251"><code>				}</code></span>
+<span class="codeline" id="line-252"><code>			}</code></span>
+<span class="codeline" id="line-253"><code>		}</code></span>
+<span class="codeline" id="line-254"><code>		err = fd.eofError(n, err)</code></span>
+<span class="codeline" id="line-255"><code>		return n, oobn, flags, sa, err</code></span>
+<span class="codeline" id="line-256"><code>	}</code></span>
+<span class="codeline" id="line-257"><code>}</code></span>
+<span class="codeline" id="line-258"><code></code></span>
+<span class="codeline" id="line-259"><code>// Write implements io.Writer.</code></span>
+<span class="codeline" id="line-260"><code>func (fd *FD) Write(p []byte) (int, error) {</code></span>
+<span class="codeline" id="line-261"><code>	if err := fd.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-262"><code>		return 0, err</code></span>
+<span class="codeline" id="line-263"><code>	}</code></span>
+<span class="codeline" id="line-264"><code>	defer fd.writeUnlock()</code></span>
+<span class="codeline" id="line-265"><code>	if err := fd.pd.prepareWrite(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-266"><code>		return 0, err</code></span>
+<span class="codeline" id="line-267"><code>	}</code></span>
+<span class="codeline" id="line-268"><code>	var nn int</code></span>
+<span class="codeline" id="line-269"><code>	for {</code></span>
+<span class="codeline" id="line-270"><code>		max := len(p)</code></span>
+<span class="codeline" id="line-271"><code>		if fd.IsStream &amp;&amp; max-nn &gt; maxRW {</code></span>
+<span class="codeline" id="line-272"><code>			max = nn + maxRW</code></span>
+<span class="codeline" id="line-273"><code>		}</code></span>
+<span class="codeline" id="line-274"><code>		n, err := ignoringEINTRIO(syscall.Write, fd.Sysfd, p[nn:max])</code></span>
+<span class="codeline" id="line-275"><code>		if n &gt; 0 {</code></span>
+<span class="codeline" id="line-276"><code>			nn += n</code></span>
+<span class="codeline" id="line-277"><code>		}</code></span>
+<span class="codeline" id="line-278"><code>		if nn == len(p) {</code></span>
+<span class="codeline" id="line-279"><code>			return nn, err</code></span>
+<span class="codeline" id="line-280"><code>		}</code></span>
+<span class="codeline" id="line-281"><code>		if err == syscall.EAGAIN &amp;&amp; fd.pd.pollable() {</code></span>
+<span class="codeline" id="line-282"><code>			if err = fd.pd.waitWrite(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-283"><code>				continue</code></span>
+<span class="codeline" id="line-284"><code>			}</code></span>
+<span class="codeline" id="line-285"><code>		}</code></span>
+<span class="codeline" id="line-286"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-287"><code>			return nn, err</code></span>
+<span class="codeline" id="line-288"><code>		}</code></span>
+<span class="codeline" id="line-289"><code>		if n == 0 {</code></span>
+<span class="codeline" id="line-290"><code>			return nn, io.ErrUnexpectedEOF</code></span>
+<span class="codeline" id="line-291"><code>		}</code></span>
+<span class="codeline" id="line-292"><code>	}</code></span>
+<span class="codeline" id="line-293"><code>}</code></span>
+<span class="codeline" id="line-294"><code></code></span>
+<span class="codeline" id="line-295"><code>// Pwrite wraps the pwrite system call.</code></span>
+<span class="codeline" id="line-296"><code>func (fd *FD) Pwrite(p []byte, off int64) (int, error) {</code></span>
+<span class="codeline" id="line-297"><code>	// Call incref, not writeLock, because since pwrite specifies the</code></span>
+<span class="codeline" id="line-298"><code>	// offset it is independent from other writes.</code></span>
+<span class="codeline" id="line-299"><code>	// Similarly, using the poller doesn't make sense for pwrite.</code></span>
+<span class="codeline" id="line-300"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-301"><code>		return 0, err</code></span>
+<span class="codeline" id="line-302"><code>	}</code></span>
+<span class="codeline" id="line-303"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-304"><code>	var nn int</code></span>
+<span class="codeline" id="line-305"><code>	for {</code></span>
+<span class="codeline" id="line-306"><code>		max := len(p)</code></span>
+<span class="codeline" id="line-307"><code>		if fd.IsStream &amp;&amp; max-nn &gt; maxRW {</code></span>
+<span class="codeline" id="line-308"><code>			max = nn + maxRW</code></span>
+<span class="codeline" id="line-309"><code>		}</code></span>
+<span class="codeline" id="line-310"><code>		n, err := syscall.Pwrite(fd.Sysfd, p[nn:max], off+int64(nn))</code></span>
+<span class="codeline" id="line-311"><code>		if err == syscall.EINTR {</code></span>
+<span class="codeline" id="line-312"><code>			continue</code></span>
+<span class="codeline" id="line-313"><code>		}</code></span>
+<span class="codeline" id="line-314"><code>		if n &gt; 0 {</code></span>
+<span class="codeline" id="line-315"><code>			nn += n</code></span>
+<span class="codeline" id="line-316"><code>		}</code></span>
+<span class="codeline" id="line-317"><code>		if nn == len(p) {</code></span>
+<span class="codeline" id="line-318"><code>			return nn, err</code></span>
+<span class="codeline" id="line-319"><code>		}</code></span>
+<span class="codeline" id="line-320"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-321"><code>			return nn, err</code></span>
+<span class="codeline" id="line-322"><code>		}</code></span>
+<span class="codeline" id="line-323"><code>		if n == 0 {</code></span>
+<span class="codeline" id="line-324"><code>			return nn, io.ErrUnexpectedEOF</code></span>
+<span class="codeline" id="line-325"><code>		}</code></span>
+<span class="codeline" id="line-326"><code>	}</code></span>
+<span class="codeline" id="line-327"><code>}</code></span>
+<span class="codeline" id="line-328"><code></code></span>
+<span class="codeline" id="line-329"><code>// WriteTo wraps the sendto network call.</code></span>
+<span class="codeline" id="line-330"><code>func (fd *FD) WriteTo(p []byte, sa syscall.Sockaddr) (int, error) {</code></span>
+<span class="codeline" id="line-331"><code>	if err := fd.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-332"><code>		return 0, err</code></span>
+<span class="codeline" id="line-333"><code>	}</code></span>
+<span class="codeline" id="line-334"><code>	defer fd.writeUnlock()</code></span>
+<span class="codeline" id="line-335"><code>	if err := fd.pd.prepareWrite(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-336"><code>		return 0, err</code></span>
+<span class="codeline" id="line-337"><code>	}</code></span>
+<span class="codeline" id="line-338"><code>	for {</code></span>
+<span class="codeline" id="line-339"><code>		err := syscall.Sendto(fd.Sysfd, p, 0, sa)</code></span>
+<span class="codeline" id="line-340"><code>		if err == syscall.EINTR {</code></span>
+<span class="codeline" id="line-341"><code>			continue</code></span>
+<span class="codeline" id="line-342"><code>		}</code></span>
+<span class="codeline" id="line-343"><code>		if err == syscall.EAGAIN &amp;&amp; fd.pd.pollable() {</code></span>
+<span class="codeline" id="line-344"><code>			if err = fd.pd.waitWrite(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-345"><code>				continue</code></span>
+<span class="codeline" id="line-346"><code>			}</code></span>
+<span class="codeline" id="line-347"><code>		}</code></span>
+<span class="codeline" id="line-348"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-349"><code>			return 0, err</code></span>
+<span class="codeline" id="line-350"><code>		}</code></span>
+<span class="codeline" id="line-351"><code>		return len(p), nil</code></span>
+<span class="codeline" id="line-352"><code>	}</code></span>
+<span class="codeline" id="line-353"><code>}</code></span>
+<span class="codeline" id="line-354"><code></code></span>
+<span class="codeline" id="line-355"><code>// WriteMsg wraps the sendmsg network call.</code></span>
+<span class="codeline" id="line-356"><code>func (fd *FD) WriteMsg(p []byte, oob []byte, sa syscall.Sockaddr) (int, int, error) {</code></span>
+<span class="codeline" id="line-357"><code>	if err := fd.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-358"><code>		return 0, 0, err</code></span>
+<span class="codeline" id="line-359"><code>	}</code></span>
+<span class="codeline" id="line-360"><code>	defer fd.writeUnlock()</code></span>
+<span class="codeline" id="line-361"><code>	if err := fd.pd.prepareWrite(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-362"><code>		return 0, 0, err</code></span>
+<span class="codeline" id="line-363"><code>	}</code></span>
+<span class="codeline" id="line-364"><code>	for {</code></span>
+<span class="codeline" id="line-365"><code>		n, err := syscall.SendmsgN(fd.Sysfd, p, oob, sa, 0)</code></span>
+<span class="codeline" id="line-366"><code>		if err == syscall.EINTR {</code></span>
+<span class="codeline" id="line-367"><code>			continue</code></span>
+<span class="codeline" id="line-368"><code>		}</code></span>
+<span class="codeline" id="line-369"><code>		if err == syscall.EAGAIN &amp;&amp; fd.pd.pollable() {</code></span>
+<span class="codeline" id="line-370"><code>			if err = fd.pd.waitWrite(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-371"><code>				continue</code></span>
+<span class="codeline" id="line-372"><code>			}</code></span>
+<span class="codeline" id="line-373"><code>		}</code></span>
+<span class="codeline" id="line-374"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-375"><code>			return n, 0, err</code></span>
+<span class="codeline" id="line-376"><code>		}</code></span>
+<span class="codeline" id="line-377"><code>		return n, len(oob), err</code></span>
+<span class="codeline" id="line-378"><code>	}</code></span>
+<span class="codeline" id="line-379"><code>}</code></span>
+<span class="codeline" id="line-380"><code></code></span>
+<span class="codeline" id="line-381"><code>// Accept wraps the accept network call.</code></span>
+<span class="codeline" id="line-382"><code>func (fd *FD) Accept() (int, syscall.Sockaddr, string, error) {</code></span>
+<span class="codeline" id="line-383"><code>	if err := fd.readLock(); err != nil {</code></span>
+<span class="codeline" id="line-384"><code>		return -1, nil, "", err</code></span>
+<span class="codeline" id="line-385"><code>	}</code></span>
+<span class="codeline" id="line-386"><code>	defer fd.readUnlock()</code></span>
+<span class="codeline" id="line-387"><code></code></span>
+<span class="codeline" id="line-388"><code>	if err := fd.pd.prepareRead(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-389"><code>		return -1, nil, "", err</code></span>
+<span class="codeline" id="line-390"><code>	}</code></span>
+<span class="codeline" id="line-391"><code>	for {</code></span>
+<span class="codeline" id="line-392"><code>		s, rsa, errcall, err := accept(fd.Sysfd)</code></span>
+<span class="codeline" id="line-393"><code>		if err == nil {</code></span>
+<span class="codeline" id="line-394"><code>			return s, rsa, "", err</code></span>
+<span class="codeline" id="line-395"><code>		}</code></span>
+<span class="codeline" id="line-396"><code>		switch err {</code></span>
+<span class="codeline" id="line-397"><code>		case syscall.EINTR:</code></span>
+<span class="codeline" id="line-398"><code>			continue</code></span>
+<span class="codeline" id="line-399"><code>		case syscall.EAGAIN:</code></span>
+<span class="codeline" id="line-400"><code>			if fd.pd.pollable() {</code></span>
+<span class="codeline" id="line-401"><code>				if err = fd.pd.waitRead(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-402"><code>					continue</code></span>
+<span class="codeline" id="line-403"><code>				}</code></span>
+<span class="codeline" id="line-404"><code>			}</code></span>
+<span class="codeline" id="line-405"><code>		case syscall.ECONNABORTED:</code></span>
+<span class="codeline" id="line-406"><code>			// This means that a socket on the listen</code></span>
+<span class="codeline" id="line-407"><code>			// queue was closed before we Accept()ed it;</code></span>
+<span class="codeline" id="line-408"><code>			// it's a silly error, so try again.</code></span>
+<span class="codeline" id="line-409"><code>			continue</code></span>
+<span class="codeline" id="line-410"><code>		}</code></span>
+<span class="codeline" id="line-411"><code>		return -1, nil, errcall, err</code></span>
+<span class="codeline" id="line-412"><code>	}</code></span>
+<span class="codeline" id="line-413"><code>}</code></span>
+<span class="codeline" id="line-414"><code></code></span>
+<span class="codeline" id="line-415"><code>// Seek wraps syscall.Seek.</code></span>
+<span class="codeline" id="line-416"><code>func (fd *FD) Seek(offset int64, whence int) (int64, error) {</code></span>
+<span class="codeline" id="line-417"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-418"><code>		return 0, err</code></span>
+<span class="codeline" id="line-419"><code>	}</code></span>
+<span class="codeline" id="line-420"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-421"><code>	return syscall.Seek(fd.Sysfd, offset, whence)</code></span>
+<span class="codeline" id="line-422"><code>}</code></span>
+<span class="codeline" id="line-423"><code></code></span>
+<span class="codeline" id="line-424"><code>// ReadDirent wraps syscall.ReadDirent.</code></span>
+<span class="codeline" id="line-425"><code>// We treat this like an ordinary system call rather than a call</code></span>
+<span class="codeline" id="line-426"><code>// that tries to fill the buffer.</code></span>
+<span class="codeline" id="line-427"><code>func (fd *FD) ReadDirent(buf []byte) (int, error) {</code></span>
+<span class="codeline" id="line-428"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-429"><code>		return 0, err</code></span>
+<span class="codeline" id="line-430"><code>	}</code></span>
+<span class="codeline" id="line-431"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-432"><code>	for {</code></span>
+<span class="codeline" id="line-433"><code>		n, err := ignoringEINTRIO(syscall.ReadDirent, fd.Sysfd, buf)</code></span>
+<span class="codeline" id="line-434"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-435"><code>			n = 0</code></span>
+<span class="codeline" id="line-436"><code>			if err == syscall.EAGAIN &amp;&amp; fd.pd.pollable() {</code></span>
+<span class="codeline" id="line-437"><code>				if err = fd.pd.waitRead(fd.isFile); err == nil {</code></span>
+<span class="codeline" id="line-438"><code>					continue</code></span>
+<span class="codeline" id="line-439"><code>				}</code></span>
+<span class="codeline" id="line-440"><code>			}</code></span>
+<span class="codeline" id="line-441"><code>		}</code></span>
+<span class="codeline" id="line-442"><code>		// Do not call eofError; caller does not expect to see io.EOF.</code></span>
+<span class="codeline" id="line-443"><code>		return n, err</code></span>
+<span class="codeline" id="line-444"><code>	}</code></span>
+<span class="codeline" id="line-445"><code>}</code></span>
+<span class="codeline" id="line-446"><code></code></span>
+<span class="codeline" id="line-447"><code>// Fchmod wraps syscall.Fchmod.</code></span>
+<span class="codeline" id="line-448"><code>func (fd *FD) Fchmod(mode uint32) error {</code></span>
+<span class="codeline" id="line-449"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-450"><code>		return err</code></span>
+<span class="codeline" id="line-451"><code>	}</code></span>
+<span class="codeline" id="line-452"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-453"><code>	return ignoringEINTR(func() error {</code></span>
+<span class="codeline" id="line-454"><code>		return syscall.Fchmod(fd.Sysfd, mode)</code></span>
+<span class="codeline" id="line-455"><code>	})</code></span>
+<span class="codeline" id="line-456"><code>}</code></span>
+<span class="codeline" id="line-457"><code></code></span>
+<span class="codeline" id="line-458"><code>// Fchdir wraps syscall.Fchdir.</code></span>
+<span class="codeline" id="line-459"><code>func (fd *FD) Fchdir() error {</code></span>
+<span class="codeline" id="line-460"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-461"><code>		return err</code></span>
+<span class="codeline" id="line-462"><code>	}</code></span>
+<span class="codeline" id="line-463"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-464"><code>	return syscall.Fchdir(fd.Sysfd)</code></span>
+<span class="codeline" id="line-465"><code>}</code></span>
+<span class="codeline" id="line-466"><code></code></span>
+<span class="codeline" id="line-467"><code>// Fstat wraps syscall.Fstat</code></span>
+<span class="codeline" id="line-468"><code>func (fd *FD) Fstat(s *syscall.Stat_t) error {</code></span>
+<span class="codeline" id="line-469"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-470"><code>		return err</code></span>
+<span class="codeline" id="line-471"><code>	}</code></span>
+<span class="codeline" id="line-472"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-473"><code>	return ignoringEINTR(func() error {</code></span>
+<span class="codeline" id="line-474"><code>		return syscall.Fstat(fd.Sysfd, s)</code></span>
+<span class="codeline" id="line-475"><code>	})</code></span>
+<span class="codeline" id="line-476"><code>}</code></span>
+<span class="codeline" id="line-477"><code></code></span>
+<span class="codeline" id="line-478"><code>// tryDupCloexec indicates whether F_DUPFD_CLOEXEC should be used.</code></span>
+<span class="codeline" id="line-479"><code>// If the kernel doesn't support it, this is set to 0.</code></span>
+<span class="codeline" id="line-480"><code>var tryDupCloexec = int32(1)</code></span>
+<span class="codeline" id="line-481"><code></code></span>
+<span class="codeline" id="line-482"><code>// DupCloseOnExec dups fd and marks it close-on-exec.</code></span>
+<span class="codeline" id="line-483"><code>func DupCloseOnExec(fd int) (int, string, error) {</code></span>
+<span class="codeline" id="line-484"><code>	if syscall.F_DUPFD_CLOEXEC != 0 &amp;&amp; atomic.LoadInt32(&amp;tryDupCloexec) == 1 {</code></span>
+<span class="codeline" id="line-485"><code>		r0, e1 := fcntl(fd, syscall.F_DUPFD_CLOEXEC, 0)</code></span>
+<span class="codeline" id="line-486"><code>		if e1 == nil {</code></span>
+<span class="codeline" id="line-487"><code>			return r0, "", nil</code></span>
+<span class="codeline" id="line-488"><code>		}</code></span>
+<span class="codeline" id="line-489"><code>		switch e1.(syscall.Errno) {</code></span>
+<span class="codeline" id="line-490"><code>		case syscall.EINVAL, syscall.ENOSYS:</code></span>
+<span class="codeline" id="line-491"><code>			// Old kernel, or js/wasm (which returns</code></span>
+<span class="codeline" id="line-492"><code>			// ENOSYS). Fall back to the portable way from</code></span>
+<span class="codeline" id="line-493"><code>			// now on.</code></span>
+<span class="codeline" id="line-494"><code>			atomic.StoreInt32(&amp;tryDupCloexec, 0)</code></span>
+<span class="codeline" id="line-495"><code>		default:</code></span>
+<span class="codeline" id="line-496"><code>			return -1, "fcntl", e1</code></span>
+<span class="codeline" id="line-497"><code>		}</code></span>
+<span class="codeline" id="line-498"><code>	}</code></span>
+<span class="codeline" id="line-499"><code>	return dupCloseOnExecOld(fd)</code></span>
+<span class="codeline" id="line-500"><code>}</code></span>
+<span class="codeline" id="line-501"><code></code></span>
+<span class="codeline" id="line-502"><code>// dupCloseOnExecOld is the traditional way to dup an fd and</code></span>
+<span class="codeline" id="line-503"><code>// set its O_CLOEXEC bit, using two system calls.</code></span>
+<span class="codeline" id="line-504"><code>func dupCloseOnExecOld(fd int) (int, string, error) {</code></span>
+<span class="codeline" id="line-505"><code>	syscall.ForkLock.RLock()</code></span>
+<span class="codeline" id="line-506"><code>	defer syscall.ForkLock.RUnlock()</code></span>
+<span class="codeline" id="line-507"><code>	newfd, err := syscall.Dup(fd)</code></span>
+<span class="codeline" id="line-508"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-509"><code>		return -1, "dup", err</code></span>
+<span class="codeline" id="line-510"><code>	}</code></span>
+<span class="codeline" id="line-511"><code>	syscall.CloseOnExec(newfd)</code></span>
+<span class="codeline" id="line-512"><code>	return newfd, "", nil</code></span>
+<span class="codeline" id="line-513"><code>}</code></span>
+<span class="codeline" id="line-514"><code></code></span>
+<span class="codeline" id="line-515"><code>// Dup duplicates the file descriptor.</code></span>
+<span class="codeline" id="line-516"><code>func (fd *FD) Dup() (int, string, error) {</code></span>
+<span class="codeline" id="line-517"><code>	if err := fd.incref(); err != nil {</code></span>
+<span class="codeline" id="line-518"><code>		return -1, "", err</code></span>
+<span class="codeline" id="line-519"><code>	}</code></span>
+<span class="codeline" id="line-520"><code>	defer fd.decref()</code></span>
+<span class="codeline" id="line-521"><code>	return DupCloseOnExec(fd.Sysfd)</code></span>
+<span class="codeline" id="line-522"><code>}</code></span>
+<span class="codeline" id="line-523"><code></code></span>
+<span class="codeline" id="line-524"><code>// On Unix variants only, expose the IO event for the net code.</code></span>
+<span class="codeline" id="line-525"><code></code></span>
+<span class="codeline" id="line-526"><code>// WaitWrite waits until data can be read from fd.</code></span>
+<span class="codeline" id="line-527"><code>func (fd *FD) WaitWrite() error {</code></span>
+<span class="codeline" id="line-528"><code>	return fd.pd.waitWrite(fd.isFile)</code></span>
+<span class="codeline" id="line-529"><code>}</code></span>
+<span class="codeline" id="line-530"><code></code></span>
+<span class="codeline" id="line-531"><code>// WriteOnce is for testing only. It makes a single write call.</code></span>
+<span class="codeline" id="line-532"><code>func (fd *FD) WriteOnce(p []byte) (int, error) {</code></span>
+<span class="codeline" id="line-533"><code>	if err := fd.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-534"><code>		return 0, err</code></span>
+<span class="codeline" id="line-535"><code>	}</code></span>
+<span class="codeline" id="line-536"><code>	defer fd.writeUnlock()</code></span>
+<span class="codeline" id="line-537"><code>	return ignoringEINTRIO(syscall.Write, fd.Sysfd, p)</code></span>
+<span class="codeline" id="line-538"><code>}</code></span>
+<span class="codeline" id="line-539"><code></code></span>
+<span class="codeline" id="line-540"><code>// RawRead invokes the user-defined function f for a read operation.</code></span>
+<span class="codeline" id="line-541"><code>func (fd *FD) RawRead(f func(uintptr) bool) error {</code></span>
+<span class="codeline" id="line-542"><code>	if err := fd.readLock(); err != nil {</code></span>
+<span class="codeline" id="line-543"><code>		return err</code></span>
+<span class="codeline" id="line-544"><code>	}</code></span>
+<span class="codeline" id="line-545"><code>	defer fd.readUnlock()</code></span>
+<span class="codeline" id="line-546"><code>	if err := fd.pd.prepareRead(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-547"><code>		return err</code></span>
+<span class="codeline" id="line-548"><code>	}</code></span>
+<span class="codeline" id="line-549"><code>	for {</code></span>
+<span class="codeline" id="line-550"><code>		if f(uintptr(fd.Sysfd)) {</code></span>
+<span class="codeline" id="line-551"><code>			return nil</code></span>
+<span class="codeline" id="line-552"><code>		}</code></span>
+<span class="codeline" id="line-553"><code>		if err := fd.pd.waitRead(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-554"><code>			return err</code></span>
+<span class="codeline" id="line-555"><code>		}</code></span>
+<span class="codeline" id="line-556"><code>	}</code></span>
+<span class="codeline" id="line-557"><code>}</code></span>
+<span class="codeline" id="line-558"><code></code></span>
+<span class="codeline" id="line-559"><code>// RawWrite invokes the user-defined function f for a write operation.</code></span>
+<span class="codeline" id="line-560"><code>func (fd *FD) RawWrite(f func(uintptr) bool) error {</code></span>
+<span class="codeline" id="line-561"><code>	if err := fd.writeLock(); err != nil {</code></span>
+<span class="codeline" id="line-562"><code>		return err</code></span>
+<span class="codeline" id="line-563"><code>	}</code></span>
+<span class="codeline" id="line-564"><code>	defer fd.writeUnlock()</code></span>
+<span class="codeline" id="line-565"><code>	if err := fd.pd.prepareWrite(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-566"><code>		return err</code></span>
+<span class="codeline" id="line-567"><code>	}</code></span>
+<span class="codeline" id="line-568"><code>	for {</code></span>
+<span class="codeline" id="line-569"><code>		if f(uintptr(fd.Sysfd)) {</code></span>
+<span class="codeline" id="line-570"><code>			return nil</code></span>
+<span class="codeline" id="line-571"><code>		}</code></span>
+<span class="codeline" id="line-572"><code>		if err := fd.pd.waitWrite(fd.isFile); err != nil {</code></span>
+<span class="codeline" id="line-573"><code>			return err</code></span>
+<span class="codeline" id="line-574"><code>		}</code></span>
+<span class="codeline" id="line-575"><code>	}</code></span>
+<span class="codeline" id="line-576"><code>}</code></span>
+<span class="codeline" id="line-577"><code></code></span>
+<span class="codeline" id="line-578"><code>// ignoringEINTRIO is like ignoringEINTR, but just for IO calls.</code></span>
+<span class="codeline" id="line-579"><code>func ignoringEINTRIO(fn func(fd int, p []byte) (int, error), fd int, p []byte) (int, error) {</code></span>
+<span class="codeline" id="line-580"><code>	for {</code></span>
+<span class="codeline" id="line-581"><code>		n, err := fn(fd, p)</code></span>
+<span class="codeline" id="line-582"><code>		if err != syscall.EINTR {</code></span>
+<span class="codeline" id="line-583"><code>			return n, err</code></span>
+<span class="codeline" id="line-584"><code>		}</code></span>
+<span class="codeline" id="line-585"><code>	}</code></span>
+<span class="codeline" id="line-586"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

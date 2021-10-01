@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mranges.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mranges.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2019 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Address range data structure.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// This file contains an implementation of a data structure which</code></span>
+<span class="codeline" id="line-8"><code>// manages ordered address ranges.</code></span>
+<span class="codeline" id="line-9"><code></code></span>
+<span class="codeline" id="line-10"><code>package runtime</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>import (</code></span>
+<span class="codeline" id="line-13"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-14"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-15"><code>)</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>// addrRange represents a region of address space.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// An addrRange must never span a gap in the address space.</code></span>
+<span class="codeline" id="line-20"><code>type addrRange struct {</code></span>
+<span class="codeline" id="line-21"><code>	// base and limit together represent the region of address space</code></span>
+<span class="codeline" id="line-22"><code>	// [base, limit). That is, base is inclusive, limit is exclusive.</code></span>
+<span class="codeline" id="line-23"><code>	// These are address over an offset view of the address space on</code></span>
+<span class="codeline" id="line-24"><code>	// platforms with a segmented address space, that is, on platforms</code></span>
+<span class="codeline" id="line-25"><code>	// where arenaBaseOffset != 0.</code></span>
+<span class="codeline" id="line-26"><code>	base, limit offAddr</code></span>
+<span class="codeline" id="line-27"><code>}</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>// makeAddrRange creates a new address range from two virtual addresses.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// Throws if the base and limit are not in the same memory segment.</code></span>
+<span class="codeline" id="line-32"><code>func makeAddrRange(base, limit uintptr) addrRange {</code></span>
+<span class="codeline" id="line-33"><code>	r := addrRange{offAddr{base}, offAddr{limit}}</code></span>
+<span class="codeline" id="line-34"><code>	if (base-arenaBaseOffset &gt;= base) != (limit-arenaBaseOffset &gt;= limit) {</code></span>
+<span class="codeline" id="line-35"><code>		throw("addr range base and limit are not in the same memory segment")</code></span>
+<span class="codeline" id="line-36"><code>	}</code></span>
+<span class="codeline" id="line-37"><code>	return r</code></span>
+<span class="codeline" id="line-38"><code>}</code></span>
+<span class="codeline" id="line-39"><code></code></span>
+<span class="codeline" id="line-40"><code>// size returns the size of the range represented in bytes.</code></span>
+<span class="codeline" id="line-41"><code>func (a addrRange) size() uintptr {</code></span>
+<span class="codeline" id="line-42"><code>	if !a.base.lessThan(a.limit) {</code></span>
+<span class="codeline" id="line-43"><code>		return 0</code></span>
+<span class="codeline" id="line-44"><code>	}</code></span>
+<span class="codeline" id="line-45"><code>	// Subtraction is safe because limit and base must be in the same</code></span>
+<span class="codeline" id="line-46"><code>	// segment of the address space.</code></span>
+<span class="codeline" id="line-47"><code>	return a.limit.diff(a.base)</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>// contains returns whether or not the range contains a given address.</code></span>
+<span class="codeline" id="line-51"><code>func (a addrRange) contains(addr uintptr) bool {</code></span>
+<span class="codeline" id="line-52"><code>	return a.base.lessEqual(offAddr{addr}) &amp;&amp; (offAddr{addr}).lessThan(a.limit)</code></span>
+<span class="codeline" id="line-53"><code>}</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>// subtract takes the addrRange toPrune and cuts out any overlap with</code></span>
+<span class="codeline" id="line-56"><code>// from, then returns the new range. subtract assumes that a and b</code></span>
+<span class="codeline" id="line-57"><code>// either don't overlap at all, only overlap on one side, or are equal.</code></span>
+<span class="codeline" id="line-58"><code>// If b is strictly contained in a, thus forcing a split, it will throw.</code></span>
+<span class="codeline" id="line-59"><code>func (a addrRange) subtract(b addrRange) addrRange {</code></span>
+<span class="codeline" id="line-60"><code>	if b.base.lessEqual(a.base) &amp;&amp; a.limit.lessEqual(b.limit) {</code></span>
+<span class="codeline" id="line-61"><code>		return addrRange{}</code></span>
+<span class="codeline" id="line-62"><code>	} else if a.base.lessThan(b.base) &amp;&amp; b.limit.lessThan(a.limit) {</code></span>
+<span class="codeline" id="line-63"><code>		throw("bad prune")</code></span>
+<span class="codeline" id="line-64"><code>	} else if b.limit.lessThan(a.limit) &amp;&amp; a.base.lessThan(b.limit) {</code></span>
+<span class="codeline" id="line-65"><code>		a.base = b.limit</code></span>
+<span class="codeline" id="line-66"><code>	} else if a.base.lessThan(b.base) &amp;&amp; b.base.lessThan(a.limit) {</code></span>
+<span class="codeline" id="line-67"><code>		a.limit = b.base</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code>	return a</code></span>
+<span class="codeline" id="line-70"><code>}</code></span>
+<span class="codeline" id="line-71"><code></code></span>
+<span class="codeline" id="line-72"><code>// removeGreaterEqual removes all addresses in a greater than or equal</code></span>
+<span class="codeline" id="line-73"><code>// to addr and returns the new range.</code></span>
+<span class="codeline" id="line-74"><code>func (a addrRange) removeGreaterEqual(addr uintptr) addrRange {</code></span>
+<span class="codeline" id="line-75"><code>	if (offAddr{addr}).lessEqual(a.base) {</code></span>
+<span class="codeline" id="line-76"><code>		return addrRange{}</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>	if a.limit.lessEqual(offAddr{addr}) {</code></span>
+<span class="codeline" id="line-79"><code>		return a</code></span>
+<span class="codeline" id="line-80"><code>	}</code></span>
+<span class="codeline" id="line-81"><code>	return makeAddrRange(a.base.addr(), addr)</code></span>
+<span class="codeline" id="line-82"><code>}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>var (</code></span>
+<span class="codeline" id="line-85"><code>	// minOffAddr is the minimum address in the offset space, and</code></span>
+<span class="codeline" id="line-86"><code>	// it corresponds to the virtual address arenaBaseOffset.</code></span>
+<span class="codeline" id="line-87"><code>	minOffAddr = offAddr{arenaBaseOffset}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>	// maxOffAddr is the maximum address in the offset address</code></span>
+<span class="codeline" id="line-90"><code>	// space. It corresponds to the highest virtual address representable</code></span>
+<span class="codeline" id="line-91"><code>	// by the page alloc chunk and heap arena maps.</code></span>
+<span class="codeline" id="line-92"><code>	maxOffAddr = offAddr{(((1 &lt;&lt; heapAddrBits) - 1) + arenaBaseOffset) &amp; uintptrMask}</code></span>
+<span class="codeline" id="line-93"><code>)</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>// offAddr represents an address in a contiguous view</code></span>
+<span class="codeline" id="line-96"><code>// of the address space on systems where the address space is</code></span>
+<span class="codeline" id="line-97"><code>// segmented. On other systems, it's just a normal address.</code></span>
+<span class="codeline" id="line-98"><code>type offAddr struct {</code></span>
+<span class="codeline" id="line-99"><code>	// a is just the virtual address, but should never be used</code></span>
+<span class="codeline" id="line-100"><code>	// directly. Call addr() to get this value instead.</code></span>
+<span class="codeline" id="line-101"><code>	a uintptr</code></span>
+<span class="codeline" id="line-102"><code>}</code></span>
+<span class="codeline" id="line-103"><code></code></span>
+<span class="codeline" id="line-104"><code>// add adds a uintptr offset to the offAddr.</code></span>
+<span class="codeline" id="line-105"><code>func (l offAddr) add(bytes uintptr) offAddr {</code></span>
+<span class="codeline" id="line-106"><code>	return offAddr{a: l.a + bytes}</code></span>
+<span class="codeline" id="line-107"><code>}</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>// sub subtracts a uintptr offset from the offAddr.</code></span>
+<span class="codeline" id="line-110"><code>func (l offAddr) sub(bytes uintptr) offAddr {</code></span>
+<span class="codeline" id="line-111"><code>	return offAddr{a: l.a - bytes}</code></span>
+<span class="codeline" id="line-112"><code>}</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>// diff returns the amount of bytes in between the</code></span>
+<span class="codeline" id="line-115"><code>// two offAddrs.</code></span>
+<span class="codeline" id="line-116"><code>func (l1 offAddr) diff(l2 offAddr) uintptr {</code></span>
+<span class="codeline" id="line-117"><code>	return l1.a - l2.a</code></span>
+<span class="codeline" id="line-118"><code>}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>// lessThan returns true if l1 is less than l2 in the offset</code></span>
+<span class="codeline" id="line-121"><code>// address space.</code></span>
+<span class="codeline" id="line-122"><code>func (l1 offAddr) lessThan(l2 offAddr) bool {</code></span>
+<span class="codeline" id="line-123"><code>	return (l1.a - arenaBaseOffset) &lt; (l2.a - arenaBaseOffset)</code></span>
+<span class="codeline" id="line-124"><code>}</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>// lessEqual returns true if l1 is less than or equal to l2 in</code></span>
+<span class="codeline" id="line-127"><code>// the offset address space.</code></span>
+<span class="codeline" id="line-128"><code>func (l1 offAddr) lessEqual(l2 offAddr) bool {</code></span>
+<span class="codeline" id="line-129"><code>	return (l1.a - arenaBaseOffset) &lt;= (l2.a - arenaBaseOffset)</code></span>
+<span class="codeline" id="line-130"><code>}</code></span>
+<span class="codeline" id="line-131"><code></code></span>
+<span class="codeline" id="line-132"><code>// equal returns true if the two offAddr values are equal.</code></span>
+<span class="codeline" id="line-133"><code>func (l1 offAddr) equal(l2 offAddr) bool {</code></span>
+<span class="codeline" id="line-134"><code>	// No need to compare in the offset space, it</code></span>
+<span class="codeline" id="line-135"><code>	// means the same thing.</code></span>
+<span class="codeline" id="line-136"><code>	return l1 == l2</code></span>
+<span class="codeline" id="line-137"><code>}</code></span>
+<span class="codeline" id="line-138"><code></code></span>
+<span class="codeline" id="line-139"><code>// addr returns the virtual address for this offset address.</code></span>
+<span class="codeline" id="line-140"><code>func (l offAddr) addr() uintptr {</code></span>
+<span class="codeline" id="line-141"><code>	return l.a</code></span>
+<span class="codeline" id="line-142"><code>}</code></span>
+<span class="codeline" id="line-143"><code></code></span>
+<span class="codeline" id="line-144"><code>// addrRanges is a data structure holding a collection of ranges of</code></span>
+<span class="codeline" id="line-145"><code>// address space.</code></span>
+<span class="codeline" id="line-146"><code>//</code></span>
+<span class="codeline" id="line-147"><code>// The ranges are coalesced eagerly to reduce the</code></span>
+<span class="codeline" id="line-148"><code>// number ranges it holds.</code></span>
+<span class="codeline" id="line-149"><code>//</code></span>
+<span class="codeline" id="line-150"><code>// The slice backing store for this field is persistentalloc'd</code></span>
+<span class="codeline" id="line-151"><code>// and thus there is no way to free it.</code></span>
+<span class="codeline" id="line-152"><code>//</code></span>
+<span class="codeline" id="line-153"><code>// addrRanges is not thread-safe.</code></span>
+<span class="codeline" id="line-154"><code>type addrRanges struct {</code></span>
+<span class="codeline" id="line-155"><code>	// ranges is a slice of ranges sorted by base.</code></span>
+<span class="codeline" id="line-156"><code>	ranges []addrRange</code></span>
+<span class="codeline" id="line-157"><code></code></span>
+<span class="codeline" id="line-158"><code>	// totalBytes is the total amount of address space in bytes counted by</code></span>
+<span class="codeline" id="line-159"><code>	// this addrRanges.</code></span>
+<span class="codeline" id="line-160"><code>	totalBytes uintptr</code></span>
+<span class="codeline" id="line-161"><code></code></span>
+<span class="codeline" id="line-162"><code>	// sysStat is the stat to track allocations by this type</code></span>
+<span class="codeline" id="line-163"><code>	sysStat *sysMemStat</code></span>
+<span class="codeline" id="line-164"><code>}</code></span>
+<span class="codeline" id="line-165"><code></code></span>
+<span class="codeline" id="line-166"><code>func (a *addrRanges) init(sysStat *sysMemStat) {</code></span>
+<span class="codeline" id="line-167"><code>	ranges := (*notInHeapSlice)(unsafe.Pointer(&amp;a.ranges))</code></span>
+<span class="codeline" id="line-168"><code>	ranges.len = 0</code></span>
+<span class="codeline" id="line-169"><code>	ranges.cap = 16</code></span>
+<span class="codeline" id="line-170"><code>	ranges.array = (*notInHeap)(persistentalloc(unsafe.Sizeof(addrRange{})*uintptr(ranges.cap), sys.PtrSize, sysStat))</code></span>
+<span class="codeline" id="line-171"><code>	a.sysStat = sysStat</code></span>
+<span class="codeline" id="line-172"><code>	a.totalBytes = 0</code></span>
+<span class="codeline" id="line-173"><code>}</code></span>
+<span class="codeline" id="line-174"><code></code></span>
+<span class="codeline" id="line-175"><code>// findSucc returns the first index in a such that addr is</code></span>
+<span class="codeline" id="line-176"><code>// less than the base of the addrRange at that index.</code></span>
+<span class="codeline" id="line-177"><code>func (a *addrRanges) findSucc(addr uintptr) int {</code></span>
+<span class="codeline" id="line-178"><code>	base := offAddr{addr}</code></span>
+<span class="codeline" id="line-179"><code></code></span>
+<span class="codeline" id="line-180"><code>	// Narrow down the search space via a binary search</code></span>
+<span class="codeline" id="line-181"><code>	// for large addrRanges until we have at most iterMax</code></span>
+<span class="codeline" id="line-182"><code>	// candidates left.</code></span>
+<span class="codeline" id="line-183"><code>	const iterMax = 8</code></span>
+<span class="codeline" id="line-184"><code>	bot, top := 0, len(a.ranges)</code></span>
+<span class="codeline" id="line-185"><code>	for top-bot &gt; iterMax {</code></span>
+<span class="codeline" id="line-186"><code>		i := ((top - bot) / 2) + bot</code></span>
+<span class="codeline" id="line-187"><code>		if a.ranges[i].contains(base.addr()) {</code></span>
+<span class="codeline" id="line-188"><code>			// a.ranges[i] contains base, so</code></span>
+<span class="codeline" id="line-189"><code>			// its successor is the next index.</code></span>
+<span class="codeline" id="line-190"><code>			return i + 1</code></span>
+<span class="codeline" id="line-191"><code>		}</code></span>
+<span class="codeline" id="line-192"><code>		if base.lessThan(a.ranges[i].base) {</code></span>
+<span class="codeline" id="line-193"><code>			// In this case i might actually be</code></span>
+<span class="codeline" id="line-194"><code>			// the successor, but we can't be sure</code></span>
+<span class="codeline" id="line-195"><code>			// until we check the ones before it.</code></span>
+<span class="codeline" id="line-196"><code>			top = i</code></span>
+<span class="codeline" id="line-197"><code>		} else {</code></span>
+<span class="codeline" id="line-198"><code>			// In this case we know base is</code></span>
+<span class="codeline" id="line-199"><code>			// greater than or equal to a.ranges[i].limit-1,</code></span>
+<span class="codeline" id="line-200"><code>			// so i is definitely not the successor.</code></span>
+<span class="codeline" id="line-201"><code>			// We already checked i, so pick the next</code></span>
+<span class="codeline" id="line-202"><code>			// one.</code></span>
+<span class="codeline" id="line-203"><code>			bot = i + 1</code></span>
+<span class="codeline" id="line-204"><code>		}</code></span>
+<span class="codeline" id="line-205"><code>	}</code></span>
+<span class="codeline" id="line-206"><code>	// There are top-bot candidates left, so</code></span>
+<span class="codeline" id="line-207"><code>	// iterate over them and find the first that</code></span>
+<span class="codeline" id="line-208"><code>	// base is strictly less than.</code></span>
+<span class="codeline" id="line-209"><code>	for i := bot; i &lt; top; i++ {</code></span>
+<span class="codeline" id="line-210"><code>		if base.lessThan(a.ranges[i].base) {</code></span>
+<span class="codeline" id="line-211"><code>			return i</code></span>
+<span class="codeline" id="line-212"><code>		}</code></span>
+<span class="codeline" id="line-213"><code>	}</code></span>
+<span class="codeline" id="line-214"><code>	return top</code></span>
+<span class="codeline" id="line-215"><code>}</code></span>
+<span class="codeline" id="line-216"><code></code></span>
+<span class="codeline" id="line-217"><code>// findAddrGreaterEqual returns the smallest address represented by a</code></span>
+<span class="codeline" id="line-218"><code>// that is &gt;= addr. Thus, if the address is represented by a,</code></span>
+<span class="codeline" id="line-219"><code>// then it returns addr. The second return value indicates whether</code></span>
+<span class="codeline" id="line-220"><code>// such an address exists for addr in a. That is, if addr is larger than</code></span>
+<span class="codeline" id="line-221"><code>// any address known to a, the second return value will be false.</code></span>
+<span class="codeline" id="line-222"><code>func (a *addrRanges) findAddrGreaterEqual(addr uintptr) (uintptr, bool) {</code></span>
+<span class="codeline" id="line-223"><code>	i := a.findSucc(addr)</code></span>
+<span class="codeline" id="line-224"><code>	if i == 0 {</code></span>
+<span class="codeline" id="line-225"><code>		return a.ranges[0].base.addr(), true</code></span>
+<span class="codeline" id="line-226"><code>	}</code></span>
+<span class="codeline" id="line-227"><code>	if a.ranges[i-1].contains(addr) {</code></span>
+<span class="codeline" id="line-228"><code>		return addr, true</code></span>
+<span class="codeline" id="line-229"><code>	}</code></span>
+<span class="codeline" id="line-230"><code>	if i &lt; len(a.ranges) {</code></span>
+<span class="codeline" id="line-231"><code>		return a.ranges[i].base.addr(), true</code></span>
+<span class="codeline" id="line-232"><code>	}</code></span>
+<span class="codeline" id="line-233"><code>	return 0, false</code></span>
+<span class="codeline" id="line-234"><code>}</code></span>
+<span class="codeline" id="line-235"><code></code></span>
+<span class="codeline" id="line-236"><code>// contains returns true if a covers the address addr.</code></span>
+<span class="codeline" id="line-237"><code>func (a *addrRanges) contains(addr uintptr) bool {</code></span>
+<span class="codeline" id="line-238"><code>	i := a.findSucc(addr)</code></span>
+<span class="codeline" id="line-239"><code>	if i == 0 {</code></span>
+<span class="codeline" id="line-240"><code>		return false</code></span>
+<span class="codeline" id="line-241"><code>	}</code></span>
+<span class="codeline" id="line-242"><code>	return a.ranges[i-1].contains(addr)</code></span>
+<span class="codeline" id="line-243"><code>}</code></span>
+<span class="codeline" id="line-244"><code></code></span>
+<span class="codeline" id="line-245"><code>// add inserts a new address range to a.</code></span>
+<span class="codeline" id="line-246"><code>//</code></span>
+<span class="codeline" id="line-247"><code>// r must not overlap with any address range in a and r.size() must be &gt; 0.</code></span>
+<span class="codeline" id="line-248"><code>func (a *addrRanges) add(r addrRange) {</code></span>
+<span class="codeline" id="line-249"><code>	// The copies in this function are potentially expensive, but this data</code></span>
+<span class="codeline" id="line-250"><code>	// structure is meant to represent the Go heap. At worst, copying this</code></span>
+<span class="codeline" id="line-251"><code>	// would take ~160µs assuming a conservative copying rate of 25 GiB/s (the</code></span>
+<span class="codeline" id="line-252"><code>	// copy will almost never trigger a page fault) for a 1 TiB heap with 4 MiB</code></span>
+<span class="codeline" id="line-253"><code>	// arenas which is completely discontiguous. ~160µs is still a lot, but in</code></span>
+<span class="codeline" id="line-254"><code>	// practice most platforms have 64 MiB arenas (which cuts this by a factor</code></span>
+<span class="codeline" id="line-255"><code>	// of 16) and Go heaps are usually mostly contiguous, so the chance that</code></span>
+<span class="codeline" id="line-256"><code>	// an addrRanges even grows to that size is extremely low.</code></span>
+<span class="codeline" id="line-257"><code></code></span>
+<span class="codeline" id="line-258"><code>	// An empty range has no effect on the set of addresses represented</code></span>
+<span class="codeline" id="line-259"><code>	// by a, but passing a zero-sized range is almost always a bug.</code></span>
+<span class="codeline" id="line-260"><code>	if r.size() == 0 {</code></span>
+<span class="codeline" id="line-261"><code>		print("runtime: range = {", hex(r.base.addr()), ", ", hex(r.limit.addr()), "}\n")</code></span>
+<span class="codeline" id="line-262"><code>		throw("attempted to add zero-sized address range")</code></span>
+<span class="codeline" id="line-263"><code>	}</code></span>
+<span class="codeline" id="line-264"><code>	// Because we assume r is not currently represented in a,</code></span>
+<span class="codeline" id="line-265"><code>	// findSucc gives us our insertion index.</code></span>
+<span class="codeline" id="line-266"><code>	i := a.findSucc(r.base.addr())</code></span>
+<span class="codeline" id="line-267"><code>	coalescesDown := i &gt; 0 &amp;&amp; a.ranges[i-1].limit.equal(r.base)</code></span>
+<span class="codeline" id="line-268"><code>	coalescesUp := i &lt; len(a.ranges) &amp;&amp; r.limit.equal(a.ranges[i].base)</code></span>
+<span class="codeline" id="line-269"><code>	if coalescesUp &amp;&amp; coalescesDown {</code></span>
+<span class="codeline" id="line-270"><code>		// We have neighbors and they both border us.</code></span>
+<span class="codeline" id="line-271"><code>		// Merge a.ranges[i-1], r, and a.ranges[i] together into a.ranges[i-1].</code></span>
+<span class="codeline" id="line-272"><code>		a.ranges[i-1].limit = a.ranges[i].limit</code></span>
+<span class="codeline" id="line-273"><code></code></span>
+<span class="codeline" id="line-274"><code>		// Delete a.ranges[i].</code></span>
+<span class="codeline" id="line-275"><code>		copy(a.ranges[i:], a.ranges[i+1:])</code></span>
+<span class="codeline" id="line-276"><code>		a.ranges = a.ranges[:len(a.ranges)-1]</code></span>
+<span class="codeline" id="line-277"><code>	} else if coalescesDown {</code></span>
+<span class="codeline" id="line-278"><code>		// We have a neighbor at a lower address only and it borders us.</code></span>
+<span class="codeline" id="line-279"><code>		// Merge the new space into a.ranges[i-1].</code></span>
+<span class="codeline" id="line-280"><code>		a.ranges[i-1].limit = r.limit</code></span>
+<span class="codeline" id="line-281"><code>	} else if coalescesUp {</code></span>
+<span class="codeline" id="line-282"><code>		// We have a neighbor at a higher address only and it borders us.</code></span>
+<span class="codeline" id="line-283"><code>		// Merge the new space into a.ranges[i].</code></span>
+<span class="codeline" id="line-284"><code>		a.ranges[i].base = r.base</code></span>
+<span class="codeline" id="line-285"><code>	} else {</code></span>
+<span class="codeline" id="line-286"><code>		// We may or may not have neighbors which don't border us.</code></span>
+<span class="codeline" id="line-287"><code>		// Add the new range.</code></span>
+<span class="codeline" id="line-288"><code>		if len(a.ranges)+1 &gt; cap(a.ranges) {</code></span>
+<span class="codeline" id="line-289"><code>			// Grow the array. Note that this leaks the old array, but since</code></span>
+<span class="codeline" id="line-290"><code>			// we're doubling we have at most 2x waste. For a 1 TiB heap and</code></span>
+<span class="codeline" id="line-291"><code>			// 4 MiB arenas which are all discontiguous (both very conservative</code></span>
+<span class="codeline" id="line-292"><code>			// assumptions), this would waste at most 4 MiB of memory.</code></span>
+<span class="codeline" id="line-293"><code>			oldRanges := a.ranges</code></span>
+<span class="codeline" id="line-294"><code>			ranges := (*notInHeapSlice)(unsafe.Pointer(&amp;a.ranges))</code></span>
+<span class="codeline" id="line-295"><code>			ranges.len = len(oldRanges) + 1</code></span>
+<span class="codeline" id="line-296"><code>			ranges.cap = cap(oldRanges) * 2</code></span>
+<span class="codeline" id="line-297"><code>			ranges.array = (*notInHeap)(persistentalloc(unsafe.Sizeof(addrRange{})*uintptr(ranges.cap), sys.PtrSize, a.sysStat))</code></span>
+<span class="codeline" id="line-298"><code></code></span>
+<span class="codeline" id="line-299"><code>			// Copy in the old array, but make space for the new range.</code></span>
+<span class="codeline" id="line-300"><code>			copy(a.ranges[:i], oldRanges[:i])</code></span>
+<span class="codeline" id="line-301"><code>			copy(a.ranges[i+1:], oldRanges[i:])</code></span>
+<span class="codeline" id="line-302"><code>		} else {</code></span>
+<span class="codeline" id="line-303"><code>			a.ranges = a.ranges[:len(a.ranges)+1]</code></span>
+<span class="codeline" id="line-304"><code>			copy(a.ranges[i+1:], a.ranges[i:])</code></span>
+<span class="codeline" id="line-305"><code>		}</code></span>
+<span class="codeline" id="line-306"><code>		a.ranges[i] = r</code></span>
+<span class="codeline" id="line-307"><code>	}</code></span>
+<span class="codeline" id="line-308"><code>	a.totalBytes += r.size()</code></span>
+<span class="codeline" id="line-309"><code>}</code></span>
+<span class="codeline" id="line-310"><code></code></span>
+<span class="codeline" id="line-311"><code>// removeLast removes and returns the highest-addressed contiguous range</code></span>
+<span class="codeline" id="line-312"><code>// of a, or the last nBytes of that range, whichever is smaller. If a is</code></span>
+<span class="codeline" id="line-313"><code>// empty, it returns an empty range.</code></span>
+<span class="codeline" id="line-314"><code>func (a *addrRanges) removeLast(nBytes uintptr) addrRange {</code></span>
+<span class="codeline" id="line-315"><code>	if len(a.ranges) == 0 {</code></span>
+<span class="codeline" id="line-316"><code>		return addrRange{}</code></span>
+<span class="codeline" id="line-317"><code>	}</code></span>
+<span class="codeline" id="line-318"><code>	r := a.ranges[len(a.ranges)-1]</code></span>
+<span class="codeline" id="line-319"><code>	size := r.size()</code></span>
+<span class="codeline" id="line-320"><code>	if size &gt; nBytes {</code></span>
+<span class="codeline" id="line-321"><code>		newEnd := r.limit.sub(nBytes)</code></span>
+<span class="codeline" id="line-322"><code>		a.ranges[len(a.ranges)-1].limit = newEnd</code></span>
+<span class="codeline" id="line-323"><code>		a.totalBytes -= nBytes</code></span>
+<span class="codeline" id="line-324"><code>		return addrRange{newEnd, r.limit}</code></span>
+<span class="codeline" id="line-325"><code>	}</code></span>
+<span class="codeline" id="line-326"><code>	a.ranges = a.ranges[:len(a.ranges)-1]</code></span>
+<span class="codeline" id="line-327"><code>	a.totalBytes -= size</code></span>
+<span class="codeline" id="line-328"><code>	return r</code></span>
+<span class="codeline" id="line-329"><code>}</code></span>
+<span class="codeline" id="line-330"><code></code></span>
+<span class="codeline" id="line-331"><code>// removeGreaterEqual removes the ranges of a which are above addr, and additionally</code></span>
+<span class="codeline" id="line-332"><code>// splits any range containing addr.</code></span>
+<span class="codeline" id="line-333"><code>func (a *addrRanges) removeGreaterEqual(addr uintptr) {</code></span>
+<span class="codeline" id="line-334"><code>	pivot := a.findSucc(addr)</code></span>
+<span class="codeline" id="line-335"><code>	if pivot == 0 {</code></span>
+<span class="codeline" id="line-336"><code>		// addr is before all ranges in a.</code></span>
+<span class="codeline" id="line-337"><code>		a.totalBytes = 0</code></span>
+<span class="codeline" id="line-338"><code>		a.ranges = a.ranges[:0]</code></span>
+<span class="codeline" id="line-339"><code>		return</code></span>
+<span class="codeline" id="line-340"><code>	}</code></span>
+<span class="codeline" id="line-341"><code>	removed := uintptr(0)</code></span>
+<span class="codeline" id="line-342"><code>	for _, r := range a.ranges[pivot:] {</code></span>
+<span class="codeline" id="line-343"><code>		removed += r.size()</code></span>
+<span class="codeline" id="line-344"><code>	}</code></span>
+<span class="codeline" id="line-345"><code>	if r := a.ranges[pivot-1]; r.contains(addr) {</code></span>
+<span class="codeline" id="line-346"><code>		removed += r.size()</code></span>
+<span class="codeline" id="line-347"><code>		r = r.removeGreaterEqual(addr)</code></span>
+<span class="codeline" id="line-348"><code>		if r.size() == 0 {</code></span>
+<span class="codeline" id="line-349"><code>			pivot--</code></span>
+<span class="codeline" id="line-350"><code>		} else {</code></span>
+<span class="codeline" id="line-351"><code>			removed -= r.size()</code></span>
+<span class="codeline" id="line-352"><code>			a.ranges[pivot-1] = r</code></span>
+<span class="codeline" id="line-353"><code>		}</code></span>
+<span class="codeline" id="line-354"><code>	}</code></span>
+<span class="codeline" id="line-355"><code>	a.ranges = a.ranges[:pivot]</code></span>
+<span class="codeline" id="line-356"><code>	a.totalBytes -= removed</code></span>
+<span class="codeline" id="line-357"><code>}</code></span>
+<span class="codeline" id="line-358"><code></code></span>
+<span class="codeline" id="line-359"><code>// cloneInto makes a deep clone of a's state into b, re-using</code></span>
+<span class="codeline" id="line-360"><code>// b's ranges if able.</code></span>
+<span class="codeline" id="line-361"><code>func (a *addrRanges) cloneInto(b *addrRanges) {</code></span>
+<span class="codeline" id="line-362"><code>	if len(a.ranges) &gt; cap(b.ranges) {</code></span>
+<span class="codeline" id="line-363"><code>		// Grow the array.</code></span>
+<span class="codeline" id="line-364"><code>		ranges := (*notInHeapSlice)(unsafe.Pointer(&amp;b.ranges))</code></span>
+<span class="codeline" id="line-365"><code>		ranges.len = 0</code></span>
+<span class="codeline" id="line-366"><code>		ranges.cap = cap(a.ranges)</code></span>
+<span class="codeline" id="line-367"><code>		ranges.array = (*notInHeap)(persistentalloc(unsafe.Sizeof(addrRange{})*uintptr(ranges.cap), sys.PtrSize, b.sysStat))</code></span>
+<span class="codeline" id="line-368"><code>	}</code></span>
+<span class="codeline" id="line-369"><code>	b.ranges = b.ranges[:len(a.ranges)]</code></span>
+<span class="codeline" id="line-370"><code>	b.totalBytes = a.totalBytes</code></span>
+<span class="codeline" id="line-371"><code>	copy(b.ranges, a.ranges)</code></span>
+<span class="codeline" id="line-372"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

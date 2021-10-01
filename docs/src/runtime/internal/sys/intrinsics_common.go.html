@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: intrinsics_common.go in package runtime/internal/sys</title>
+<link href="../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	intrinsics_common.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../pkg/runtime/internal/sys.html">runtime/internal/sys</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2019 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package sys</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Copied from math/bits to avoid dependence.</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>var len8tab = [256]uint8{</code></span>
+<span class="codeline" id="line-10"><code>	0x00, 0x01, 0x02, 0x02, 0x03, 0x03, 0x03, 0x03, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,</code></span>
+<span class="codeline" id="line-11"><code>	0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05,</code></span>
+<span class="codeline" id="line-12"><code>	0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,</code></span>
+<span class="codeline" id="line-13"><code>	0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,</code></span>
+<span class="codeline" id="line-14"><code>	0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,</code></span>
+<span class="codeline" id="line-15"><code>	0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,</code></span>
+<span class="codeline" id="line-16"><code>	0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,</code></span>
+<span class="codeline" id="line-17"><code>	0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,</code></span>
+<span class="codeline" id="line-18"><code>	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,</code></span>
+<span class="codeline" id="line-19"><code>	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,</code></span>
+<span class="codeline" id="line-20"><code>	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,</code></span>
+<span class="codeline" id="line-21"><code>	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,</code></span>
+<span class="codeline" id="line-22"><code>	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,</code></span>
+<span class="codeline" id="line-23"><code>	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,</code></span>
+<span class="codeline" id="line-24"><code>	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,</code></span>
+<span class="codeline" id="line-25"><code>	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,</code></span>
+<span class="codeline" id="line-26"><code>}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>var ntz8tab = [256]uint8{</code></span>
+<span class="codeline" id="line-29"><code>	0x08, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-30"><code>	0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-31"><code>	0x05, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-32"><code>	0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-33"><code>	0x06, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-34"><code>	0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-35"><code>	0x05, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-36"><code>	0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-37"><code>	0x07, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-38"><code>	0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-39"><code>	0x05, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-40"><code>	0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-41"><code>	0x06, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-42"><code>	0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-43"><code>	0x05, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-44"><code>	0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,</code></span>
+<span class="codeline" id="line-45"><code>}</code></span>
+<span class="codeline" id="line-46"><code></code></span>
+<span class="codeline" id="line-47"><code>// len64 returns the minimum number of bits required to represent x; the result is 0 for x == 0.</code></span>
+<span class="codeline" id="line-48"><code>func Len64(x uint64) (n int) {</code></span>
+<span class="codeline" id="line-49"><code>	if x &gt;= 1&lt;&lt;32 {</code></span>
+<span class="codeline" id="line-50"><code>		x &gt;&gt;= 32</code></span>
+<span class="codeline" id="line-51"><code>		n = 32</code></span>
+<span class="codeline" id="line-52"><code>	}</code></span>
+<span class="codeline" id="line-53"><code>	if x &gt;= 1&lt;&lt;16 {</code></span>
+<span class="codeline" id="line-54"><code>		x &gt;&gt;= 16</code></span>
+<span class="codeline" id="line-55"><code>		n += 16</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code>	if x &gt;= 1&lt;&lt;8 {</code></span>
+<span class="codeline" id="line-58"><code>		x &gt;&gt;= 8</code></span>
+<span class="codeline" id="line-59"><code>		n += 8</code></span>
+<span class="codeline" id="line-60"><code>	}</code></span>
+<span class="codeline" id="line-61"><code>	return n + int(len8tab[x])</code></span>
+<span class="codeline" id="line-62"><code>}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>// --- OnesCount ---</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>const m0 = 0x5555555555555555 // 01010101 ...</code></span>
+<span class="codeline" id="line-67"><code>const m1 = 0x3333333333333333 // 00110011 ...</code></span>
+<span class="codeline" id="line-68"><code>const m2 = 0x0f0f0f0f0f0f0f0f // 00001111 ...</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>// OnesCount64 returns the number of one bits ("population count") in x.</code></span>
+<span class="codeline" id="line-71"><code>func OnesCount64(x uint64) int {</code></span>
+<span class="codeline" id="line-72"><code>	// Implementation: Parallel summing of adjacent bits.</code></span>
+<span class="codeline" id="line-73"><code>	// See "Hacker's Delight", Chap. 5: Counting Bits.</code></span>
+<span class="codeline" id="line-74"><code>	// The following pattern shows the general approach:</code></span>
+<span class="codeline" id="line-75"><code>	//</code></span>
+<span class="codeline" id="line-76"><code>	//   x = x&gt;&gt;1&amp;(m0&amp;m) + x&amp;(m0&amp;m)</code></span>
+<span class="codeline" id="line-77"><code>	//   x = x&gt;&gt;2&amp;(m1&amp;m) + x&amp;(m1&amp;m)</code></span>
+<span class="codeline" id="line-78"><code>	//   x = x&gt;&gt;4&amp;(m2&amp;m) + x&amp;(m2&amp;m)</code></span>
+<span class="codeline" id="line-79"><code>	//   x = x&gt;&gt;8&amp;(m3&amp;m) + x&amp;(m3&amp;m)</code></span>
+<span class="codeline" id="line-80"><code>	//   x = x&gt;&gt;16&amp;(m4&amp;m) + x&amp;(m4&amp;m)</code></span>
+<span class="codeline" id="line-81"><code>	//   x = x&gt;&gt;32&amp;(m5&amp;m) + x&amp;(m5&amp;m)</code></span>
+<span class="codeline" id="line-82"><code>	//   return int(x)</code></span>
+<span class="codeline" id="line-83"><code>	//</code></span>
+<span class="codeline" id="line-84"><code>	// Masking (&amp; operations) can be left away when there's no</code></span>
+<span class="codeline" id="line-85"><code>	// danger that a field's sum will carry over into the next</code></span>
+<span class="codeline" id="line-86"><code>	// field: Since the result cannot be &gt; 64, 8 bits is enough</code></span>
+<span class="codeline" id="line-87"><code>	// and we can ignore the masks for the shifts by 8 and up.</code></span>
+<span class="codeline" id="line-88"><code>	// Per "Hacker's Delight", the first line can be simplified</code></span>
+<span class="codeline" id="line-89"><code>	// more, but it saves at best one instruction, so we leave</code></span>
+<span class="codeline" id="line-90"><code>	// it alone for clarity.</code></span>
+<span class="codeline" id="line-91"><code>	const m = 1&lt;&lt;64 - 1</code></span>
+<span class="codeline" id="line-92"><code>	x = x&gt;&gt;1&amp;(m0&amp;m) + x&amp;(m0&amp;m)</code></span>
+<span class="codeline" id="line-93"><code>	x = x&gt;&gt;2&amp;(m1&amp;m) + x&amp;(m1&amp;m)</code></span>
+<span class="codeline" id="line-94"><code>	x = (x&gt;&gt;4 + x) &amp; (m2 &amp; m)</code></span>
+<span class="codeline" id="line-95"><code>	x += x &gt;&gt; 8</code></span>
+<span class="codeline" id="line-96"><code>	x += x &gt;&gt; 16</code></span>
+<span class="codeline" id="line-97"><code>	x += x &gt;&gt; 32</code></span>
+<span class="codeline" id="line-98"><code>	return int(x) &amp; (1&lt;&lt;7 - 1)</code></span>
+<span class="codeline" id="line-99"><code>}</code></span>
+<span class="codeline" id="line-100"><code></code></span>
+<span class="codeline" id="line-101"><code>var deBruijn64tab = [64]byte{</code></span>
+<span class="codeline" id="line-102"><code>	0, 1, 56, 2, 57, 49, 28, 3, 61, 58, 42, 50, 38, 29, 17, 4,</code></span>
+<span class="codeline" id="line-103"><code>	62, 47, 59, 36, 45, 43, 51, 22, 53, 39, 33, 30, 24, 18, 12, 5,</code></span>
+<span class="codeline" id="line-104"><code>	63, 55, 48, 27, 60, 41, 37, 16, 46, 35, 44, 21, 52, 32, 23, 11,</code></span>
+<span class="codeline" id="line-105"><code>	54, 26, 40, 15, 34, 20, 31, 10, 25, 14, 19, 9, 13, 8, 7, 6,</code></span>
+<span class="codeline" id="line-106"><code>}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>const deBruijn64 = 0x03f79d71b4ca8b09</code></span>
+<span class="codeline" id="line-109"><code></code></span>
+<span class="codeline" id="line-110"><code>// TrailingZeros64 returns the number of trailing zero bits in x; the result is 64 for x == 0.</code></span>
+<span class="codeline" id="line-111"><code>func TrailingZeros64(x uint64) int {</code></span>
+<span class="codeline" id="line-112"><code>	if x == 0 {</code></span>
+<span class="codeline" id="line-113"><code>		return 64</code></span>
+<span class="codeline" id="line-114"><code>	}</code></span>
+<span class="codeline" id="line-115"><code>	// If popcount is fast, replace code below with return popcount(^x &amp; (x - 1)).</code></span>
+<span class="codeline" id="line-116"><code>	//</code></span>
+<span class="codeline" id="line-117"><code>	// x &amp; -x leaves only the right-most bit set in the word. Let k be the</code></span>
+<span class="codeline" id="line-118"><code>	// index of that bit. Since only a single bit is set, the value is two</code></span>
+<span class="codeline" id="line-119"><code>	// to the power of k. Multiplying by a power of two is equivalent to</code></span>
+<span class="codeline" id="line-120"><code>	// left shifting, in this case by k bits. The de Bruijn (64 bit) constant</code></span>
+<span class="codeline" id="line-121"><code>	// is such that all six bit, consecutive substrings are distinct.</code></span>
+<span class="codeline" id="line-122"><code>	// Therefore, if we have a left shifted version of this constant we can</code></span>
+<span class="codeline" id="line-123"><code>	// find by how many bits it was shifted by looking at which six bit</code></span>
+<span class="codeline" id="line-124"><code>	// substring ended up at the top of the word.</code></span>
+<span class="codeline" id="line-125"><code>	// (Knuth, volume 4, section 7.3.1)</code></span>
+<span class="codeline" id="line-126"><code>	return int(deBruijn64tab[(x&amp;-x)*deBruijn64&gt;&gt;(64-6)])</code></span>
+<span class="codeline" id="line-127"><code>}</code></span>
+<span class="codeline" id="line-128"><code></code></span>
+<span class="codeline" id="line-129"><code>// LeadingZeros64 returns the number of leading zero bits in x; the result is 64 for x == 0.</code></span>
+<span class="codeline" id="line-130"><code>func LeadingZeros64(x uint64) int { return 64 - Len64(x) }</code></span>
+<span class="codeline" id="line-131"><code></code></span>
+<span class="codeline" id="line-132"><code>// LeadingZeros8 returns the number of leading zero bits in x; the result is 8 for x == 0.</code></span>
+<span class="codeline" id="line-133"><code>func LeadingZeros8(x uint8) int { return 8 - Len8(x) }</code></span>
+<span class="codeline" id="line-134"><code></code></span>
+<span class="codeline" id="line-135"><code>// TrailingZeros8 returns the number of trailing zero bits in x; the result is 8 for x == 0.</code></span>
+<span class="codeline" id="line-136"><code>func TrailingZeros8(x uint8) int {</code></span>
+<span class="codeline" id="line-137"><code>	return int(ntz8tab[x])</code></span>
+<span class="codeline" id="line-138"><code>}</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>// Len8 returns the minimum number of bits required to represent x; the result is 0 for x == 0.</code></span>
+<span class="codeline" id="line-141"><code>func Len8(x uint8) int {</code></span>
+<span class="codeline" id="line-142"><code>	return int(len8tab[x])</code></span>
+<span class="codeline" id="line-143"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

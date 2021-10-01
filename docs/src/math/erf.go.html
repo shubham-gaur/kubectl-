@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: erf.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	erf.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>/*</code></span>
+<span class="codeline" id="line-8"><code>	Floating-point error function and complementary error function.</code></span>
+<span class="codeline" id="line-9"><code>*/</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// The original C code and the long comment below are</code></span>
+<span class="codeline" id="line-12"><code>// from FreeBSD's /usr/src/lib/msun/src/s_erf.c and</code></span>
+<span class="codeline" id="line-13"><code>// came with this notice. The go code is a simplified</code></span>
+<span class="codeline" id="line-14"><code>// version of the original C.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>// ====================================================</code></span>
+<span class="codeline" id="line-17"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-20"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-21"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-22"><code>// is preserved.</code></span>
+<span class="codeline" id="line-23"><code>// ====================================================</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// double erf(double x)</code></span>
+<span class="codeline" id="line-27"><code>// double erfc(double x)</code></span>
+<span class="codeline" id="line-28"><code>//                           x</code></span>
+<span class="codeline" id="line-29"><code>//                    2      |\</code></span>
+<span class="codeline" id="line-30"><code>//     erf(x)  =  ---------  | exp(-t*t)dt</code></span>
+<span class="codeline" id="line-31"><code>//                 sqrt(pi) \|</code></span>
+<span class="codeline" id="line-32"><code>//                           0</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>//     erfc(x) =  1-erf(x)</code></span>
+<span class="codeline" id="line-35"><code>//  Note that</code></span>
+<span class="codeline" id="line-36"><code>//              erf(-x) = -erf(x)</code></span>
+<span class="codeline" id="line-37"><code>//              erfc(-x) = 2 - erfc(x)</code></span>
+<span class="codeline" id="line-38"><code>//</code></span>
+<span class="codeline" id="line-39"><code>// Method:</code></span>
+<span class="codeline" id="line-40"><code>//      1. For |x| in [0, 0.84375]</code></span>
+<span class="codeline" id="line-41"><code>//          erf(x)  = x + x*R(x**2)</code></span>
+<span class="codeline" id="line-42"><code>//          erfc(x) = 1 - erf(x)           if x in [-.84375,0.25]</code></span>
+<span class="codeline" id="line-43"><code>//                  = 0.5 + ((0.5-x)-x*R)  if x in [0.25,0.84375]</code></span>
+<span class="codeline" id="line-44"><code>//         where R = P/Q where P is an odd poly of degree 8 and</code></span>
+<span class="codeline" id="line-45"><code>//         Q is an odd poly of degree 10.</code></span>
+<span class="codeline" id="line-46"><code>//                                               -57.90</code></span>
+<span class="codeline" id="line-47"><code>//                      | R - (erf(x)-x)/x | &lt;= 2</code></span>
+<span class="codeline" id="line-48"><code>//</code></span>
+<span class="codeline" id="line-49"><code>//</code></span>
+<span class="codeline" id="line-50"><code>//         Remark. The formula is derived by noting</code></span>
+<span class="codeline" id="line-51"><code>//          erf(x) = (2/sqrt(pi))*(x - x**3/3 + x**5/10 - x**7/42 + ....)</code></span>
+<span class="codeline" id="line-52"><code>//         and that</code></span>
+<span class="codeline" id="line-53"><code>//          2/sqrt(pi) = 1.128379167095512573896158903121545171688</code></span>
+<span class="codeline" id="line-54"><code>//         is close to one. The interval is chosen because the fix</code></span>
+<span class="codeline" id="line-55"><code>//         point of erf(x) is near 0.6174 (i.e., erf(x)=x when x is</code></span>
+<span class="codeline" id="line-56"><code>//         near 0.6174), and by some experiment, 0.84375 is chosen to</code></span>
+<span class="codeline" id="line-57"><code>//         guarantee the error is less than one ulp for erf.</code></span>
+<span class="codeline" id="line-58"><code>//</code></span>
+<span class="codeline" id="line-59"><code>//      2. For |x| in [0.84375,1.25], let s = |x| - 1, and</code></span>
+<span class="codeline" id="line-60"><code>//         c = 0.84506291151 rounded to single (24 bits)</code></span>
+<span class="codeline" id="line-61"><code>//              erf(x)  = sign(x) * (c  + P1(s)/Q1(s))</code></span>
+<span class="codeline" id="line-62"><code>//              erfc(x) = (1-c)  - P1(s)/Q1(s) if x &gt; 0</code></span>
+<span class="codeline" id="line-63"><code>//                        1+(c+P1(s)/Q1(s))    if x &lt; 0</code></span>
+<span class="codeline" id="line-64"><code>//              |P1/Q1 - (erf(|x|)-c)| &lt;= 2**-59.06</code></span>
+<span class="codeline" id="line-65"><code>//         Remark: here we use the taylor series expansion at x=1.</code></span>
+<span class="codeline" id="line-66"><code>//              erf(1+s) = erf(1) + s*Poly(s)</code></span>
+<span class="codeline" id="line-67"><code>//                       = 0.845.. + P1(s)/Q1(s)</code></span>
+<span class="codeline" id="line-68"><code>//         That is, we use rational approximation to approximate</code></span>
+<span class="codeline" id="line-69"><code>//                      erf(1+s) - (c = (single)0.84506291151)</code></span>
+<span class="codeline" id="line-70"><code>//         Note that |P1/Q1|&lt; 0.078 for x in [0.84375,1.25]</code></span>
+<span class="codeline" id="line-71"><code>//         where</code></span>
+<span class="codeline" id="line-72"><code>//              P1(s) = degree 6 poly in s</code></span>
+<span class="codeline" id="line-73"><code>//              Q1(s) = degree 6 poly in s</code></span>
+<span class="codeline" id="line-74"><code>//</code></span>
+<span class="codeline" id="line-75"><code>//      3. For x in [1.25,1/0.35(~2.857143)],</code></span>
+<span class="codeline" id="line-76"><code>//              erfc(x) = (1/x)*exp(-x*x-0.5625+R1/S1)</code></span>
+<span class="codeline" id="line-77"><code>//              erf(x)  = 1 - erfc(x)</code></span>
+<span class="codeline" id="line-78"><code>//         where</code></span>
+<span class="codeline" id="line-79"><code>//              R1(z) = degree 7 poly in z, (z=1/x**2)</code></span>
+<span class="codeline" id="line-80"><code>//              S1(z) = degree 8 poly in z</code></span>
+<span class="codeline" id="line-81"><code>//</code></span>
+<span class="codeline" id="line-82"><code>//      4. For x in [1/0.35,28]</code></span>
+<span class="codeline" id="line-83"><code>//              erfc(x) = (1/x)*exp(-x*x-0.5625+R2/S2) if x &gt; 0</code></span>
+<span class="codeline" id="line-84"><code>//                      = 2.0 - (1/x)*exp(-x*x-0.5625+R2/S2) if -6&lt;x&lt;0</code></span>
+<span class="codeline" id="line-85"><code>//                      = 2.0 - tiny            (if x &lt;= -6)</code></span>
+<span class="codeline" id="line-86"><code>//              erf(x)  = sign(x)*(1.0 - erfc(x)) if x &lt; 6, else</code></span>
+<span class="codeline" id="line-87"><code>//              erf(x)  = sign(x)*(1.0 - tiny)</code></span>
+<span class="codeline" id="line-88"><code>//         where</code></span>
+<span class="codeline" id="line-89"><code>//              R2(z) = degree 6 poly in z, (z=1/x**2)</code></span>
+<span class="codeline" id="line-90"><code>//              S2(z) = degree 7 poly in z</code></span>
+<span class="codeline" id="line-91"><code>//</code></span>
+<span class="codeline" id="line-92"><code>//      Note1:</code></span>
+<span class="codeline" id="line-93"><code>//         To compute exp(-x*x-0.5625+R/S), let s be a single</code></span>
+<span class="codeline" id="line-94"><code>//         precision number and s := x; then</code></span>
+<span class="codeline" id="line-95"><code>//              -x*x = -s*s + (s-x)*(s+x)</code></span>
+<span class="codeline" id="line-96"><code>//              exp(-x*x-0.5626+R/S) =</code></span>
+<span class="codeline" id="line-97"><code>//                      exp(-s*s-0.5625)*exp((s-x)*(s+x)+R/S);</code></span>
+<span class="codeline" id="line-98"><code>//      Note2:</code></span>
+<span class="codeline" id="line-99"><code>//         Here 4 and 5 make use of the asymptotic series</code></span>
+<span class="codeline" id="line-100"><code>//                        exp(-x*x)</code></span>
+<span class="codeline" id="line-101"><code>//              erfc(x) ~ ---------- * ( 1 + Poly(1/x**2) )</code></span>
+<span class="codeline" id="line-102"><code>//                        x*sqrt(pi)</code></span>
+<span class="codeline" id="line-103"><code>//         We use rational approximation to approximate</code></span>
+<span class="codeline" id="line-104"><code>//              g(s)=f(1/x**2) = log(erfc(x)*x) - x*x + 0.5625</code></span>
+<span class="codeline" id="line-105"><code>//         Here is the error bound for R1/S1 and R2/S2</code></span>
+<span class="codeline" id="line-106"><code>//              |R1/S1 - f(x)|  &lt; 2**(-62.57)</code></span>
+<span class="codeline" id="line-107"><code>//              |R2/S2 - f(x)|  &lt; 2**(-61.52)</code></span>
+<span class="codeline" id="line-108"><code>//</code></span>
+<span class="codeline" id="line-109"><code>//      5. For inf &gt; x &gt;= 28</code></span>
+<span class="codeline" id="line-110"><code>//              erf(x)  = sign(x) *(1 - tiny)  (raise inexact)</code></span>
+<span class="codeline" id="line-111"><code>//              erfc(x) = tiny*tiny (raise underflow) if x &gt; 0</code></span>
+<span class="codeline" id="line-112"><code>//                      = 2 - tiny if x&lt;0</code></span>
+<span class="codeline" id="line-113"><code>//</code></span>
+<span class="codeline" id="line-114"><code>//      7. Special case:</code></span>
+<span class="codeline" id="line-115"><code>//              erf(0)  = 0, erf(inf)  = 1, erf(-inf) = -1,</code></span>
+<span class="codeline" id="line-116"><code>//              erfc(0) = 1, erfc(inf) = 0, erfc(-inf) = 2,</code></span>
+<span class="codeline" id="line-117"><code>//              erfc/erf(NaN) is NaN</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>const (</code></span>
+<span class="codeline" id="line-120"><code>	erx = 8.45062911510467529297e-01 // 0x3FEB0AC160000000</code></span>
+<span class="codeline" id="line-121"><code>	// Coefficients for approximation to  erf in [0, 0.84375]</code></span>
+<span class="codeline" id="line-122"><code>	efx  = 1.28379167095512586316e-01  // 0x3FC06EBA8214DB69</code></span>
+<span class="codeline" id="line-123"><code>	efx8 = 1.02703333676410069053e+00  // 0x3FF06EBA8214DB69</code></span>
+<span class="codeline" id="line-124"><code>	pp0  = 1.28379167095512558561e-01  // 0x3FC06EBA8214DB68</code></span>
+<span class="codeline" id="line-125"><code>	pp1  = -3.25042107247001499370e-01 // 0xBFD4CD7D691CB913</code></span>
+<span class="codeline" id="line-126"><code>	pp2  = -2.84817495755985104766e-02 // 0xBF9D2A51DBD7194F</code></span>
+<span class="codeline" id="line-127"><code>	pp3  = -5.77027029648944159157e-03 // 0xBF77A291236668E4</code></span>
+<span class="codeline" id="line-128"><code>	pp4  = -2.37630166566501626084e-05 // 0xBEF8EAD6120016AC</code></span>
+<span class="codeline" id="line-129"><code>	qq1  = 3.97917223959155352819e-01  // 0x3FD97779CDDADC09</code></span>
+<span class="codeline" id="line-130"><code>	qq2  = 6.50222499887672944485e-02  // 0x3FB0A54C5536CEBA</code></span>
+<span class="codeline" id="line-131"><code>	qq3  = 5.08130628187576562776e-03  // 0x3F74D022C4D36B0F</code></span>
+<span class="codeline" id="line-132"><code>	qq4  = 1.32494738004321644526e-04  // 0x3F215DC9221C1A10</code></span>
+<span class="codeline" id="line-133"><code>	qq5  = -3.96022827877536812320e-06 // 0xBED09C4342A26120</code></span>
+<span class="codeline" id="line-134"><code>	// Coefficients for approximation to  erf  in [0.84375, 1.25]</code></span>
+<span class="codeline" id="line-135"><code>	pa0 = -2.36211856075265944077e-03 // 0xBF6359B8BEF77538</code></span>
+<span class="codeline" id="line-136"><code>	pa1 = 4.14856118683748331666e-01  // 0x3FDA8D00AD92B34D</code></span>
+<span class="codeline" id="line-137"><code>	pa2 = -3.72207876035701323847e-01 // 0xBFD7D240FBB8C3F1</code></span>
+<span class="codeline" id="line-138"><code>	pa3 = 3.18346619901161753674e-01  // 0x3FD45FCA805120E4</code></span>
+<span class="codeline" id="line-139"><code>	pa4 = -1.10894694282396677476e-01 // 0xBFBC63983D3E28EC</code></span>
+<span class="codeline" id="line-140"><code>	pa5 = 3.54783043256182359371e-02  // 0x3FA22A36599795EB</code></span>
+<span class="codeline" id="line-141"><code>	pa6 = -2.16637559486879084300e-03 // 0xBF61BF380A96073F</code></span>
+<span class="codeline" id="line-142"><code>	qa1 = 1.06420880400844228286e-01  // 0x3FBB3E6618EEE323</code></span>
+<span class="codeline" id="line-143"><code>	qa2 = 5.40397917702171048937e-01  // 0x3FE14AF092EB6F33</code></span>
+<span class="codeline" id="line-144"><code>	qa3 = 7.18286544141962662868e-02  // 0x3FB2635CD99FE9A7</code></span>
+<span class="codeline" id="line-145"><code>	qa4 = 1.26171219808761642112e-01  // 0x3FC02660E763351F</code></span>
+<span class="codeline" id="line-146"><code>	qa5 = 1.36370839120290507362e-02  // 0x3F8BEDC26B51DD1C</code></span>
+<span class="codeline" id="line-147"><code>	qa6 = 1.19844998467991074170e-02  // 0x3F888B545735151D</code></span>
+<span class="codeline" id="line-148"><code>	// Coefficients for approximation to  erfc in [1.25, 1/0.35]</code></span>
+<span class="codeline" id="line-149"><code>	ra0 = -9.86494403484714822705e-03 // 0xBF843412600D6435</code></span>
+<span class="codeline" id="line-150"><code>	ra1 = -6.93858572707181764372e-01 // 0xBFE63416E4BA7360</code></span>
+<span class="codeline" id="line-151"><code>	ra2 = -1.05586262253232909814e+01 // 0xC0251E0441B0E726</code></span>
+<span class="codeline" id="line-152"><code>	ra3 = -6.23753324503260060396e+01 // 0xC04F300AE4CBA38D</code></span>
+<span class="codeline" id="line-153"><code>	ra4 = -1.62396669462573470355e+02 // 0xC0644CB184282266</code></span>
+<span class="codeline" id="line-154"><code>	ra5 = -1.84605092906711035994e+02 // 0xC067135CEBCCABB2</code></span>
+<span class="codeline" id="line-155"><code>	ra6 = -8.12874355063065934246e+01 // 0xC054526557E4D2F2</code></span>
+<span class="codeline" id="line-156"><code>	ra7 = -9.81432934416914548592e+00 // 0xC023A0EFC69AC25C</code></span>
+<span class="codeline" id="line-157"><code>	sa1 = 1.96512716674392571292e+01  // 0x4033A6B9BD707687</code></span>
+<span class="codeline" id="line-158"><code>	sa2 = 1.37657754143519042600e+02  // 0x4061350C526AE721</code></span>
+<span class="codeline" id="line-159"><code>	sa3 = 4.34565877475229228821e+02  // 0x407B290DD58A1A71</code></span>
+<span class="codeline" id="line-160"><code>	sa4 = 6.45387271733267880336e+02  // 0x40842B1921EC2868</code></span>
+<span class="codeline" id="line-161"><code>	sa5 = 4.29008140027567833386e+02  // 0x407AD02157700314</code></span>
+<span class="codeline" id="line-162"><code>	sa6 = 1.08635005541779435134e+02  // 0x405B28A3EE48AE2C</code></span>
+<span class="codeline" id="line-163"><code>	sa7 = 6.57024977031928170135e+00  // 0x401A47EF8E484A93</code></span>
+<span class="codeline" id="line-164"><code>	sa8 = -6.04244152148580987438e-02 // 0xBFAEEFF2EE749A62</code></span>
+<span class="codeline" id="line-165"><code>	// Coefficients for approximation to  erfc in [1/.35, 28]</code></span>
+<span class="codeline" id="line-166"><code>	rb0 = -9.86494292470009928597e-03 // 0xBF84341239E86F4A</code></span>
+<span class="codeline" id="line-167"><code>	rb1 = -7.99283237680523006574e-01 // 0xBFE993BA70C285DE</code></span>
+<span class="codeline" id="line-168"><code>	rb2 = -1.77579549177547519889e+01 // 0xC031C209555F995A</code></span>
+<span class="codeline" id="line-169"><code>	rb3 = -1.60636384855821916062e+02 // 0xC064145D43C5ED98</code></span>
+<span class="codeline" id="line-170"><code>	rb4 = -6.37566443368389627722e+02 // 0xC083EC881375F228</code></span>
+<span class="codeline" id="line-171"><code>	rb5 = -1.02509513161107724954e+03 // 0xC09004616A2E5992</code></span>
+<span class="codeline" id="line-172"><code>	rb6 = -4.83519191608651397019e+02 // 0xC07E384E9BDC383F</code></span>
+<span class="codeline" id="line-173"><code>	sb1 = 3.03380607434824582924e+01  // 0x403E568B261D5190</code></span>
+<span class="codeline" id="line-174"><code>	sb2 = 3.25792512996573918826e+02  // 0x40745CAE221B9F0A</code></span>
+<span class="codeline" id="line-175"><code>	sb3 = 1.53672958608443695994e+03  // 0x409802EB189D5118</code></span>
+<span class="codeline" id="line-176"><code>	sb4 = 3.19985821950859553908e+03  // 0x40A8FFB7688C246A</code></span>
+<span class="codeline" id="line-177"><code>	sb5 = 2.55305040643316442583e+03  // 0x40A3F219CEDF3BE6</code></span>
+<span class="codeline" id="line-178"><code>	sb6 = 4.74528541206955367215e+02  // 0x407DA874E79FE763</code></span>
+<span class="codeline" id="line-179"><code>	sb7 = -2.24409524465858183362e+01 // 0xC03670E242712D62</code></span>
+<span class="codeline" id="line-180"><code>)</code></span>
+<span class="codeline" id="line-181"><code></code></span>
+<span class="codeline" id="line-182"><code>// Erf returns the error function of x.</code></span>
+<span class="codeline" id="line-183"><code>//</code></span>
+<span class="codeline" id="line-184"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-185"><code>//	Erf(+Inf) = 1</code></span>
+<span class="codeline" id="line-186"><code>//	Erf(-Inf) = -1</code></span>
+<span class="codeline" id="line-187"><code>//	Erf(NaN) = NaN</code></span>
+<span class="codeline" id="line-188"><code>func Erf(x float64) float64</code></span>
+<span class="codeline" id="line-189"><code></code></span>
+<span class="codeline" id="line-190"><code>func erf(x float64) float64 {</code></span>
+<span class="codeline" id="line-191"><code>	const (</code></span>
+<span class="codeline" id="line-192"><code>		VeryTiny = 2.848094538889218e-306 // 0x0080000000000000</code></span>
+<span class="codeline" id="line-193"><code>		Small    = 1.0 / (1 &lt;&lt; 28)        // 2**-28</code></span>
+<span class="codeline" id="line-194"><code>	)</code></span>
+<span class="codeline" id="line-195"><code>	// special cases</code></span>
+<span class="codeline" id="line-196"><code>	switch {</code></span>
+<span class="codeline" id="line-197"><code>	case IsNaN(x):</code></span>
+<span class="codeline" id="line-198"><code>		return NaN()</code></span>
+<span class="codeline" id="line-199"><code>	case IsInf(x, 1):</code></span>
+<span class="codeline" id="line-200"><code>		return 1</code></span>
+<span class="codeline" id="line-201"><code>	case IsInf(x, -1):</code></span>
+<span class="codeline" id="line-202"><code>		return -1</code></span>
+<span class="codeline" id="line-203"><code>	}</code></span>
+<span class="codeline" id="line-204"><code>	sign := false</code></span>
+<span class="codeline" id="line-205"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-206"><code>		x = -x</code></span>
+<span class="codeline" id="line-207"><code>		sign = true</code></span>
+<span class="codeline" id="line-208"><code>	}</code></span>
+<span class="codeline" id="line-209"><code>	if x &lt; 0.84375 { // |x| &lt; 0.84375</code></span>
+<span class="codeline" id="line-210"><code>		var temp float64</code></span>
+<span class="codeline" id="line-211"><code>		if x &lt; Small { // |x| &lt; 2**-28</code></span>
+<span class="codeline" id="line-212"><code>			if x &lt; VeryTiny {</code></span>
+<span class="codeline" id="line-213"><code>				temp = 0.125 * (8.0*x + efx8*x) // avoid underflow</code></span>
+<span class="codeline" id="line-214"><code>			} else {</code></span>
+<span class="codeline" id="line-215"><code>				temp = x + efx*x</code></span>
+<span class="codeline" id="line-216"><code>			}</code></span>
+<span class="codeline" id="line-217"><code>		} else {</code></span>
+<span class="codeline" id="line-218"><code>			z := x * x</code></span>
+<span class="codeline" id="line-219"><code>			r := pp0 + z*(pp1+z*(pp2+z*(pp3+z*pp4)))</code></span>
+<span class="codeline" id="line-220"><code>			s := 1 + z*(qq1+z*(qq2+z*(qq3+z*(qq4+z*qq5))))</code></span>
+<span class="codeline" id="line-221"><code>			y := r / s</code></span>
+<span class="codeline" id="line-222"><code>			temp = x + x*y</code></span>
+<span class="codeline" id="line-223"><code>		}</code></span>
+<span class="codeline" id="line-224"><code>		if sign {</code></span>
+<span class="codeline" id="line-225"><code>			return -temp</code></span>
+<span class="codeline" id="line-226"><code>		}</code></span>
+<span class="codeline" id="line-227"><code>		return temp</code></span>
+<span class="codeline" id="line-228"><code>	}</code></span>
+<span class="codeline" id="line-229"><code>	if x &lt; 1.25 { // 0.84375 &lt;= |x| &lt; 1.25</code></span>
+<span class="codeline" id="line-230"><code>		s := x - 1</code></span>
+<span class="codeline" id="line-231"><code>		P := pa0 + s*(pa1+s*(pa2+s*(pa3+s*(pa4+s*(pa5+s*pa6)))))</code></span>
+<span class="codeline" id="line-232"><code>		Q := 1 + s*(qa1+s*(qa2+s*(qa3+s*(qa4+s*(qa5+s*qa6)))))</code></span>
+<span class="codeline" id="line-233"><code>		if sign {</code></span>
+<span class="codeline" id="line-234"><code>			return -erx - P/Q</code></span>
+<span class="codeline" id="line-235"><code>		}</code></span>
+<span class="codeline" id="line-236"><code>		return erx + P/Q</code></span>
+<span class="codeline" id="line-237"><code>	}</code></span>
+<span class="codeline" id="line-238"><code>	if x &gt;= 6 { // inf &gt; |x| &gt;= 6</code></span>
+<span class="codeline" id="line-239"><code>		if sign {</code></span>
+<span class="codeline" id="line-240"><code>			return -1</code></span>
+<span class="codeline" id="line-241"><code>		}</code></span>
+<span class="codeline" id="line-242"><code>		return 1</code></span>
+<span class="codeline" id="line-243"><code>	}</code></span>
+<span class="codeline" id="line-244"><code>	s := 1 / (x * x)</code></span>
+<span class="codeline" id="line-245"><code>	var R, S float64</code></span>
+<span class="codeline" id="line-246"><code>	if x &lt; 1/0.35 { // |x| &lt; 1 / 0.35  ~ 2.857143</code></span>
+<span class="codeline" id="line-247"><code>		R = ra0 + s*(ra1+s*(ra2+s*(ra3+s*(ra4+s*(ra5+s*(ra6+s*ra7))))))</code></span>
+<span class="codeline" id="line-248"><code>		S = 1 + s*(sa1+s*(sa2+s*(sa3+s*(sa4+s*(sa5+s*(sa6+s*(sa7+s*sa8)))))))</code></span>
+<span class="codeline" id="line-249"><code>	} else { // |x| &gt;= 1 / 0.35  ~ 2.857143</code></span>
+<span class="codeline" id="line-250"><code>		R = rb0 + s*(rb1+s*(rb2+s*(rb3+s*(rb4+s*(rb5+s*rb6)))))</code></span>
+<span class="codeline" id="line-251"><code>		S = 1 + s*(sb1+s*(sb2+s*(sb3+s*(sb4+s*(sb5+s*(sb6+s*sb7))))))</code></span>
+<span class="codeline" id="line-252"><code>	}</code></span>
+<span class="codeline" id="line-253"><code>	z := Float64frombits(Float64bits(x) &amp; 0xffffffff00000000) // pseudo-single (20-bit) precision x</code></span>
+<span class="codeline" id="line-254"><code>	r := Exp(-z*z-0.5625) * Exp((z-x)*(z+x)+R/S)</code></span>
+<span class="codeline" id="line-255"><code>	if sign {</code></span>
+<span class="codeline" id="line-256"><code>		return r/x - 1</code></span>
+<span class="codeline" id="line-257"><code>	}</code></span>
+<span class="codeline" id="line-258"><code>	return 1 - r/x</code></span>
+<span class="codeline" id="line-259"><code>}</code></span>
+<span class="codeline" id="line-260"><code></code></span>
+<span class="codeline" id="line-261"><code>// Erfc returns the complementary error function of x.</code></span>
+<span class="codeline" id="line-262"><code>//</code></span>
+<span class="codeline" id="line-263"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-264"><code>//	Erfc(+Inf) = 0</code></span>
+<span class="codeline" id="line-265"><code>//	Erfc(-Inf) = 2</code></span>
+<span class="codeline" id="line-266"><code>//	Erfc(NaN) = NaN</code></span>
+<span class="codeline" id="line-267"><code>func Erfc(x float64) float64</code></span>
+<span class="codeline" id="line-268"><code></code></span>
+<span class="codeline" id="line-269"><code>func erfc(x float64) float64 {</code></span>
+<span class="codeline" id="line-270"><code>	const Tiny = 1.0 / (1 &lt;&lt; 56) // 2**-56</code></span>
+<span class="codeline" id="line-271"><code>	// special cases</code></span>
+<span class="codeline" id="line-272"><code>	switch {</code></span>
+<span class="codeline" id="line-273"><code>	case IsNaN(x):</code></span>
+<span class="codeline" id="line-274"><code>		return NaN()</code></span>
+<span class="codeline" id="line-275"><code>	case IsInf(x, 1):</code></span>
+<span class="codeline" id="line-276"><code>		return 0</code></span>
+<span class="codeline" id="line-277"><code>	case IsInf(x, -1):</code></span>
+<span class="codeline" id="line-278"><code>		return 2</code></span>
+<span class="codeline" id="line-279"><code>	}</code></span>
+<span class="codeline" id="line-280"><code>	sign := false</code></span>
+<span class="codeline" id="line-281"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-282"><code>		x = -x</code></span>
+<span class="codeline" id="line-283"><code>		sign = true</code></span>
+<span class="codeline" id="line-284"><code>	}</code></span>
+<span class="codeline" id="line-285"><code>	if x &lt; 0.84375 { // |x| &lt; 0.84375</code></span>
+<span class="codeline" id="line-286"><code>		var temp float64</code></span>
+<span class="codeline" id="line-287"><code>		if x &lt; Tiny { // |x| &lt; 2**-56</code></span>
+<span class="codeline" id="line-288"><code>			temp = x</code></span>
+<span class="codeline" id="line-289"><code>		} else {</code></span>
+<span class="codeline" id="line-290"><code>			z := x * x</code></span>
+<span class="codeline" id="line-291"><code>			r := pp0 + z*(pp1+z*(pp2+z*(pp3+z*pp4)))</code></span>
+<span class="codeline" id="line-292"><code>			s := 1 + z*(qq1+z*(qq2+z*(qq3+z*(qq4+z*qq5))))</code></span>
+<span class="codeline" id="line-293"><code>			y := r / s</code></span>
+<span class="codeline" id="line-294"><code>			if x &lt; 0.25 { // |x| &lt; 1/4</code></span>
+<span class="codeline" id="line-295"><code>				temp = x + x*y</code></span>
+<span class="codeline" id="line-296"><code>			} else {</code></span>
+<span class="codeline" id="line-297"><code>				temp = 0.5 + (x*y + (x - 0.5))</code></span>
+<span class="codeline" id="line-298"><code>			}</code></span>
+<span class="codeline" id="line-299"><code>		}</code></span>
+<span class="codeline" id="line-300"><code>		if sign {</code></span>
+<span class="codeline" id="line-301"><code>			return 1 + temp</code></span>
+<span class="codeline" id="line-302"><code>		}</code></span>
+<span class="codeline" id="line-303"><code>		return 1 - temp</code></span>
+<span class="codeline" id="line-304"><code>	}</code></span>
+<span class="codeline" id="line-305"><code>	if x &lt; 1.25 { // 0.84375 &lt;= |x| &lt; 1.25</code></span>
+<span class="codeline" id="line-306"><code>		s := x - 1</code></span>
+<span class="codeline" id="line-307"><code>		P := pa0 + s*(pa1+s*(pa2+s*(pa3+s*(pa4+s*(pa5+s*pa6)))))</code></span>
+<span class="codeline" id="line-308"><code>		Q := 1 + s*(qa1+s*(qa2+s*(qa3+s*(qa4+s*(qa5+s*qa6)))))</code></span>
+<span class="codeline" id="line-309"><code>		if sign {</code></span>
+<span class="codeline" id="line-310"><code>			return 1 + erx + P/Q</code></span>
+<span class="codeline" id="line-311"><code>		}</code></span>
+<span class="codeline" id="line-312"><code>		return 1 - erx - P/Q</code></span>
+<span class="codeline" id="line-313"><code></code></span>
+<span class="codeline" id="line-314"><code>	}</code></span>
+<span class="codeline" id="line-315"><code>	if x &lt; 28 { // |x| &lt; 28</code></span>
+<span class="codeline" id="line-316"><code>		s := 1 / (x * x)</code></span>
+<span class="codeline" id="line-317"><code>		var R, S float64</code></span>
+<span class="codeline" id="line-318"><code>		if x &lt; 1/0.35 { // |x| &lt; 1 / 0.35 ~ 2.857143</code></span>
+<span class="codeline" id="line-319"><code>			R = ra0 + s*(ra1+s*(ra2+s*(ra3+s*(ra4+s*(ra5+s*(ra6+s*ra7))))))</code></span>
+<span class="codeline" id="line-320"><code>			S = 1 + s*(sa1+s*(sa2+s*(sa3+s*(sa4+s*(sa5+s*(sa6+s*(sa7+s*sa8)))))))</code></span>
+<span class="codeline" id="line-321"><code>		} else { // |x| &gt;= 1 / 0.35 ~ 2.857143</code></span>
+<span class="codeline" id="line-322"><code>			if sign &amp;&amp; x &gt; 6 {</code></span>
+<span class="codeline" id="line-323"><code>				return 2 // x &lt; -6</code></span>
+<span class="codeline" id="line-324"><code>			}</code></span>
+<span class="codeline" id="line-325"><code>			R = rb0 + s*(rb1+s*(rb2+s*(rb3+s*(rb4+s*(rb5+s*rb6)))))</code></span>
+<span class="codeline" id="line-326"><code>			S = 1 + s*(sb1+s*(sb2+s*(sb3+s*(sb4+s*(sb5+s*(sb6+s*sb7))))))</code></span>
+<span class="codeline" id="line-327"><code>		}</code></span>
+<span class="codeline" id="line-328"><code>		z := Float64frombits(Float64bits(x) &amp; 0xffffffff00000000) // pseudo-single (20-bit) precision x</code></span>
+<span class="codeline" id="line-329"><code>		r := Exp(-z*z-0.5625) * Exp((z-x)*(z+x)+R/S)</code></span>
+<span class="codeline" id="line-330"><code>		if sign {</code></span>
+<span class="codeline" id="line-331"><code>			return 2 - r/x</code></span>
+<span class="codeline" id="line-332"><code>		}</code></span>
+<span class="codeline" id="line-333"><code>		return r / x</code></span>
+<span class="codeline" id="line-334"><code>	}</code></span>
+<span class="codeline" id="line-335"><code>	if sign {</code></span>
+<span class="codeline" id="line-336"><code>		return 2</code></span>
+<span class="codeline" id="line-337"><code>	}</code></span>
+<span class="codeline" id="line-338"><code>	return 0</code></span>
+<span class="codeline" id="line-339"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

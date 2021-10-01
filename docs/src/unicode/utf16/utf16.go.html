@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: utf16.go in package unicode/utf16</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	utf16.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/unicode/utf16.html">unicode/utf16</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package utf16 implements encoding and decoding of UTF-16 sequences.</code></span></div><span class="codeline" id="line-6"><code>package utf16</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>// The conditions replacementChar==unicode.ReplacementChar and</code></span>
+<span class="codeline" id="line-9"><code>// maxRune==unicode.MaxRune are verified in the tests.</code></span>
+<span class="codeline" id="line-10"><code>// Defining them locally avoids this package depending on package unicode.</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>const (</code></span>
+<span class="codeline" id="line-13"><code>	replacementChar = '\uFFFD'     // Unicode replacement character</code></span>
+<span class="codeline" id="line-14"><code>	maxRune         = '\U0010FFFF' // Maximum valid Unicode code point.</code></span>
+<span class="codeline" id="line-15"><code>)</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>const (</code></span>
+<span class="codeline" id="line-18"><code>	// 0xd800-0xdc00 encodes the high 10 bits of a pair.</code></span>
+<span class="codeline" id="line-19"><code>	// 0xdc00-0xe000 encodes the low 10 bits of a pair.</code></span>
+<span class="codeline" id="line-20"><code>	// the value is those 20 bits plus 0x10000.</code></span>
+<span class="codeline" id="line-21"><code>	surr1 = 0xd800</code></span>
+<span class="codeline" id="line-22"><code>	surr2 = 0xdc00</code></span>
+<span class="codeline" id="line-23"><code>	surr3 = 0xe000</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>	surrSelf = 0x10000</code></span>
+<span class="codeline" id="line-26"><code>)</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>// IsSurrogate reports whether the specified Unicode code point</code></span>
+<span class="codeline" id="line-29"><code>// can appear in a surrogate pair.</code></span>
+<span class="codeline" id="line-30"><code>func IsSurrogate(r rune) bool {</code></span>
+<span class="codeline" id="line-31"><code>	return surr1 &lt;= r &amp;&amp; r &lt; surr3</code></span>
+<span class="codeline" id="line-32"><code>}</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>// DecodeRune returns the UTF-16 decoding of a surrogate pair.</code></span>
+<span class="codeline" id="line-35"><code>// If the pair is not a valid UTF-16 surrogate pair, DecodeRune returns</code></span>
+<span class="codeline" id="line-36"><code>// the Unicode replacement code point U+FFFD.</code></span>
+<span class="codeline" id="line-37"><code>func DecodeRune(r1, r2 rune) rune {</code></span>
+<span class="codeline" id="line-38"><code>	if surr1 &lt;= r1 &amp;&amp; r1 &lt; surr2 &amp;&amp; surr2 &lt;= r2 &amp;&amp; r2 &lt; surr3 {</code></span>
+<span class="codeline" id="line-39"><code>		return (r1-surr1)&lt;&lt;10 | (r2 - surr2) + surrSelf</code></span>
+<span class="codeline" id="line-40"><code>	}</code></span>
+<span class="codeline" id="line-41"><code>	return replacementChar</code></span>
+<span class="codeline" id="line-42"><code>}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>// EncodeRune returns the UTF-16 surrogate pair r1, r2 for the given rune.</code></span>
+<span class="codeline" id="line-45"><code>// If the rune is not a valid Unicode code point or does not need encoding,</code></span>
+<span class="codeline" id="line-46"><code>// EncodeRune returns U+FFFD, U+FFFD.</code></span>
+<span class="codeline" id="line-47"><code>func EncodeRune(r rune) (r1, r2 rune) {</code></span>
+<span class="codeline" id="line-48"><code>	if r &lt; surrSelf || r &gt; maxRune {</code></span>
+<span class="codeline" id="line-49"><code>		return replacementChar, replacementChar</code></span>
+<span class="codeline" id="line-50"><code>	}</code></span>
+<span class="codeline" id="line-51"><code>	r -= surrSelf</code></span>
+<span class="codeline" id="line-52"><code>	return surr1 + (r&gt;&gt;10)&amp;0x3ff, surr2 + r&amp;0x3ff</code></span>
+<span class="codeline" id="line-53"><code>}</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>// Encode returns the UTF-16 encoding of the Unicode code point sequence s.</code></span>
+<span class="codeline" id="line-56"><code>func Encode(s []rune) []uint16 {</code></span>
+<span class="codeline" id="line-57"><code>	n := len(s)</code></span>
+<span class="codeline" id="line-58"><code>	for _, v := range s {</code></span>
+<span class="codeline" id="line-59"><code>		if v &gt;= surrSelf {</code></span>
+<span class="codeline" id="line-60"><code>			n++</code></span>
+<span class="codeline" id="line-61"><code>		}</code></span>
+<span class="codeline" id="line-62"><code>	}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>	a := make([]uint16, n)</code></span>
+<span class="codeline" id="line-65"><code>	n = 0</code></span>
+<span class="codeline" id="line-66"><code>	for _, v := range s {</code></span>
+<span class="codeline" id="line-67"><code>		switch {</code></span>
+<span class="codeline" id="line-68"><code>		case 0 &lt;= v &amp;&amp; v &lt; surr1, surr3 &lt;= v &amp;&amp; v &lt; surrSelf:</code></span>
+<span class="codeline" id="line-69"><code>			// normal rune</code></span>
+<span class="codeline" id="line-70"><code>			a[n] = uint16(v)</code></span>
+<span class="codeline" id="line-71"><code>			n++</code></span>
+<span class="codeline" id="line-72"><code>		case surrSelf &lt;= v &amp;&amp; v &lt;= maxRune:</code></span>
+<span class="codeline" id="line-73"><code>			// needs surrogate sequence</code></span>
+<span class="codeline" id="line-74"><code>			r1, r2 := EncodeRune(v)</code></span>
+<span class="codeline" id="line-75"><code>			a[n] = uint16(r1)</code></span>
+<span class="codeline" id="line-76"><code>			a[n+1] = uint16(r2)</code></span>
+<span class="codeline" id="line-77"><code>			n += 2</code></span>
+<span class="codeline" id="line-78"><code>		default:</code></span>
+<span class="codeline" id="line-79"><code>			a[n] = uint16(replacementChar)</code></span>
+<span class="codeline" id="line-80"><code>			n++</code></span>
+<span class="codeline" id="line-81"><code>		}</code></span>
+<span class="codeline" id="line-82"><code>	}</code></span>
+<span class="codeline" id="line-83"><code>	return a[:n]</code></span>
+<span class="codeline" id="line-84"><code>}</code></span>
+<span class="codeline" id="line-85"><code></code></span>
+<span class="codeline" id="line-86"><code>// Decode returns the Unicode code point sequence represented</code></span>
+<span class="codeline" id="line-87"><code>// by the UTF-16 encoding s.</code></span>
+<span class="codeline" id="line-88"><code>func Decode(s []uint16) []rune {</code></span>
+<span class="codeline" id="line-89"><code>	a := make([]rune, len(s))</code></span>
+<span class="codeline" id="line-90"><code>	n := 0</code></span>
+<span class="codeline" id="line-91"><code>	for i := 0; i &lt; len(s); i++ {</code></span>
+<span class="codeline" id="line-92"><code>		switch r := s[i]; {</code></span>
+<span class="codeline" id="line-93"><code>		case r &lt; surr1, surr3 &lt;= r:</code></span>
+<span class="codeline" id="line-94"><code>			// normal rune</code></span>
+<span class="codeline" id="line-95"><code>			a[n] = rune(r)</code></span>
+<span class="codeline" id="line-96"><code>		case surr1 &lt;= r &amp;&amp; r &lt; surr2 &amp;&amp; i+1 &lt; len(s) &amp;&amp;</code></span>
+<span class="codeline" id="line-97"><code>			surr2 &lt;= s[i+1] &amp;&amp; s[i+1] &lt; surr3:</code></span>
+<span class="codeline" id="line-98"><code>			// valid surrogate sequence</code></span>
+<span class="codeline" id="line-99"><code>			a[n] = DecodeRune(rune(r), rune(s[i+1]))</code></span>
+<span class="codeline" id="line-100"><code>			i++</code></span>
+<span class="codeline" id="line-101"><code>		default:</code></span>
+<span class="codeline" id="line-102"><code>			// invalid surrogate sequence</code></span>
+<span class="codeline" id="line-103"><code>			a[n] = replacementChar</code></span>
+<span class="codeline" id="line-104"><code>		}</code></span>
+<span class="codeline" id="line-105"><code>		n++</code></span>
+<span class="codeline" id="line-106"><code>	}</code></span>
+<span class="codeline" id="line-107"><code>	return a[:n]</code></span>
+<span class="codeline" id="line-108"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

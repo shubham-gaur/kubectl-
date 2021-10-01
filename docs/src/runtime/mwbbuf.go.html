@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mwbbuf.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mwbbuf.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2017 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// This implements the write barrier buffer. The write barrier itself</code></span>
+<span class="codeline" id="line-6"><code>// is gcWriteBarrier and is implemented in assembly.</code></span>
+<span class="codeline" id="line-7"><code>//</code></span>
+<span class="codeline" id="line-8"><code>// See mbarrier.go for algorithmic details on the write barrier. This</code></span>
+<span class="codeline" id="line-9"><code>// file deals only with the buffer.</code></span>
+<span class="codeline" id="line-10"><code>//</code></span>
+<span class="codeline" id="line-11"><code>// The write barrier has a fast path and a slow path. The fast path</code></span>
+<span class="codeline" id="line-12"><code>// simply enqueues to a per-P write barrier buffer. It's written in</code></span>
+<span class="codeline" id="line-13"><code>// assembly and doesn't clobber any general purpose registers, so it</code></span>
+<span class="codeline" id="line-14"><code>// doesn't have the usual overheads of a Go call.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>// When the buffer fills up, the write barrier invokes the slow path</code></span>
+<span class="codeline" id="line-17"><code>// (wbBufFlush) to flush the buffer to the GC work queues. In this</code></span>
+<span class="codeline" id="line-18"><code>// path, since the compiler didn't spill registers, we spill *all*</code></span>
+<span class="codeline" id="line-19"><code>// registers and disallow any GC safe points that could observe the</code></span>
+<span class="codeline" id="line-20"><code>// stack frame (since we don't know the types of the spilled</code></span>
+<span class="codeline" id="line-21"><code>// registers).</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>package runtime</code></span>
+<span class="codeline" id="line-24"><code></code></span>
+<span class="codeline" id="line-25"><code>import (</code></span>
+<span class="codeline" id="line-26"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-27"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-28"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-29"><code>)</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>// testSmallBuf forces a small write barrier buffer to stress write</code></span>
+<span class="codeline" id="line-32"><code>// barrier flushing.</code></span>
+<span class="codeline" id="line-33"><code>const testSmallBuf = false</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>// wbBuf is a per-P buffer of pointers queued by the write barrier.</code></span>
+<span class="codeline" id="line-36"><code>// This buffer is flushed to the GC workbufs when it fills up and on</code></span>
+<span class="codeline" id="line-37"><code>// various GC transitions.</code></span>
+<span class="codeline" id="line-38"><code>//</code></span>
+<span class="codeline" id="line-39"><code>// This is closely related to a "sequential store buffer" (SSB),</code></span>
+<span class="codeline" id="line-40"><code>// except that SSBs are usually used for maintaining remembered sets,</code></span>
+<span class="codeline" id="line-41"><code>// while this is used for marking.</code></span>
+<span class="codeline" id="line-42"><code>type wbBuf struct {</code></span>
+<span class="codeline" id="line-43"><code>	// next points to the next slot in buf. It must not be a</code></span>
+<span class="codeline" id="line-44"><code>	// pointer type because it can point past the end of buf and</code></span>
+<span class="codeline" id="line-45"><code>	// must be updated without write barriers.</code></span>
+<span class="codeline" id="line-46"><code>	//</code></span>
+<span class="codeline" id="line-47"><code>	// This is a pointer rather than an index to optimize the</code></span>
+<span class="codeline" id="line-48"><code>	// write barrier assembly.</code></span>
+<span class="codeline" id="line-49"><code>	next uintptr</code></span>
+<span class="codeline" id="line-50"><code></code></span>
+<span class="codeline" id="line-51"><code>	// end points to just past the end of buf. It must not be a</code></span>
+<span class="codeline" id="line-52"><code>	// pointer type because it points past the end of buf and must</code></span>
+<span class="codeline" id="line-53"><code>	// be updated without write barriers.</code></span>
+<span class="codeline" id="line-54"><code>	end uintptr</code></span>
+<span class="codeline" id="line-55"><code></code></span>
+<span class="codeline" id="line-56"><code>	// buf stores a series of pointers to execute write barriers</code></span>
+<span class="codeline" id="line-57"><code>	// on. This must be a multiple of wbBufEntryPointers because</code></span>
+<span class="codeline" id="line-58"><code>	// the write barrier only checks for overflow once per entry.</code></span>
+<span class="codeline" id="line-59"><code>	buf [wbBufEntryPointers * wbBufEntries]uintptr</code></span>
+<span class="codeline" id="line-60"><code>}</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>const (</code></span>
+<span class="codeline" id="line-63"><code>	// wbBufEntries is the number of write barriers between</code></span>
+<span class="codeline" id="line-64"><code>	// flushes of the write barrier buffer.</code></span>
+<span class="codeline" id="line-65"><code>	//</code></span>
+<span class="codeline" id="line-66"><code>	// This trades latency for throughput amortization. Higher</code></span>
+<span class="codeline" id="line-67"><code>	// values amortize flushing overhead more, but increase the</code></span>
+<span class="codeline" id="line-68"><code>	// latency of flushing. Higher values also increase the cache</code></span>
+<span class="codeline" id="line-69"><code>	// footprint of the buffer.</code></span>
+<span class="codeline" id="line-70"><code>	//</code></span>
+<span class="codeline" id="line-71"><code>	// TODO: What is the latency cost of this? Tune this value.</code></span>
+<span class="codeline" id="line-72"><code>	wbBufEntries = 256</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>	// wbBufEntryPointers is the number of pointers added to the</code></span>
+<span class="codeline" id="line-75"><code>	// buffer by each write barrier.</code></span>
+<span class="codeline" id="line-76"><code>	wbBufEntryPointers = 2</code></span>
+<span class="codeline" id="line-77"><code>)</code></span>
+<span class="codeline" id="line-78"><code></code></span>
+<span class="codeline" id="line-79"><code>// reset empties b by resetting its next and end pointers.</code></span>
+<span class="codeline" id="line-80"><code>func (b *wbBuf) reset() {</code></span>
+<span class="codeline" id="line-81"><code>	start := uintptr(unsafe.Pointer(&amp;b.buf[0]))</code></span>
+<span class="codeline" id="line-82"><code>	b.next = start</code></span>
+<span class="codeline" id="line-83"><code>	if writeBarrier.cgo {</code></span>
+<span class="codeline" id="line-84"><code>		// Effectively disable the buffer by forcing a flush</code></span>
+<span class="codeline" id="line-85"><code>		// on every barrier.</code></span>
+<span class="codeline" id="line-86"><code>		b.end = uintptr(unsafe.Pointer(&amp;b.buf[wbBufEntryPointers]))</code></span>
+<span class="codeline" id="line-87"><code>	} else if testSmallBuf {</code></span>
+<span class="codeline" id="line-88"><code>		// For testing, allow two barriers in the buffer. If</code></span>
+<span class="codeline" id="line-89"><code>		// we only did one, then barriers of non-heap pointers</code></span>
+<span class="codeline" id="line-90"><code>		// would be no-ops. This lets us combine a buffered</code></span>
+<span class="codeline" id="line-91"><code>		// barrier with a flush at a later time.</code></span>
+<span class="codeline" id="line-92"><code>		b.end = uintptr(unsafe.Pointer(&amp;b.buf[2*wbBufEntryPointers]))</code></span>
+<span class="codeline" id="line-93"><code>	} else {</code></span>
+<span class="codeline" id="line-94"><code>		b.end = start + uintptr(len(b.buf))*unsafe.Sizeof(b.buf[0])</code></span>
+<span class="codeline" id="line-95"><code>	}</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>	if (b.end-b.next)%(wbBufEntryPointers*unsafe.Sizeof(b.buf[0])) != 0 {</code></span>
+<span class="codeline" id="line-98"><code>		throw("bad write barrier buffer bounds")</code></span>
+<span class="codeline" id="line-99"><code>	}</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>// discard resets b's next pointer, but not its end pointer.</code></span>
+<span class="codeline" id="line-103"><code>//</code></span>
+<span class="codeline" id="line-104"><code>// This must be nosplit because it's called by wbBufFlush.</code></span>
+<span class="codeline" id="line-105"><code>//</code></span>
+<span class="codeline" id="line-106"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-107"><code>func (b *wbBuf) discard() {</code></span>
+<span class="codeline" id="line-108"><code>	b.next = uintptr(unsafe.Pointer(&amp;b.buf[0]))</code></span>
+<span class="codeline" id="line-109"><code>}</code></span>
+<span class="codeline" id="line-110"><code></code></span>
+<span class="codeline" id="line-111"><code>// empty reports whether b contains no pointers.</code></span>
+<span class="codeline" id="line-112"><code>func (b *wbBuf) empty() bool {</code></span>
+<span class="codeline" id="line-113"><code>	return b.next == uintptr(unsafe.Pointer(&amp;b.buf[0]))</code></span>
+<span class="codeline" id="line-114"><code>}</code></span>
+<span class="codeline" id="line-115"><code></code></span>
+<span class="codeline" id="line-116"><code>// putFast adds old and new to the write barrier buffer and returns</code></span>
+<span class="codeline" id="line-117"><code>// false if a flush is necessary. Callers should use this as:</code></span>
+<span class="codeline" id="line-118"><code>//</code></span>
+<span class="codeline" id="line-119"><code>//     buf := &amp;getg().m.p.ptr().wbBuf</code></span>
+<span class="codeline" id="line-120"><code>//     if !buf.putFast(old, new) {</code></span>
+<span class="codeline" id="line-121"><code>//         wbBufFlush(...)</code></span>
+<span class="codeline" id="line-122"><code>//     }</code></span>
+<span class="codeline" id="line-123"><code>//     ... actual memory write ...</code></span>
+<span class="codeline" id="line-124"><code>//</code></span>
+<span class="codeline" id="line-125"><code>// The arguments to wbBufFlush depend on whether the caller is doing</code></span>
+<span class="codeline" id="line-126"><code>// its own cgo pointer checks. If it is, then this can be</code></span>
+<span class="codeline" id="line-127"><code>// wbBufFlush(nil, 0). Otherwise, it must pass the slot address and</code></span>
+<span class="codeline" id="line-128"><code>// new.</code></span>
+<span class="codeline" id="line-129"><code>//</code></span>
+<span class="codeline" id="line-130"><code>// The caller must ensure there are no preemption points during the</code></span>
+<span class="codeline" id="line-131"><code>// above sequence. There must be no preemption points while buf is in</code></span>
+<span class="codeline" id="line-132"><code>// use because it is a per-P resource. There must be no preemption</code></span>
+<span class="codeline" id="line-133"><code>// points between the buffer put and the write to memory because this</code></span>
+<span class="codeline" id="line-134"><code>// could allow a GC phase change, which could result in missed write</code></span>
+<span class="codeline" id="line-135"><code>// barriers.</code></span>
+<span class="codeline" id="line-136"><code>//</code></span>
+<span class="codeline" id="line-137"><code>// putFast must be nowritebarrierrec to because write barriers here would</code></span>
+<span class="codeline" id="line-138"><code>// corrupt the write barrier buffer. It (and everything it calls, if</code></span>
+<span class="codeline" id="line-139"><code>// it called anything) has to be nosplit to avoid scheduling on to a</code></span>
+<span class="codeline" id="line-140"><code>// different P and a different buffer.</code></span>
+<span class="codeline" id="line-141"><code>//</code></span>
+<span class="codeline" id="line-142"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-143"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-144"><code>func (b *wbBuf) putFast(old, new uintptr) bool {</code></span>
+<span class="codeline" id="line-145"><code>	p := (*[2]uintptr)(unsafe.Pointer(b.next))</code></span>
+<span class="codeline" id="line-146"><code>	p[0] = old</code></span>
+<span class="codeline" id="line-147"><code>	p[1] = new</code></span>
+<span class="codeline" id="line-148"><code>	b.next += 2 * sys.PtrSize</code></span>
+<span class="codeline" id="line-149"><code>	return b.next != b.end</code></span>
+<span class="codeline" id="line-150"><code>}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>// wbBufFlush flushes the current P's write barrier buffer to the GC</code></span>
+<span class="codeline" id="line-153"><code>// workbufs. It is passed the slot and value of the write barrier that</code></span>
+<span class="codeline" id="line-154"><code>// caused the flush so that it can implement cgocheck.</code></span>
+<span class="codeline" id="line-155"><code>//</code></span>
+<span class="codeline" id="line-156"><code>// This must not have write barriers because it is part of the write</code></span>
+<span class="codeline" id="line-157"><code>// barrier implementation.</code></span>
+<span class="codeline" id="line-158"><code>//</code></span>
+<span class="codeline" id="line-159"><code>// This and everything it calls must be nosplit because 1) the stack</code></span>
+<span class="codeline" id="line-160"><code>// contains untyped slots from gcWriteBarrier and 2) there must not be</code></span>
+<span class="codeline" id="line-161"><code>// a GC safe point between the write barrier test in the caller and</code></span>
+<span class="codeline" id="line-162"><code>// flushing the buffer.</code></span>
+<span class="codeline" id="line-163"><code>//</code></span>
+<span class="codeline" id="line-164"><code>// TODO: A "go:nosplitrec" annotation would be perfect for this.</code></span>
+<span class="codeline" id="line-165"><code>//</code></span>
+<span class="codeline" id="line-166"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-167"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-168"><code>func wbBufFlush(dst *uintptr, src uintptr) {</code></span>
+<span class="codeline" id="line-169"><code>	// Note: Every possible return from this function must reset</code></span>
+<span class="codeline" id="line-170"><code>	// the buffer's next pointer to prevent buffer overflow.</code></span>
+<span class="codeline" id="line-171"><code></code></span>
+<span class="codeline" id="line-172"><code>	// This *must not* modify its arguments because this</code></span>
+<span class="codeline" id="line-173"><code>	// function's argument slots do double duty in gcWriteBarrier</code></span>
+<span class="codeline" id="line-174"><code>	// as register spill slots. Currently, not modifying the</code></span>
+<span class="codeline" id="line-175"><code>	// arguments is sufficient to keep the spill slots unmodified</code></span>
+<span class="codeline" id="line-176"><code>	// (which seems unlikely to change since it costs little and</code></span>
+<span class="codeline" id="line-177"><code>	// helps with debugging).</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>	if getg().m.dying &gt; 0 {</code></span>
+<span class="codeline" id="line-180"><code>		// We're going down. Not much point in write barriers</code></span>
+<span class="codeline" id="line-181"><code>		// and this way we can allow write barriers in the</code></span>
+<span class="codeline" id="line-182"><code>		// panic path.</code></span>
+<span class="codeline" id="line-183"><code>		getg().m.p.ptr().wbBuf.discard()</code></span>
+<span class="codeline" id="line-184"><code>		return</code></span>
+<span class="codeline" id="line-185"><code>	}</code></span>
+<span class="codeline" id="line-186"><code></code></span>
+<span class="codeline" id="line-187"><code>	if writeBarrier.cgo &amp;&amp; dst != nil {</code></span>
+<span class="codeline" id="line-188"><code>		// This must be called from the stack that did the</code></span>
+<span class="codeline" id="line-189"><code>		// write. It's nosplit all the way down.</code></span>
+<span class="codeline" id="line-190"><code>		cgoCheckWriteBarrier(dst, src)</code></span>
+<span class="codeline" id="line-191"><code>		if !writeBarrier.needed {</code></span>
+<span class="codeline" id="line-192"><code>			// We were only called for cgocheck.</code></span>
+<span class="codeline" id="line-193"><code>			getg().m.p.ptr().wbBuf.discard()</code></span>
+<span class="codeline" id="line-194"><code>			return</code></span>
+<span class="codeline" id="line-195"><code>		}</code></span>
+<span class="codeline" id="line-196"><code>	}</code></span>
+<span class="codeline" id="line-197"><code></code></span>
+<span class="codeline" id="line-198"><code>	// Switch to the system stack so we don't have to worry about</code></span>
+<span class="codeline" id="line-199"><code>	// the untyped stack slots or safe points.</code></span>
+<span class="codeline" id="line-200"><code>	systemstack(func() {</code></span>
+<span class="codeline" id="line-201"><code>		wbBufFlush1(getg().m.p.ptr())</code></span>
+<span class="codeline" id="line-202"><code>	})</code></span>
+<span class="codeline" id="line-203"><code>}</code></span>
+<span class="codeline" id="line-204"><code></code></span>
+<span class="codeline" id="line-205"><code>// wbBufFlush1 flushes p's write barrier buffer to the GC work queue.</code></span>
+<span class="codeline" id="line-206"><code>//</code></span>
+<span class="codeline" id="line-207"><code>// This must not have write barriers because it is part of the write</code></span>
+<span class="codeline" id="line-208"><code>// barrier implementation, so this may lead to infinite loops or</code></span>
+<span class="codeline" id="line-209"><code>// buffer corruption.</code></span>
+<span class="codeline" id="line-210"><code>//</code></span>
+<span class="codeline" id="line-211"><code>// This must be non-preemptible because it uses the P's workbuf.</code></span>
+<span class="codeline" id="line-212"><code>//</code></span>
+<span class="codeline" id="line-213"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-214"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-215"><code>func wbBufFlush1(_p_ *p) {</code></span>
+<span class="codeline" id="line-216"><code>	// Get the buffered pointers.</code></span>
+<span class="codeline" id="line-217"><code>	start := uintptr(unsafe.Pointer(&amp;_p_.wbBuf.buf[0]))</code></span>
+<span class="codeline" id="line-218"><code>	n := (_p_.wbBuf.next - start) / unsafe.Sizeof(_p_.wbBuf.buf[0])</code></span>
+<span class="codeline" id="line-219"><code>	ptrs := _p_.wbBuf.buf[:n]</code></span>
+<span class="codeline" id="line-220"><code></code></span>
+<span class="codeline" id="line-221"><code>	// Poison the buffer to make extra sure nothing is enqueued</code></span>
+<span class="codeline" id="line-222"><code>	// while we're processing the buffer.</code></span>
+<span class="codeline" id="line-223"><code>	_p_.wbBuf.next = 0</code></span>
+<span class="codeline" id="line-224"><code></code></span>
+<span class="codeline" id="line-225"><code>	if useCheckmark {</code></span>
+<span class="codeline" id="line-226"><code>		// Slow path for checkmark mode.</code></span>
+<span class="codeline" id="line-227"><code>		for _, ptr := range ptrs {</code></span>
+<span class="codeline" id="line-228"><code>			shade(ptr)</code></span>
+<span class="codeline" id="line-229"><code>		}</code></span>
+<span class="codeline" id="line-230"><code>		_p_.wbBuf.reset()</code></span>
+<span class="codeline" id="line-231"><code>		return</code></span>
+<span class="codeline" id="line-232"><code>	}</code></span>
+<span class="codeline" id="line-233"><code></code></span>
+<span class="codeline" id="line-234"><code>	// Mark all of the pointers in the buffer and record only the</code></span>
+<span class="codeline" id="line-235"><code>	// pointers we greyed. We use the buffer itself to temporarily</code></span>
+<span class="codeline" id="line-236"><code>	// record greyed pointers.</code></span>
+<span class="codeline" id="line-237"><code>	//</code></span>
+<span class="codeline" id="line-238"><code>	// TODO: Should scanobject/scanblock just stuff pointers into</code></span>
+<span class="codeline" id="line-239"><code>	// the wbBuf? Then this would become the sole greying path.</code></span>
+<span class="codeline" id="line-240"><code>	//</code></span>
+<span class="codeline" id="line-241"><code>	// TODO: We could avoid shading any of the "new" pointers in</code></span>
+<span class="codeline" id="line-242"><code>	// the buffer if the stack has been shaded, or even avoid</code></span>
+<span class="codeline" id="line-243"><code>	// putting them in the buffer at all (which would double its</code></span>
+<span class="codeline" id="line-244"><code>	// capacity). This is slightly complicated with the buffer; we</code></span>
+<span class="codeline" id="line-245"><code>	// could track whether any un-shaded goroutine has used the</code></span>
+<span class="codeline" id="line-246"><code>	// buffer, or just track globally whether there are any</code></span>
+<span class="codeline" id="line-247"><code>	// un-shaded stacks and flush after each stack scan.</code></span>
+<span class="codeline" id="line-248"><code>	gcw := &amp;_p_.gcw</code></span>
+<span class="codeline" id="line-249"><code>	pos := 0</code></span>
+<span class="codeline" id="line-250"><code>	for _, ptr := range ptrs {</code></span>
+<span class="codeline" id="line-251"><code>		if ptr &lt; minLegalPointer {</code></span>
+<span class="codeline" id="line-252"><code>			// nil pointers are very common, especially</code></span>
+<span class="codeline" id="line-253"><code>			// for the "old" values. Filter out these and</code></span>
+<span class="codeline" id="line-254"><code>			// other "obvious" non-heap pointers ASAP.</code></span>
+<span class="codeline" id="line-255"><code>			//</code></span>
+<span class="codeline" id="line-256"><code>			// TODO: Should we filter out nils in the fast</code></span>
+<span class="codeline" id="line-257"><code>			// path to reduce the rate of flushes?</code></span>
+<span class="codeline" id="line-258"><code>			continue</code></span>
+<span class="codeline" id="line-259"><code>		}</code></span>
+<span class="codeline" id="line-260"><code>		obj, span, objIndex := findObject(ptr, 0, 0)</code></span>
+<span class="codeline" id="line-261"><code>		if obj == 0 {</code></span>
+<span class="codeline" id="line-262"><code>			continue</code></span>
+<span class="codeline" id="line-263"><code>		}</code></span>
+<span class="codeline" id="line-264"><code>		// TODO: Consider making two passes where the first</code></span>
+<span class="codeline" id="line-265"><code>		// just prefetches the mark bits.</code></span>
+<span class="codeline" id="line-266"><code>		mbits := span.markBitsForIndex(objIndex)</code></span>
+<span class="codeline" id="line-267"><code>		if mbits.isMarked() {</code></span>
+<span class="codeline" id="line-268"><code>			continue</code></span>
+<span class="codeline" id="line-269"><code>		}</code></span>
+<span class="codeline" id="line-270"><code>		mbits.setMarked()</code></span>
+<span class="codeline" id="line-271"><code></code></span>
+<span class="codeline" id="line-272"><code>		// Mark span.</code></span>
+<span class="codeline" id="line-273"><code>		arena, pageIdx, pageMask := pageIndexOf(span.base())</code></span>
+<span class="codeline" id="line-274"><code>		if arena.pageMarks[pageIdx]&amp;pageMask == 0 {</code></span>
+<span class="codeline" id="line-275"><code>			atomic.Or8(&amp;arena.pageMarks[pageIdx], pageMask)</code></span>
+<span class="codeline" id="line-276"><code>		}</code></span>
+<span class="codeline" id="line-277"><code></code></span>
+<span class="codeline" id="line-278"><code>		if span.spanclass.noscan() {</code></span>
+<span class="codeline" id="line-279"><code>			gcw.bytesMarked += uint64(span.elemsize)</code></span>
+<span class="codeline" id="line-280"><code>			continue</code></span>
+<span class="codeline" id="line-281"><code>		}</code></span>
+<span class="codeline" id="line-282"><code>		ptrs[pos] = obj</code></span>
+<span class="codeline" id="line-283"><code>		pos++</code></span>
+<span class="codeline" id="line-284"><code>	}</code></span>
+<span class="codeline" id="line-285"><code></code></span>
+<span class="codeline" id="line-286"><code>	// Enqueue the greyed objects.</code></span>
+<span class="codeline" id="line-287"><code>	gcw.putBatch(ptrs[:pos])</code></span>
+<span class="codeline" id="line-288"><code></code></span>
+<span class="codeline" id="line-289"><code>	_p_.wbBuf.reset()</code></span>
+<span class="codeline" id="line-290"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

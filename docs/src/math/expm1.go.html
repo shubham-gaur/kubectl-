@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: expm1.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	expm1.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// The original C code, the long comment, and the constants</code></span>
+<span class="codeline" id="line-8"><code>// below are from FreeBSD's /usr/src/lib/msun/src/s_expm1.c</code></span>
+<span class="codeline" id="line-9"><code>// and came with this notice. The go code is a simplified</code></span>
+<span class="codeline" id="line-10"><code>// version of the original C.</code></span>
+<span class="codeline" id="line-11"><code>//</code></span>
+<span class="codeline" id="line-12"><code>// ====================================================</code></span>
+<span class="codeline" id="line-13"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-16"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-17"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-18"><code>// is preserved.</code></span>
+<span class="codeline" id="line-19"><code>// ====================================================</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// expm1(x)</code></span>
+<span class="codeline" id="line-22"><code>// Returns exp(x)-1, the exponential of x minus 1.</code></span>
+<span class="codeline" id="line-23"><code>//</code></span>
+<span class="codeline" id="line-24"><code>// Method</code></span>
+<span class="codeline" id="line-25"><code>//   1. Argument reduction:</code></span>
+<span class="codeline" id="line-26"><code>//      Given x, find r and integer k such that</code></span>
+<span class="codeline" id="line-27"><code>//</code></span>
+<span class="codeline" id="line-28"><code>//               x = k*ln2 + r,  |r| &lt;= 0.5*ln2 ~ 0.34658</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>//      Here a correction term c will be computed to compensate</code></span>
+<span class="codeline" id="line-31"><code>//      the error in r when rounded to a floating-point number.</code></span>
+<span class="codeline" id="line-32"><code>//</code></span>
+<span class="codeline" id="line-33"><code>//   2. Approximating expm1(r) by a special rational function on</code></span>
+<span class="codeline" id="line-34"><code>//      the interval [0,0.34658]:</code></span>
+<span class="codeline" id="line-35"><code>//      Since</code></span>
+<span class="codeline" id="line-36"><code>//          r*(exp(r)+1)/(exp(r)-1) = 2+ r**2/6 - r**4/360 + ...</code></span>
+<span class="codeline" id="line-37"><code>//      we define R1(r*r) by</code></span>
+<span class="codeline" id="line-38"><code>//          r*(exp(r)+1)/(exp(r)-1) = 2+ r**2/6 * R1(r*r)</code></span>
+<span class="codeline" id="line-39"><code>//      That is,</code></span>
+<span class="codeline" id="line-40"><code>//          R1(r**2) = 6/r *((exp(r)+1)/(exp(r)-1) - 2/r)</code></span>
+<span class="codeline" id="line-41"><code>//                   = 6/r * ( 1 + 2.0*(1/(exp(r)-1) - 1/r))</code></span>
+<span class="codeline" id="line-42"><code>//                   = 1 - r**2/60 + r**4/2520 - r**6/100800 + ...</code></span>
+<span class="codeline" id="line-43"><code>//      We use a special Reme algorithm on [0,0.347] to generate</code></span>
+<span class="codeline" id="line-44"><code>//      a polynomial of degree 5 in r*r to approximate R1. The</code></span>
+<span class="codeline" id="line-45"><code>//      maximum error of this polynomial approximation is bounded</code></span>
+<span class="codeline" id="line-46"><code>//      by 2**-61. In other words,</code></span>
+<span class="codeline" id="line-47"><code>//          R1(z) ~ 1.0 + Q1*z + Q2*z**2 + Q3*z**3 + Q4*z**4 + Q5*z**5</code></span>
+<span class="codeline" id="line-48"><code>//      where   Q1  =  -1.6666666666666567384E-2,</code></span>
+<span class="codeline" id="line-49"><code>//              Q2  =   3.9682539681370365873E-4,</code></span>
+<span class="codeline" id="line-50"><code>//              Q3  =  -9.9206344733435987357E-6,</code></span>
+<span class="codeline" id="line-51"><code>//              Q4  =   2.5051361420808517002E-7,</code></span>
+<span class="codeline" id="line-52"><code>//              Q5  =  -6.2843505682382617102E-9;</code></span>
+<span class="codeline" id="line-53"><code>//      (where z=r*r, and the values of Q1 to Q5 are listed below)</code></span>
+<span class="codeline" id="line-54"><code>//      with error bounded by</code></span>
+<span class="codeline" id="line-55"><code>//          |                  5           |     -61</code></span>
+<span class="codeline" id="line-56"><code>//          | 1.0+Q1*z+...+Q5*z   -  R1(z) | &lt;= 2</code></span>
+<span class="codeline" id="line-57"><code>//          |                              |</code></span>
+<span class="codeline" id="line-58"><code>//</code></span>
+<span class="codeline" id="line-59"><code>//      expm1(r) = exp(r)-1 is then computed by the following</code></span>
+<span class="codeline" id="line-60"><code>//      specific way which minimize the accumulation rounding error:</code></span>
+<span class="codeline" id="line-61"><code>//                             2     3</code></span>
+<span class="codeline" id="line-62"><code>//                            r     r    [ 3 - (R1 + R1*r/2)  ]</code></span>
+<span class="codeline" id="line-63"><code>//            expm1(r) = r + --- + --- * [--------------------]</code></span>
+<span class="codeline" id="line-64"><code>//                            2     2    [ 6 - r*(3 - R1*r/2) ]</code></span>
+<span class="codeline" id="line-65"><code>//</code></span>
+<span class="codeline" id="line-66"><code>//      To compensate the error in the argument reduction, we use</code></span>
+<span class="codeline" id="line-67"><code>//              expm1(r+c) = expm1(r) + c + expm1(r)*c</code></span>
+<span class="codeline" id="line-68"><code>//                         ~ expm1(r) + c + r*c</code></span>
+<span class="codeline" id="line-69"><code>//      Thus c+r*c will be added in as the correction terms for</code></span>
+<span class="codeline" id="line-70"><code>//      expm1(r+c). Now rearrange the term to avoid optimization</code></span>
+<span class="codeline" id="line-71"><code>//      screw up:</code></span>
+<span class="codeline" id="line-72"><code>//                      (      2                                    2 )</code></span>
+<span class="codeline" id="line-73"><code>//                      ({  ( r    [ R1 -  (3 - R1*r/2) ]  )  }    r  )</code></span>
+<span class="codeline" id="line-74"><code>//       expm1(r+c)~r - ({r*(--- * [--------------------]-c)-c} - --- )</code></span>
+<span class="codeline" id="line-75"><code>//                      ({  ( 2    [ 6 - r*(3 - R1*r/2) ]  )  }    2  )</code></span>
+<span class="codeline" id="line-76"><code>//                      (                                             )</code></span>
+<span class="codeline" id="line-77"><code>//</code></span>
+<span class="codeline" id="line-78"><code>//                 = r - E</code></span>
+<span class="codeline" id="line-79"><code>//   3. Scale back to obtain expm1(x):</code></span>
+<span class="codeline" id="line-80"><code>//      From step 1, we have</code></span>
+<span class="codeline" id="line-81"><code>//         expm1(x) = either 2**k*[expm1(r)+1] - 1</code></span>
+<span class="codeline" id="line-82"><code>//                  = or     2**k*[expm1(r) + (1-2**-k)]</code></span>
+<span class="codeline" id="line-83"><code>//   4. Implementation notes:</code></span>
+<span class="codeline" id="line-84"><code>//      (A). To save one multiplication, we scale the coefficient Qi</code></span>
+<span class="codeline" id="line-85"><code>//           to Qi*2**i, and replace z by (x**2)/2.</code></span>
+<span class="codeline" id="line-86"><code>//      (B). To achieve maximum accuracy, we compute expm1(x) by</code></span>
+<span class="codeline" id="line-87"><code>//        (i)   if x &lt; -56*ln2, return -1.0, (raise inexact if x!=inf)</code></span>
+<span class="codeline" id="line-88"><code>//        (ii)  if k=0, return r-E</code></span>
+<span class="codeline" id="line-89"><code>//        (iii) if k=-1, return 0.5*(r-E)-0.5</code></span>
+<span class="codeline" id="line-90"><code>//        (iv)  if k=1 if r &lt; -0.25, return 2*((r+0.5)- E)</code></span>
+<span class="codeline" id="line-91"><code>//                     else          return  1.0+2.0*(r-E);</code></span>
+<span class="codeline" id="line-92"><code>//        (v)   if (k&lt;-2||k&gt;56) return 2**k(1-(E-r)) - 1 (or exp(x)-1)</code></span>
+<span class="codeline" id="line-93"><code>//        (vi)  if k &lt;= 20, return 2**k((1-2**-k)-(E-r)), else</code></span>
+<span class="codeline" id="line-94"><code>//        (vii) return 2**k(1-((E+2**-k)-r))</code></span>
+<span class="codeline" id="line-95"><code>//</code></span>
+<span class="codeline" id="line-96"><code>// Special cases:</code></span>
+<span class="codeline" id="line-97"><code>//      expm1(INF) is INF, expm1(NaN) is NaN;</code></span>
+<span class="codeline" id="line-98"><code>//      expm1(-INF) is -1, and</code></span>
+<span class="codeline" id="line-99"><code>//      for finite argument, only expm1(0)=0 is exact.</code></span>
+<span class="codeline" id="line-100"><code>//</code></span>
+<span class="codeline" id="line-101"><code>// Accuracy:</code></span>
+<span class="codeline" id="line-102"><code>//      according to an error analysis, the error is always less than</code></span>
+<span class="codeline" id="line-103"><code>//      1 ulp (unit in the last place).</code></span>
+<span class="codeline" id="line-104"><code>//</code></span>
+<span class="codeline" id="line-105"><code>// Misc. info.</code></span>
+<span class="codeline" id="line-106"><code>//      For IEEE double</code></span>
+<span class="codeline" id="line-107"><code>//          if x &gt;  7.09782712893383973096e+02 then expm1(x) overflow</code></span>
+<span class="codeline" id="line-108"><code>//</code></span>
+<span class="codeline" id="line-109"><code>// Constants:</code></span>
+<span class="codeline" id="line-110"><code>// The hexadecimal values are the intended ones for the following</code></span>
+<span class="codeline" id="line-111"><code>// constants. The decimal values may be used, provided that the</code></span>
+<span class="codeline" id="line-112"><code>// compiler will convert from decimal to binary accurately enough</code></span>
+<span class="codeline" id="line-113"><code>// to produce the hexadecimal values shown.</code></span>
+<span class="codeline" id="line-114"><code>//</code></span>
+<span class="codeline" id="line-115"><code></code></span>
+<span class="codeline" id="line-116"><code>// Expm1 returns e**x - 1, the base-e exponential of x minus 1.</code></span>
+<span class="codeline" id="line-117"><code>// It is more accurate than Exp(x) - 1 when x is near zero.</code></span>
+<span class="codeline" id="line-118"><code>//</code></span>
+<span class="codeline" id="line-119"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-120"><code>//	Expm1(+Inf) = +Inf</code></span>
+<span class="codeline" id="line-121"><code>//	Expm1(-Inf) = -1</code></span>
+<span class="codeline" id="line-122"><code>//	Expm1(NaN) = NaN</code></span>
+<span class="codeline" id="line-123"><code>// Very large values overflow to -1 or +Inf.</code></span>
+<span class="codeline" id="line-124"><code>func Expm1(x float64) float64</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>func expm1(x float64) float64 {</code></span>
+<span class="codeline" id="line-127"><code>	const (</code></span>
+<span class="codeline" id="line-128"><code>		Othreshold = 7.09782712893383973096e+02 // 0x40862E42FEFA39EF</code></span>
+<span class="codeline" id="line-129"><code>		Ln2X56     = 3.88162421113569373274e+01 // 0x4043687a9f1af2b1</code></span>
+<span class="codeline" id="line-130"><code>		Ln2HalfX3  = 1.03972077083991796413e+00 // 0x3ff0a2b23f3bab73</code></span>
+<span class="codeline" id="line-131"><code>		Ln2Half    = 3.46573590279972654709e-01 // 0x3fd62e42fefa39ef</code></span>
+<span class="codeline" id="line-132"><code>		Ln2Hi      = 6.93147180369123816490e-01 // 0x3fe62e42fee00000</code></span>
+<span class="codeline" id="line-133"><code>		Ln2Lo      = 1.90821492927058770002e-10 // 0x3dea39ef35793c76</code></span>
+<span class="codeline" id="line-134"><code>		InvLn2     = 1.44269504088896338700e+00 // 0x3ff71547652b82fe</code></span>
+<span class="codeline" id="line-135"><code>		Tiny       = 1.0 / (1 &lt;&lt; 54)            // 2**-54 = 0x3c90000000000000</code></span>
+<span class="codeline" id="line-136"><code>		// scaled coefficients related to expm1</code></span>
+<span class="codeline" id="line-137"><code>		Q1 = -3.33333333333331316428e-02 // 0xBFA11111111110F4</code></span>
+<span class="codeline" id="line-138"><code>		Q2 = 1.58730158725481460165e-03  // 0x3F5A01A019FE5585</code></span>
+<span class="codeline" id="line-139"><code>		Q3 = -7.93650757867487942473e-05 // 0xBF14CE199EAADBB7</code></span>
+<span class="codeline" id="line-140"><code>		Q4 = 4.00821782732936239552e-06  // 0x3ED0CFCA86E65239</code></span>
+<span class="codeline" id="line-141"><code>		Q5 = -2.01099218183624371326e-07 // 0xBE8AFDB76E09C32D</code></span>
+<span class="codeline" id="line-142"><code>	)</code></span>
+<span class="codeline" id="line-143"><code></code></span>
+<span class="codeline" id="line-144"><code>	// special cases</code></span>
+<span class="codeline" id="line-145"><code>	switch {</code></span>
+<span class="codeline" id="line-146"><code>	case IsInf(x, 1) || IsNaN(x):</code></span>
+<span class="codeline" id="line-147"><code>		return x</code></span>
+<span class="codeline" id="line-148"><code>	case IsInf(x, -1):</code></span>
+<span class="codeline" id="line-149"><code>		return -1</code></span>
+<span class="codeline" id="line-150"><code>	}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>	absx := x</code></span>
+<span class="codeline" id="line-153"><code>	sign := false</code></span>
+<span class="codeline" id="line-154"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-155"><code>		absx = -absx</code></span>
+<span class="codeline" id="line-156"><code>		sign = true</code></span>
+<span class="codeline" id="line-157"><code>	}</code></span>
+<span class="codeline" id="line-158"><code></code></span>
+<span class="codeline" id="line-159"><code>	// filter out huge argument</code></span>
+<span class="codeline" id="line-160"><code>	if absx &gt;= Ln2X56 { // if |x| &gt;= 56 * ln2</code></span>
+<span class="codeline" id="line-161"><code>		if sign {</code></span>
+<span class="codeline" id="line-162"><code>			return -1 // x &lt; -56*ln2, return -1</code></span>
+<span class="codeline" id="line-163"><code>		}</code></span>
+<span class="codeline" id="line-164"><code>		if absx &gt;= Othreshold { // if |x| &gt;= 709.78...</code></span>
+<span class="codeline" id="line-165"><code>			return Inf(1)</code></span>
+<span class="codeline" id="line-166"><code>		}</code></span>
+<span class="codeline" id="line-167"><code>	}</code></span>
+<span class="codeline" id="line-168"><code></code></span>
+<span class="codeline" id="line-169"><code>	// argument reduction</code></span>
+<span class="codeline" id="line-170"><code>	var c float64</code></span>
+<span class="codeline" id="line-171"><code>	var k int</code></span>
+<span class="codeline" id="line-172"><code>	if absx &gt; Ln2Half { // if  |x| &gt; 0.5 * ln2</code></span>
+<span class="codeline" id="line-173"><code>		var hi, lo float64</code></span>
+<span class="codeline" id="line-174"><code>		if absx &lt; Ln2HalfX3 { // and |x| &lt; 1.5 * ln2</code></span>
+<span class="codeline" id="line-175"><code>			if !sign {</code></span>
+<span class="codeline" id="line-176"><code>				hi = x - Ln2Hi</code></span>
+<span class="codeline" id="line-177"><code>				lo = Ln2Lo</code></span>
+<span class="codeline" id="line-178"><code>				k = 1</code></span>
+<span class="codeline" id="line-179"><code>			} else {</code></span>
+<span class="codeline" id="line-180"><code>				hi = x + Ln2Hi</code></span>
+<span class="codeline" id="line-181"><code>				lo = -Ln2Lo</code></span>
+<span class="codeline" id="line-182"><code>				k = -1</code></span>
+<span class="codeline" id="line-183"><code>			}</code></span>
+<span class="codeline" id="line-184"><code>		} else {</code></span>
+<span class="codeline" id="line-185"><code>			if !sign {</code></span>
+<span class="codeline" id="line-186"><code>				k = int(InvLn2*x + 0.5)</code></span>
+<span class="codeline" id="line-187"><code>			} else {</code></span>
+<span class="codeline" id="line-188"><code>				k = int(InvLn2*x - 0.5)</code></span>
+<span class="codeline" id="line-189"><code>			}</code></span>
+<span class="codeline" id="line-190"><code>			t := float64(k)</code></span>
+<span class="codeline" id="line-191"><code>			hi = x - t*Ln2Hi // t * Ln2Hi is exact here</code></span>
+<span class="codeline" id="line-192"><code>			lo = t * Ln2Lo</code></span>
+<span class="codeline" id="line-193"><code>		}</code></span>
+<span class="codeline" id="line-194"><code>		x = hi - lo</code></span>
+<span class="codeline" id="line-195"><code>		c = (hi - x) - lo</code></span>
+<span class="codeline" id="line-196"><code>	} else if absx &lt; Tiny { // when |x| &lt; 2**-54, return x</code></span>
+<span class="codeline" id="line-197"><code>		return x</code></span>
+<span class="codeline" id="line-198"><code>	} else {</code></span>
+<span class="codeline" id="line-199"><code>		k = 0</code></span>
+<span class="codeline" id="line-200"><code>	}</code></span>
+<span class="codeline" id="line-201"><code></code></span>
+<span class="codeline" id="line-202"><code>	// x is now in primary range</code></span>
+<span class="codeline" id="line-203"><code>	hfx := 0.5 * x</code></span>
+<span class="codeline" id="line-204"><code>	hxs := x * hfx</code></span>
+<span class="codeline" id="line-205"><code>	r1 := 1 + hxs*(Q1+hxs*(Q2+hxs*(Q3+hxs*(Q4+hxs*Q5))))</code></span>
+<span class="codeline" id="line-206"><code>	t := 3 - r1*hfx</code></span>
+<span class="codeline" id="line-207"><code>	e := hxs * ((r1 - t) / (6.0 - x*t))</code></span>
+<span class="codeline" id="line-208"><code>	if k == 0 {</code></span>
+<span class="codeline" id="line-209"><code>		return x - (x*e - hxs) // c is 0</code></span>
+<span class="codeline" id="line-210"><code>	}</code></span>
+<span class="codeline" id="line-211"><code>	e = (x*(e-c) - c)</code></span>
+<span class="codeline" id="line-212"><code>	e -= hxs</code></span>
+<span class="codeline" id="line-213"><code>	switch {</code></span>
+<span class="codeline" id="line-214"><code>	case k == -1:</code></span>
+<span class="codeline" id="line-215"><code>		return 0.5*(x-e) - 0.5</code></span>
+<span class="codeline" id="line-216"><code>	case k == 1:</code></span>
+<span class="codeline" id="line-217"><code>		if x &lt; -0.25 {</code></span>
+<span class="codeline" id="line-218"><code>			return -2 * (e - (x + 0.5))</code></span>
+<span class="codeline" id="line-219"><code>		}</code></span>
+<span class="codeline" id="line-220"><code>		return 1 + 2*(x-e)</code></span>
+<span class="codeline" id="line-221"><code>	case k &lt;= -2 || k &gt; 56: // suffice to return exp(x)-1</code></span>
+<span class="codeline" id="line-222"><code>		y := 1 - (e - x)</code></span>
+<span class="codeline" id="line-223"><code>		y = Float64frombits(Float64bits(y) + uint64(k)&lt;&lt;52) // add k to y's exponent</code></span>
+<span class="codeline" id="line-224"><code>		return y - 1</code></span>
+<span class="codeline" id="line-225"><code>	}</code></span>
+<span class="codeline" id="line-226"><code>	if k &lt; 20 {</code></span>
+<span class="codeline" id="line-227"><code>		t := Float64frombits(0x3ff0000000000000 - (0x20000000000000 &gt;&gt; uint(k))) // t=1-2**-k</code></span>
+<span class="codeline" id="line-228"><code>		y := t - (e - x)</code></span>
+<span class="codeline" id="line-229"><code>		y = Float64frombits(Float64bits(y) + uint64(k)&lt;&lt;52) // add k to y's exponent</code></span>
+<span class="codeline" id="line-230"><code>		return y</code></span>
+<span class="codeline" id="line-231"><code>	}</code></span>
+<span class="codeline" id="line-232"><code>	t = Float64frombits(uint64(0x3ff-k) &lt;&lt; 52) // 2**-k</code></span>
+<span class="codeline" id="line-233"><code>	y := x - (e + t)</code></span>
+<span class="codeline" id="line-234"><code>	y++</code></span>
+<span class="codeline" id="line-235"><code>	y = Float64frombits(Float64bits(y) + uint64(k)&lt;&lt;52) // add k to y's exponent</code></span>
+<span class="codeline" id="line-236"><code>	return y</code></span>
+<span class="codeline" id="line-237"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

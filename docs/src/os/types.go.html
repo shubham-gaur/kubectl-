@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: types.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	types.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package os</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"io/fs"</code></span>
+<span class="codeline" id="line-9"><code>	"syscall"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// Getpagesize returns the underlying system's memory page size.</code></span>
+<span class="codeline" id="line-13"><code>func Getpagesize() int { return syscall.Getpagesize() }</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// File represents an open file descriptor.</code></span>
+<span class="codeline" id="line-16"><code>type File struct {</code></span>
+<span class="codeline" id="line-17"><code>	*file // os specific</code></span>
+<span class="codeline" id="line-18"><code>}</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>// A FileInfo describes a file and is returned by Stat and Lstat.</code></span>
+<span class="codeline" id="line-21"><code>type FileInfo = fs.FileInfo</code></span>
+<span class="codeline" id="line-22"><code></code></span>
+<span class="codeline" id="line-23"><code>// A FileMode represents a file's mode and permission bits.</code></span>
+<span class="codeline" id="line-24"><code>// The bits have the same definition on all systems, so that</code></span>
+<span class="codeline" id="line-25"><code>// information about files can be moved from one system</code></span>
+<span class="codeline" id="line-26"><code>// to another portably. Not all bits apply to all systems.</code></span>
+<span class="codeline" id="line-27"><code>// The only required bit is ModeDir for directories.</code></span>
+<span class="codeline" id="line-28"><code>type FileMode = fs.FileMode</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>// The defined file mode bits are the most significant bits of the FileMode.</code></span>
+<span class="codeline" id="line-31"><code>// The nine least-significant bits are the standard Unix rwxrwxrwx permissions.</code></span>
+<span class="codeline" id="line-32"><code>// The values of these bits should be considered part of the public API and</code></span>
+<span class="codeline" id="line-33"><code>// may be used in wire protocols or disk representations: they must not be</code></span>
+<span class="codeline" id="line-34"><code>// changed, although new bits might be added.</code></span>
+<span class="codeline" id="line-35"><code>const (</code></span>
+<span class="codeline" id="line-36"><code>	// The single letters are the abbreviations</code></span>
+<span class="codeline" id="line-37"><code>	// used by the String method's formatting.</code></span>
+<span class="codeline" id="line-38"><code>	ModeDir        = fs.ModeDir        // d: is a directory</code></span>
+<span class="codeline" id="line-39"><code>	ModeAppend     = fs.ModeAppend     // a: append-only</code></span>
+<span class="codeline" id="line-40"><code>	ModeExclusive  = fs.ModeExclusive  // l: exclusive use</code></span>
+<span class="codeline" id="line-41"><code>	ModeTemporary  = fs.ModeTemporary  // T: temporary file; Plan 9 only</code></span>
+<span class="codeline" id="line-42"><code>	ModeSymlink    = fs.ModeSymlink    // L: symbolic link</code></span>
+<span class="codeline" id="line-43"><code>	ModeDevice     = fs.ModeDevice     // D: device file</code></span>
+<span class="codeline" id="line-44"><code>	ModeNamedPipe  = fs.ModeNamedPipe  // p: named pipe (FIFO)</code></span>
+<span class="codeline" id="line-45"><code>	ModeSocket     = fs.ModeSocket     // S: Unix domain socket</code></span>
+<span class="codeline" id="line-46"><code>	ModeSetuid     = fs.ModeSetuid     // u: setuid</code></span>
+<span class="codeline" id="line-47"><code>	ModeSetgid     = fs.ModeSetgid     // g: setgid</code></span>
+<span class="codeline" id="line-48"><code>	ModeCharDevice = fs.ModeCharDevice // c: Unix character device, when ModeDevice is set</code></span>
+<span class="codeline" id="line-49"><code>	ModeSticky     = fs.ModeSticky     // t: sticky</code></span>
+<span class="codeline" id="line-50"><code>	ModeIrregular  = fs.ModeIrregular  // ?: non-regular file; nothing else is known about this file</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>	// Mask for the type bits. For regular files, none will be set.</code></span>
+<span class="codeline" id="line-53"><code>	ModeType = fs.ModeType</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>	ModePerm = fs.ModePerm // Unix permission bits, 0o777</code></span>
+<span class="codeline" id="line-56"><code>)</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>func (fs *fileStat) Name() string { return fs.name }</code></span>
+<span class="codeline" id="line-59"><code>func (fs *fileStat) IsDir() bool  { return fs.Mode().IsDir() }</code></span>
+<span class="codeline" id="line-60"><code></code></span>
+<span class="codeline" id="line-61"><code>// SameFile reports whether fi1 and fi2 describe the same file.</code></span>
+<span class="codeline" id="line-62"><code>// For example, on Unix this means that the device and inode fields</code></span>
+<span class="codeline" id="line-63"><code>// of the two underlying structures are identical; on other systems</code></span>
+<span class="codeline" id="line-64"><code>// the decision may be based on the path names.</code></span>
+<span class="codeline" id="line-65"><code>// SameFile only applies to results returned by this package's Stat.</code></span>
+<span class="codeline" id="line-66"><code>// It returns false in other cases.</code></span>
+<span class="codeline" id="line-67"><code>func SameFile(fi1, fi2 FileInfo) bool {</code></span>
+<span class="codeline" id="line-68"><code>	fs1, ok1 := fi1.(*fileStat)</code></span>
+<span class="codeline" id="line-69"><code>	fs2, ok2 := fi2.(*fileStat)</code></span>
+<span class="codeline" id="line-70"><code>	if !ok1 || !ok2 {</code></span>
+<span class="codeline" id="line-71"><code>		return false</code></span>
+<span class="codeline" id="line-72"><code>	}</code></span>
+<span class="codeline" id="line-73"><code>	return sameFile(fs1, fs2)</code></span>
+<span class="codeline" id="line-74"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

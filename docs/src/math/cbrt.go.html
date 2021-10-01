@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: cbrt.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	cbrt.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// The go code is a modified version of the original C code from</code></span>
+<span class="codeline" id="line-8"><code>// http://www.netlib.org/fdlibm/s_cbrt.c and came with this notice.</code></span>
+<span class="codeline" id="line-9"><code>//</code></span>
+<span class="codeline" id="line-10"><code>// ====================================================</code></span>
+<span class="codeline" id="line-11"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-12"><code>//</code></span>
+<span class="codeline" id="line-13"><code>// Developed at SunSoft, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-14"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-15"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-16"><code>// is preserved.</code></span>
+<span class="codeline" id="line-17"><code>// ====================================================</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>// Cbrt returns the cube root of x.</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-22"><code>//	Cbrt(±0) = ±0</code></span>
+<span class="codeline" id="line-23"><code>//	Cbrt(±Inf) = ±Inf</code></span>
+<span class="codeline" id="line-24"><code>//	Cbrt(NaN) = NaN</code></span>
+<span class="codeline" id="line-25"><code>func Cbrt(x float64) float64</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>func cbrt(x float64) float64 {</code></span>
+<span class="codeline" id="line-28"><code>	const (</code></span>
+<span class="codeline" id="line-29"><code>		B1             = 715094163                   // (682-0.03306235651)*2**20</code></span>
+<span class="codeline" id="line-30"><code>		B2             = 696219795                   // (664-0.03306235651)*2**20</code></span>
+<span class="codeline" id="line-31"><code>		C              = 5.42857142857142815906e-01  // 19/35     = 0x3FE15F15F15F15F1</code></span>
+<span class="codeline" id="line-32"><code>		D              = -7.05306122448979611050e-01 // -864/1225 = 0xBFE691DE2532C834</code></span>
+<span class="codeline" id="line-33"><code>		E              = 1.41428571428571436819e+00  // 99/70     = 0x3FF6A0EA0EA0EA0F</code></span>
+<span class="codeline" id="line-34"><code>		F              = 1.60714285714285720630e+00  // 45/28     = 0x3FF9B6DB6DB6DB6E</code></span>
+<span class="codeline" id="line-35"><code>		G              = 3.57142857142857150787e-01  // 5/14      = 0x3FD6DB6DB6DB6DB7</code></span>
+<span class="codeline" id="line-36"><code>		SmallestNormal = 2.22507385850720138309e-308 // 2**-1022  = 0x0010000000000000</code></span>
+<span class="codeline" id="line-37"><code>	)</code></span>
+<span class="codeline" id="line-38"><code>	// special cases</code></span>
+<span class="codeline" id="line-39"><code>	switch {</code></span>
+<span class="codeline" id="line-40"><code>	case x == 0 || IsNaN(x) || IsInf(x, 0):</code></span>
+<span class="codeline" id="line-41"><code>		return x</code></span>
+<span class="codeline" id="line-42"><code>	}</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	sign := false</code></span>
+<span class="codeline" id="line-45"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-46"><code>		x = -x</code></span>
+<span class="codeline" id="line-47"><code>		sign = true</code></span>
+<span class="codeline" id="line-48"><code>	}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>	// rough cbrt to 5 bits</code></span>
+<span class="codeline" id="line-51"><code>	t := Float64frombits(Float64bits(x)/3 + B1&lt;&lt;32)</code></span>
+<span class="codeline" id="line-52"><code>	if x &lt; SmallestNormal {</code></span>
+<span class="codeline" id="line-53"><code>		// subnormal number</code></span>
+<span class="codeline" id="line-54"><code>		t = float64(1 &lt;&lt; 54) // set t= 2**54</code></span>
+<span class="codeline" id="line-55"><code>		t *= x</code></span>
+<span class="codeline" id="line-56"><code>		t = Float64frombits(Float64bits(t)/3 + B2&lt;&lt;32)</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>	// new cbrt to 23 bits</code></span>
+<span class="codeline" id="line-60"><code>	r := t * t / x</code></span>
+<span class="codeline" id="line-61"><code>	s := C + r*t</code></span>
+<span class="codeline" id="line-62"><code>	t *= G + F/(s+E+D/s)</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>	// chop to 22 bits, make larger than cbrt(x)</code></span>
+<span class="codeline" id="line-65"><code>	t = Float64frombits(Float64bits(t)&amp;(0xFFFFFFFFC&lt;&lt;28) + 1&lt;&lt;30)</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>	// one step newton iteration to 53 bits with error less than 0.667ulps</code></span>
+<span class="codeline" id="line-68"><code>	s = t * t // t*t is exact</code></span>
+<span class="codeline" id="line-69"><code>	r = x / s</code></span>
+<span class="codeline" id="line-70"><code>	w := t + t</code></span>
+<span class="codeline" id="line-71"><code>	r = (r - t) / (w + r) // r-s is exact</code></span>
+<span class="codeline" id="line-72"><code>	t = t + t*r</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>	// restore the sign bit</code></span>
+<span class="codeline" id="line-75"><code>	if sign {</code></span>
+<span class="codeline" id="line-76"><code>		t = -t</code></span>
+<span class="codeline" id="line-77"><code>	}</code></span>
+<span class="codeline" id="line-78"><code>	return t</code></span>
+<span class="codeline" id="line-79"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

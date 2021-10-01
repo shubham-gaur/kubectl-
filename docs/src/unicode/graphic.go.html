@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: graphic.go in package unicode</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	graphic.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/unicode.html">unicode</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2011 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package unicode</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Bit masks for each code point under U+0100, for fast lookup.</code></span>
+<span class="codeline" id="line-8"><code>const (</code></span>
+<span class="codeline" id="line-9"><code>	pC     = 1 &lt;&lt; iota // a control character.</code></span>
+<span class="codeline" id="line-10"><code>	pP                 // a punctuation character.</code></span>
+<span class="codeline" id="line-11"><code>	pN                 // a numeral.</code></span>
+<span class="codeline" id="line-12"><code>	pS                 // a symbolic character.</code></span>
+<span class="codeline" id="line-13"><code>	pZ                 // a spacing character.</code></span>
+<span class="codeline" id="line-14"><code>	pLu                // an upper-case letter.</code></span>
+<span class="codeline" id="line-15"><code>	pLl                // a lower-case letter.</code></span>
+<span class="codeline" id="line-16"><code>	pp                 // a printable character according to Go's definition.</code></span>
+<span class="codeline" id="line-17"><code>	pg     = pp | pZ   // a graphical character according to the Unicode definition.</code></span>
+<span class="codeline" id="line-18"><code>	pLo    = pLl | pLu // a letter that is neither upper nor lower case.</code></span>
+<span class="codeline" id="line-19"><code>	pLmask = pLo</code></span>
+<span class="codeline" id="line-20"><code>)</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>// GraphicRanges defines the set of graphic characters according to Unicode.</code></span>
+<span class="codeline" id="line-23"><code>var GraphicRanges = []*RangeTable{</code></span>
+<span class="codeline" id="line-24"><code>	L, M, N, P, S, Zs,</code></span>
+<span class="codeline" id="line-25"><code>}</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>// PrintRanges defines the set of printable characters according to Go.</code></span>
+<span class="codeline" id="line-28"><code>// ASCII space, U+0020, is handled separately.</code></span>
+<span class="codeline" id="line-29"><code>var PrintRanges = []*RangeTable{</code></span>
+<span class="codeline" id="line-30"><code>	L, M, N, P, S,</code></span>
+<span class="codeline" id="line-31"><code>}</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>// IsGraphic reports whether the rune is defined as a Graphic by Unicode.</code></span>
+<span class="codeline" id="line-34"><code>// Such characters include letters, marks, numbers, punctuation, symbols, and</code></span>
+<span class="codeline" id="line-35"><code>// spaces, from categories L, M, N, P, S, Zs.</code></span>
+<span class="codeline" id="line-36"><code>func IsGraphic(r rune) bool {</code></span>
+<span class="codeline" id="line-37"><code>	// We convert to uint32 to avoid the extra test for negative,</code></span>
+<span class="codeline" id="line-38"><code>	// and in the index we convert to uint8 to avoid the range check.</code></span>
+<span class="codeline" id="line-39"><code>	if uint32(r) &lt;= MaxLatin1 {</code></span>
+<span class="codeline" id="line-40"><code>		return properties[uint8(r)]&amp;pg != 0</code></span>
+<span class="codeline" id="line-41"><code>	}</code></span>
+<span class="codeline" id="line-42"><code>	return In(r, GraphicRanges...)</code></span>
+<span class="codeline" id="line-43"><code>}</code></span>
+<span class="codeline" id="line-44"><code></code></span>
+<span class="codeline" id="line-45"><code>// IsPrint reports whether the rune is defined as printable by Go. Such</code></span>
+<span class="codeline" id="line-46"><code>// characters include letters, marks, numbers, punctuation, symbols, and the</code></span>
+<span class="codeline" id="line-47"><code>// ASCII space character, from categories L, M, N, P, S and the ASCII space</code></span>
+<span class="codeline" id="line-48"><code>// character. This categorization is the same as IsGraphic except that the</code></span>
+<span class="codeline" id="line-49"><code>// only spacing character is ASCII space, U+0020.</code></span>
+<span class="codeline" id="line-50"><code>func IsPrint(r rune) bool {</code></span>
+<span class="codeline" id="line-51"><code>	if uint32(r) &lt;= MaxLatin1 {</code></span>
+<span class="codeline" id="line-52"><code>		return properties[uint8(r)]&amp;pp != 0</code></span>
+<span class="codeline" id="line-53"><code>	}</code></span>
+<span class="codeline" id="line-54"><code>	return In(r, PrintRanges...)</code></span>
+<span class="codeline" id="line-55"><code>}</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>// IsOneOf reports whether the rune is a member of one of the ranges.</code></span>
+<span class="codeline" id="line-58"><code>// The function "In" provides a nicer signature and should be used in preference to IsOneOf.</code></span>
+<span class="codeline" id="line-59"><code>func IsOneOf(ranges []*RangeTable, r rune) bool {</code></span>
+<span class="codeline" id="line-60"><code>	for _, inside := range ranges {</code></span>
+<span class="codeline" id="line-61"><code>		if Is(inside, r) {</code></span>
+<span class="codeline" id="line-62"><code>			return true</code></span>
+<span class="codeline" id="line-63"><code>		}</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code>	return false</code></span>
+<span class="codeline" id="line-66"><code>}</code></span>
+<span class="codeline" id="line-67"><code></code></span>
+<span class="codeline" id="line-68"><code>// In reports whether the rune is a member of one of the ranges.</code></span>
+<span class="codeline" id="line-69"><code>func In(r rune, ranges ...*RangeTable) bool {</code></span>
+<span class="codeline" id="line-70"><code>	for _, inside := range ranges {</code></span>
+<span class="codeline" id="line-71"><code>		if Is(inside, r) {</code></span>
+<span class="codeline" id="line-72"><code>			return true</code></span>
+<span class="codeline" id="line-73"><code>		}</code></span>
+<span class="codeline" id="line-74"><code>	}</code></span>
+<span class="codeline" id="line-75"><code>	return false</code></span>
+<span class="codeline" id="line-76"><code>}</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>// IsControl reports whether the rune is a control character.</code></span>
+<span class="codeline" id="line-79"><code>// The C (Other) Unicode category includes more code points</code></span>
+<span class="codeline" id="line-80"><code>// such as surrogates; use Is(C, r) to test for them.</code></span>
+<span class="codeline" id="line-81"><code>func IsControl(r rune) bool {</code></span>
+<span class="codeline" id="line-82"><code>	if uint32(r) &lt;= MaxLatin1 {</code></span>
+<span class="codeline" id="line-83"><code>		return properties[uint8(r)]&amp;pC != 0</code></span>
+<span class="codeline" id="line-84"><code>	}</code></span>
+<span class="codeline" id="line-85"><code>	// All control characters are &lt; MaxLatin1.</code></span>
+<span class="codeline" id="line-86"><code>	return false</code></span>
+<span class="codeline" id="line-87"><code>}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>// IsLetter reports whether the rune is a letter (category L).</code></span>
+<span class="codeline" id="line-90"><code>func IsLetter(r rune) bool {</code></span>
+<span class="codeline" id="line-91"><code>	if uint32(r) &lt;= MaxLatin1 {</code></span>
+<span class="codeline" id="line-92"><code>		return properties[uint8(r)]&amp;(pLmask) != 0</code></span>
+<span class="codeline" id="line-93"><code>	}</code></span>
+<span class="codeline" id="line-94"><code>	return isExcludingLatin(Letter, r)</code></span>
+<span class="codeline" id="line-95"><code>}</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>// IsMark reports whether the rune is a mark character (category M).</code></span>
+<span class="codeline" id="line-98"><code>func IsMark(r rune) bool {</code></span>
+<span class="codeline" id="line-99"><code>	// There are no mark characters in Latin-1.</code></span>
+<span class="codeline" id="line-100"><code>	return isExcludingLatin(Mark, r)</code></span>
+<span class="codeline" id="line-101"><code>}</code></span>
+<span class="codeline" id="line-102"><code></code></span>
+<span class="codeline" id="line-103"><code>// IsNumber reports whether the rune is a number (category N).</code></span>
+<span class="codeline" id="line-104"><code>func IsNumber(r rune) bool {</code></span>
+<span class="codeline" id="line-105"><code>	if uint32(r) &lt;= MaxLatin1 {</code></span>
+<span class="codeline" id="line-106"><code>		return properties[uint8(r)]&amp;pN != 0</code></span>
+<span class="codeline" id="line-107"><code>	}</code></span>
+<span class="codeline" id="line-108"><code>	return isExcludingLatin(Number, r)</code></span>
+<span class="codeline" id="line-109"><code>}</code></span>
+<span class="codeline" id="line-110"><code></code></span>
+<span class="codeline" id="line-111"><code>// IsPunct reports whether the rune is a Unicode punctuation character</code></span>
+<span class="codeline" id="line-112"><code>// (category P).</code></span>
+<span class="codeline" id="line-113"><code>func IsPunct(r rune) bool {</code></span>
+<span class="codeline" id="line-114"><code>	if uint32(r) &lt;= MaxLatin1 {</code></span>
+<span class="codeline" id="line-115"><code>		return properties[uint8(r)]&amp;pP != 0</code></span>
+<span class="codeline" id="line-116"><code>	}</code></span>
+<span class="codeline" id="line-117"><code>	return Is(Punct, r)</code></span>
+<span class="codeline" id="line-118"><code>}</code></span>
+<span class="codeline" id="line-119"><code></code></span>
+<span class="codeline" id="line-120"><code>// IsSpace reports whether the rune is a space character as defined</code></span>
+<span class="codeline" id="line-121"><code>// by Unicode's White Space property; in the Latin-1 space</code></span>
+<span class="codeline" id="line-122"><code>// this is</code></span>
+<span class="codeline" id="line-123"><code>//	'\t', '\n', '\v', '\f', '\r', ' ', U+0085 (NEL), U+00A0 (NBSP).</code></span>
+<span class="codeline" id="line-124"><code>// Other definitions of spacing characters are set by category</code></span>
+<span class="codeline" id="line-125"><code>// Z and property Pattern_White_Space.</code></span>
+<span class="codeline" id="line-126"><code>func IsSpace(r rune) bool {</code></span>
+<span class="codeline" id="line-127"><code>	// This property isn't the same as Z; special-case it.</code></span>
+<span class="codeline" id="line-128"><code>	if uint32(r) &lt;= MaxLatin1 {</code></span>
+<span class="codeline" id="line-129"><code>		switch r {</code></span>
+<span class="codeline" id="line-130"><code>		case '\t', '\n', '\v', '\f', '\r', ' ', 0x85, 0xA0:</code></span>
+<span class="codeline" id="line-131"><code>			return true</code></span>
+<span class="codeline" id="line-132"><code>		}</code></span>
+<span class="codeline" id="line-133"><code>		return false</code></span>
+<span class="codeline" id="line-134"><code>	}</code></span>
+<span class="codeline" id="line-135"><code>	return isExcludingLatin(White_Space, r)</code></span>
+<span class="codeline" id="line-136"><code>}</code></span>
+<span class="codeline" id="line-137"><code></code></span>
+<span class="codeline" id="line-138"><code>// IsSymbol reports whether the rune is a symbolic character.</code></span>
+<span class="codeline" id="line-139"><code>func IsSymbol(r rune) bool {</code></span>
+<span class="codeline" id="line-140"><code>	if uint32(r) &lt;= MaxLatin1 {</code></span>
+<span class="codeline" id="line-141"><code>		return properties[uint8(r)]&amp;pS != 0</code></span>
+<span class="codeline" id="line-142"><code>	}</code></span>
+<span class="codeline" id="line-143"><code>	return isExcludingLatin(Symbol, r)</code></span>
+<span class="codeline" id="line-144"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

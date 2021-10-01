@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: defs_linux_amd64.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	defs_linux_amd64.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// created by cgo -cdefs and then converted to Go</code></span>
+<span class="codeline" id="line-2"><code>// cgo -cdefs defs_linux.go defs1_linux.go</code></span>
+<span class="codeline" id="line-3"><code></code></span>
+<span class="codeline" id="line-4"><code>package runtime</code></span>
+<span class="codeline" id="line-5"><code></code></span>
+<span class="codeline" id="line-6"><code>const (</code></span>
+<span class="codeline" id="line-7"><code>	_EINTR  = 0x4</code></span>
+<span class="codeline" id="line-8"><code>	_EAGAIN = 0xb</code></span>
+<span class="codeline" id="line-9"><code>	_ENOMEM = 0xc</code></span>
+<span class="codeline" id="line-10"><code>	_ENOSYS = 0x26</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>	_PROT_NONE  = 0x0</code></span>
+<span class="codeline" id="line-13"><code>	_PROT_READ  = 0x1</code></span>
+<span class="codeline" id="line-14"><code>	_PROT_WRITE = 0x2</code></span>
+<span class="codeline" id="line-15"><code>	_PROT_EXEC  = 0x4</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>	_MAP_ANON    = 0x20</code></span>
+<span class="codeline" id="line-18"><code>	_MAP_PRIVATE = 0x2</code></span>
+<span class="codeline" id="line-19"><code>	_MAP_FIXED   = 0x10</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>	_MADV_DONTNEED   = 0x4</code></span>
+<span class="codeline" id="line-22"><code>	_MADV_FREE       = 0x8</code></span>
+<span class="codeline" id="line-23"><code>	_MADV_HUGEPAGE   = 0xe</code></span>
+<span class="codeline" id="line-24"><code>	_MADV_NOHUGEPAGE = 0xf</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>	_SA_RESTART  = 0x10000000</code></span>
+<span class="codeline" id="line-27"><code>	_SA_ONSTACK  = 0x8000000</code></span>
+<span class="codeline" id="line-28"><code>	_SA_RESTORER = 0x4000000</code></span>
+<span class="codeline" id="line-29"><code>	_SA_SIGINFO  = 0x4</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>	_SIGHUP    = 0x1</code></span>
+<span class="codeline" id="line-32"><code>	_SIGINT    = 0x2</code></span>
+<span class="codeline" id="line-33"><code>	_SIGQUIT   = 0x3</code></span>
+<span class="codeline" id="line-34"><code>	_SIGILL    = 0x4</code></span>
+<span class="codeline" id="line-35"><code>	_SIGTRAP   = 0x5</code></span>
+<span class="codeline" id="line-36"><code>	_SIGABRT   = 0x6</code></span>
+<span class="codeline" id="line-37"><code>	_SIGBUS    = 0x7</code></span>
+<span class="codeline" id="line-38"><code>	_SIGFPE    = 0x8</code></span>
+<span class="codeline" id="line-39"><code>	_SIGKILL   = 0x9</code></span>
+<span class="codeline" id="line-40"><code>	_SIGUSR1   = 0xa</code></span>
+<span class="codeline" id="line-41"><code>	_SIGSEGV   = 0xb</code></span>
+<span class="codeline" id="line-42"><code>	_SIGUSR2   = 0xc</code></span>
+<span class="codeline" id="line-43"><code>	_SIGPIPE   = 0xd</code></span>
+<span class="codeline" id="line-44"><code>	_SIGALRM   = 0xe</code></span>
+<span class="codeline" id="line-45"><code>	_SIGSTKFLT = 0x10</code></span>
+<span class="codeline" id="line-46"><code>	_SIGCHLD   = 0x11</code></span>
+<span class="codeline" id="line-47"><code>	_SIGCONT   = 0x12</code></span>
+<span class="codeline" id="line-48"><code>	_SIGSTOP   = 0x13</code></span>
+<span class="codeline" id="line-49"><code>	_SIGTSTP   = 0x14</code></span>
+<span class="codeline" id="line-50"><code>	_SIGTTIN   = 0x15</code></span>
+<span class="codeline" id="line-51"><code>	_SIGTTOU   = 0x16</code></span>
+<span class="codeline" id="line-52"><code>	_SIGURG    = 0x17</code></span>
+<span class="codeline" id="line-53"><code>	_SIGXCPU   = 0x18</code></span>
+<span class="codeline" id="line-54"><code>	_SIGXFSZ   = 0x19</code></span>
+<span class="codeline" id="line-55"><code>	_SIGVTALRM = 0x1a</code></span>
+<span class="codeline" id="line-56"><code>	_SIGPROF   = 0x1b</code></span>
+<span class="codeline" id="line-57"><code>	_SIGWINCH  = 0x1c</code></span>
+<span class="codeline" id="line-58"><code>	_SIGIO     = 0x1d</code></span>
+<span class="codeline" id="line-59"><code>	_SIGPWR    = 0x1e</code></span>
+<span class="codeline" id="line-60"><code>	_SIGSYS    = 0x1f</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>	_FPE_INTDIV = 0x1</code></span>
+<span class="codeline" id="line-63"><code>	_FPE_INTOVF = 0x2</code></span>
+<span class="codeline" id="line-64"><code>	_FPE_FLTDIV = 0x3</code></span>
+<span class="codeline" id="line-65"><code>	_FPE_FLTOVF = 0x4</code></span>
+<span class="codeline" id="line-66"><code>	_FPE_FLTUND = 0x5</code></span>
+<span class="codeline" id="line-67"><code>	_FPE_FLTRES = 0x6</code></span>
+<span class="codeline" id="line-68"><code>	_FPE_FLTINV = 0x7</code></span>
+<span class="codeline" id="line-69"><code>	_FPE_FLTSUB = 0x8</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>	_BUS_ADRALN = 0x1</code></span>
+<span class="codeline" id="line-72"><code>	_BUS_ADRERR = 0x2</code></span>
+<span class="codeline" id="line-73"><code>	_BUS_OBJERR = 0x3</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>	_SEGV_MAPERR = 0x1</code></span>
+<span class="codeline" id="line-76"><code>	_SEGV_ACCERR = 0x2</code></span>
+<span class="codeline" id="line-77"><code></code></span>
+<span class="codeline" id="line-78"><code>	_ITIMER_REAL    = 0x0</code></span>
+<span class="codeline" id="line-79"><code>	_ITIMER_VIRTUAL = 0x1</code></span>
+<span class="codeline" id="line-80"><code>	_ITIMER_PROF    = 0x2</code></span>
+<span class="codeline" id="line-81"><code></code></span>
+<span class="codeline" id="line-82"><code>	_EPOLLIN       = 0x1</code></span>
+<span class="codeline" id="line-83"><code>	_EPOLLOUT      = 0x4</code></span>
+<span class="codeline" id="line-84"><code>	_EPOLLERR      = 0x8</code></span>
+<span class="codeline" id="line-85"><code>	_EPOLLHUP      = 0x10</code></span>
+<span class="codeline" id="line-86"><code>	_EPOLLRDHUP    = 0x2000</code></span>
+<span class="codeline" id="line-87"><code>	_EPOLLET       = 0x80000000</code></span>
+<span class="codeline" id="line-88"><code>	_EPOLL_CLOEXEC = 0x80000</code></span>
+<span class="codeline" id="line-89"><code>	_EPOLL_CTL_ADD = 0x1</code></span>
+<span class="codeline" id="line-90"><code>	_EPOLL_CTL_DEL = 0x2</code></span>
+<span class="codeline" id="line-91"><code>	_EPOLL_CTL_MOD = 0x3</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>	_AF_UNIX    = 0x1</code></span>
+<span class="codeline" id="line-94"><code>	_SOCK_DGRAM = 0x2</code></span>
+<span class="codeline" id="line-95"><code>)</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>type timespec struct {</code></span>
+<span class="codeline" id="line-98"><code>	tv_sec  int64</code></span>
+<span class="codeline" id="line-99"><code>	tv_nsec int64</code></span>
+<span class="codeline" id="line-100"><code>}</code></span>
+<span class="codeline" id="line-101"><code></code></span>
+<span class="codeline" id="line-102"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-103"><code>func (ts *timespec) setNsec(ns int64) {</code></span>
+<span class="codeline" id="line-104"><code>	ts.tv_sec = ns / 1e9</code></span>
+<span class="codeline" id="line-105"><code>	ts.tv_nsec = ns % 1e9</code></span>
+<span class="codeline" id="line-106"><code>}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>type timeval struct {</code></span>
+<span class="codeline" id="line-109"><code>	tv_sec  int64</code></span>
+<span class="codeline" id="line-110"><code>	tv_usec int64</code></span>
+<span class="codeline" id="line-111"><code>}</code></span>
+<span class="codeline" id="line-112"><code></code></span>
+<span class="codeline" id="line-113"><code>func (tv *timeval) set_usec(x int32) {</code></span>
+<span class="codeline" id="line-114"><code>	tv.tv_usec = int64(x)</code></span>
+<span class="codeline" id="line-115"><code>}</code></span>
+<span class="codeline" id="line-116"><code></code></span>
+<span class="codeline" id="line-117"><code>type sigactiont struct {</code></span>
+<span class="codeline" id="line-118"><code>	sa_handler  uintptr</code></span>
+<span class="codeline" id="line-119"><code>	sa_flags    uint64</code></span>
+<span class="codeline" id="line-120"><code>	sa_restorer uintptr</code></span>
+<span class="codeline" id="line-121"><code>	sa_mask     uint64</code></span>
+<span class="codeline" id="line-122"><code>}</code></span>
+<span class="codeline" id="line-123"><code></code></span>
+<span class="codeline" id="line-124"><code>type siginfo struct {</code></span>
+<span class="codeline" id="line-125"><code>	si_signo int32</code></span>
+<span class="codeline" id="line-126"><code>	si_errno int32</code></span>
+<span class="codeline" id="line-127"><code>	si_code  int32</code></span>
+<span class="codeline" id="line-128"><code>	// below here is a union; si_addr is the only field we use</code></span>
+<span class="codeline" id="line-129"><code>	si_addr uint64</code></span>
+<span class="codeline" id="line-130"><code>}</code></span>
+<span class="codeline" id="line-131"><code></code></span>
+<span class="codeline" id="line-132"><code>type itimerval struct {</code></span>
+<span class="codeline" id="line-133"><code>	it_interval timeval</code></span>
+<span class="codeline" id="line-134"><code>	it_value    timeval</code></span>
+<span class="codeline" id="line-135"><code>}</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>type epollevent struct {</code></span>
+<span class="codeline" id="line-138"><code>	events uint32</code></span>
+<span class="codeline" id="line-139"><code>	data   [8]byte // unaligned uintptr</code></span>
+<span class="codeline" id="line-140"><code>}</code></span>
+<span class="codeline" id="line-141"><code></code></span>
+<span class="codeline" id="line-142"><code>// created by cgo -cdefs and then converted to Go</code></span>
+<span class="codeline" id="line-143"><code>// cgo -cdefs defs_linux.go defs1_linux.go</code></span>
+<span class="codeline" id="line-144"><code></code></span>
+<span class="codeline" id="line-145"><code>const (</code></span>
+<span class="codeline" id="line-146"><code>	_O_RDONLY   = 0x0</code></span>
+<span class="codeline" id="line-147"><code>	_O_NONBLOCK = 0x800</code></span>
+<span class="codeline" id="line-148"><code>	_O_CLOEXEC  = 0x80000</code></span>
+<span class="codeline" id="line-149"><code>)</code></span>
+<span class="codeline" id="line-150"><code></code></span>
+<span class="codeline" id="line-151"><code>type usigset struct {</code></span>
+<span class="codeline" id="line-152"><code>	__val [16]uint64</code></span>
+<span class="codeline" id="line-153"><code>}</code></span>
+<span class="codeline" id="line-154"><code></code></span>
+<span class="codeline" id="line-155"><code>type fpxreg struct {</code></span>
+<span class="codeline" id="line-156"><code>	significand [4]uint16</code></span>
+<span class="codeline" id="line-157"><code>	exponent    uint16</code></span>
+<span class="codeline" id="line-158"><code>	padding     [3]uint16</code></span>
+<span class="codeline" id="line-159"><code>}</code></span>
+<span class="codeline" id="line-160"><code></code></span>
+<span class="codeline" id="line-161"><code>type xmmreg struct {</code></span>
+<span class="codeline" id="line-162"><code>	element [4]uint32</code></span>
+<span class="codeline" id="line-163"><code>}</code></span>
+<span class="codeline" id="line-164"><code></code></span>
+<span class="codeline" id="line-165"><code>type fpstate struct {</code></span>
+<span class="codeline" id="line-166"><code>	cwd       uint16</code></span>
+<span class="codeline" id="line-167"><code>	swd       uint16</code></span>
+<span class="codeline" id="line-168"><code>	ftw       uint16</code></span>
+<span class="codeline" id="line-169"><code>	fop       uint16</code></span>
+<span class="codeline" id="line-170"><code>	rip       uint64</code></span>
+<span class="codeline" id="line-171"><code>	rdp       uint64</code></span>
+<span class="codeline" id="line-172"><code>	mxcsr     uint32</code></span>
+<span class="codeline" id="line-173"><code>	mxcr_mask uint32</code></span>
+<span class="codeline" id="line-174"><code>	_st       [8]fpxreg</code></span>
+<span class="codeline" id="line-175"><code>	_xmm      [16]xmmreg</code></span>
+<span class="codeline" id="line-176"><code>	padding   [24]uint32</code></span>
+<span class="codeline" id="line-177"><code>}</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>type fpxreg1 struct {</code></span>
+<span class="codeline" id="line-180"><code>	significand [4]uint16</code></span>
+<span class="codeline" id="line-181"><code>	exponent    uint16</code></span>
+<span class="codeline" id="line-182"><code>	padding     [3]uint16</code></span>
+<span class="codeline" id="line-183"><code>}</code></span>
+<span class="codeline" id="line-184"><code></code></span>
+<span class="codeline" id="line-185"><code>type xmmreg1 struct {</code></span>
+<span class="codeline" id="line-186"><code>	element [4]uint32</code></span>
+<span class="codeline" id="line-187"><code>}</code></span>
+<span class="codeline" id="line-188"><code></code></span>
+<span class="codeline" id="line-189"><code>type fpstate1 struct {</code></span>
+<span class="codeline" id="line-190"><code>	cwd       uint16</code></span>
+<span class="codeline" id="line-191"><code>	swd       uint16</code></span>
+<span class="codeline" id="line-192"><code>	ftw       uint16</code></span>
+<span class="codeline" id="line-193"><code>	fop       uint16</code></span>
+<span class="codeline" id="line-194"><code>	rip       uint64</code></span>
+<span class="codeline" id="line-195"><code>	rdp       uint64</code></span>
+<span class="codeline" id="line-196"><code>	mxcsr     uint32</code></span>
+<span class="codeline" id="line-197"><code>	mxcr_mask uint32</code></span>
+<span class="codeline" id="line-198"><code>	_st       [8]fpxreg1</code></span>
+<span class="codeline" id="line-199"><code>	_xmm      [16]xmmreg1</code></span>
+<span class="codeline" id="line-200"><code>	padding   [24]uint32</code></span>
+<span class="codeline" id="line-201"><code>}</code></span>
+<span class="codeline" id="line-202"><code></code></span>
+<span class="codeline" id="line-203"><code>type fpreg1 struct {</code></span>
+<span class="codeline" id="line-204"><code>	significand [4]uint16</code></span>
+<span class="codeline" id="line-205"><code>	exponent    uint16</code></span>
+<span class="codeline" id="line-206"><code>}</code></span>
+<span class="codeline" id="line-207"><code></code></span>
+<span class="codeline" id="line-208"><code>type stackt struct {</code></span>
+<span class="codeline" id="line-209"><code>	ss_sp     *byte</code></span>
+<span class="codeline" id="line-210"><code>	ss_flags  int32</code></span>
+<span class="codeline" id="line-211"><code>	pad_cgo_0 [4]byte</code></span>
+<span class="codeline" id="line-212"><code>	ss_size   uintptr</code></span>
+<span class="codeline" id="line-213"><code>}</code></span>
+<span class="codeline" id="line-214"><code></code></span>
+<span class="codeline" id="line-215"><code>type mcontext struct {</code></span>
+<span class="codeline" id="line-216"><code>	gregs       [23]uint64</code></span>
+<span class="codeline" id="line-217"><code>	fpregs      *fpstate</code></span>
+<span class="codeline" id="line-218"><code>	__reserved1 [8]uint64</code></span>
+<span class="codeline" id="line-219"><code>}</code></span>
+<span class="codeline" id="line-220"><code></code></span>
+<span class="codeline" id="line-221"><code>type ucontext struct {</code></span>
+<span class="codeline" id="line-222"><code>	uc_flags     uint64</code></span>
+<span class="codeline" id="line-223"><code>	uc_link      *ucontext</code></span>
+<span class="codeline" id="line-224"><code>	uc_stack     stackt</code></span>
+<span class="codeline" id="line-225"><code>	uc_mcontext  mcontext</code></span>
+<span class="codeline" id="line-226"><code>	uc_sigmask   usigset</code></span>
+<span class="codeline" id="line-227"><code>	__fpregs_mem fpstate</code></span>
+<span class="codeline" id="line-228"><code>}</code></span>
+<span class="codeline" id="line-229"><code></code></span>
+<span class="codeline" id="line-230"><code>type sigcontext struct {</code></span>
+<span class="codeline" id="line-231"><code>	r8          uint64</code></span>
+<span class="codeline" id="line-232"><code>	r9          uint64</code></span>
+<span class="codeline" id="line-233"><code>	r10         uint64</code></span>
+<span class="codeline" id="line-234"><code>	r11         uint64</code></span>
+<span class="codeline" id="line-235"><code>	r12         uint64</code></span>
+<span class="codeline" id="line-236"><code>	r13         uint64</code></span>
+<span class="codeline" id="line-237"><code>	r14         uint64</code></span>
+<span class="codeline" id="line-238"><code>	r15         uint64</code></span>
+<span class="codeline" id="line-239"><code>	rdi         uint64</code></span>
+<span class="codeline" id="line-240"><code>	rsi         uint64</code></span>
+<span class="codeline" id="line-241"><code>	rbp         uint64</code></span>
+<span class="codeline" id="line-242"><code>	rbx         uint64</code></span>
+<span class="codeline" id="line-243"><code>	rdx         uint64</code></span>
+<span class="codeline" id="line-244"><code>	rax         uint64</code></span>
+<span class="codeline" id="line-245"><code>	rcx         uint64</code></span>
+<span class="codeline" id="line-246"><code>	rsp         uint64</code></span>
+<span class="codeline" id="line-247"><code>	rip         uint64</code></span>
+<span class="codeline" id="line-248"><code>	eflags      uint64</code></span>
+<span class="codeline" id="line-249"><code>	cs          uint16</code></span>
+<span class="codeline" id="line-250"><code>	gs          uint16</code></span>
+<span class="codeline" id="line-251"><code>	fs          uint16</code></span>
+<span class="codeline" id="line-252"><code>	__pad0      uint16</code></span>
+<span class="codeline" id="line-253"><code>	err         uint64</code></span>
+<span class="codeline" id="line-254"><code>	trapno      uint64</code></span>
+<span class="codeline" id="line-255"><code>	oldmask     uint64</code></span>
+<span class="codeline" id="line-256"><code>	cr2         uint64</code></span>
+<span class="codeline" id="line-257"><code>	fpstate     *fpstate1</code></span>
+<span class="codeline" id="line-258"><code>	__reserved1 [8]uint64</code></span>
+<span class="codeline" id="line-259"><code>}</code></span>
+<span class="codeline" id="line-260"><code></code></span>
+<span class="codeline" id="line-261"><code>type sockaddr_un struct {</code></span>
+<span class="codeline" id="line-262"><code>	family uint16</code></span>
+<span class="codeline" id="line-263"><code>	path   [108]byte</code></span>
+<span class="codeline" id="line-264"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: cgocall.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	cgocall.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Cgo call and callback support.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// To call into the C function f from Go, the cgo-generated code calls</code></span>
+<span class="codeline" id="line-8"><code>// runtime.cgocall(_cgo_Cfunc_f, frame), where _cgo_Cfunc_f is a</code></span>
+<span class="codeline" id="line-9"><code>// gcc-compiled function written by cgo.</code></span>
+<span class="codeline" id="line-10"><code>//</code></span>
+<span class="codeline" id="line-11"><code>// runtime.cgocall (below) calls entersyscall so as not to block</code></span>
+<span class="codeline" id="line-12"><code>// other goroutines or the garbage collector, and then calls</code></span>
+<span class="codeline" id="line-13"><code>// runtime.asmcgocall(_cgo_Cfunc_f, frame).</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// runtime.asmcgocall (in asm_$GOARCH.s) switches to the m-&gt;g0 stack</code></span>
+<span class="codeline" id="line-16"><code>// (assumed to be an operating system-allocated stack, so safe to run</code></span>
+<span class="codeline" id="line-17"><code>// gcc-compiled code on) and calls _cgo_Cfunc_f(frame).</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// _cgo_Cfunc_f invokes the actual C function f with arguments</code></span>
+<span class="codeline" id="line-20"><code>// taken from the frame structure, records the results in the frame,</code></span>
+<span class="codeline" id="line-21"><code>// and returns to runtime.asmcgocall.</code></span>
+<span class="codeline" id="line-22"><code>//</code></span>
+<span class="codeline" id="line-23"><code>// After it regains control, runtime.asmcgocall switches back to the</code></span>
+<span class="codeline" id="line-24"><code>// original g (m-&gt;curg)'s stack and returns to runtime.cgocall.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// After it regains control, runtime.cgocall calls exitsyscall, which blocks</code></span>
+<span class="codeline" id="line-27"><code>// until this m can run Go code without violating the $GOMAXPROCS limit,</code></span>
+<span class="codeline" id="line-28"><code>// and then unlocks g from m.</code></span>
+<span class="codeline" id="line-29"><code>//</code></span>
+<span class="codeline" id="line-30"><code>// The above description skipped over the possibility of the gcc-compiled</code></span>
+<span class="codeline" id="line-31"><code>// function f calling back into Go. If that happens, we continue down</code></span>
+<span class="codeline" id="line-32"><code>// the rabbit hole during the execution of f.</code></span>
+<span class="codeline" id="line-33"><code>//</code></span>
+<span class="codeline" id="line-34"><code>// To make it possible for gcc-compiled C code to call a Go function p.GoF,</code></span>
+<span class="codeline" id="line-35"><code>// cgo writes a gcc-compiled function named GoF (not p.GoF, since gcc doesn't</code></span>
+<span class="codeline" id="line-36"><code>// know about packages).  The gcc-compiled C function f calls GoF.</code></span>
+<span class="codeline" id="line-37"><code>//</code></span>
+<span class="codeline" id="line-38"><code>// GoF initializes "frame", a structure containing all of its</code></span>
+<span class="codeline" id="line-39"><code>// arguments and slots for p.GoF's results. It calls</code></span>
+<span class="codeline" id="line-40"><code>// crosscall2(_cgoexp_GoF, frame, framesize, ctxt) using the gcc ABI.</code></span>
+<span class="codeline" id="line-41"><code>//</code></span>
+<span class="codeline" id="line-42"><code>// crosscall2 (in cgo/asm_$GOARCH.s) is a four-argument adapter from</code></span>
+<span class="codeline" id="line-43"><code>// the gcc function call ABI to the gc function call ABI. At this</code></span>
+<span class="codeline" id="line-44"><code>// point we're in the Go runtime, but we're still running on m.g0's</code></span>
+<span class="codeline" id="line-45"><code>// stack and outside the $GOMAXPROCS limit. crosscall2 calls</code></span>
+<span class="codeline" id="line-46"><code>// runtime.cgocallback(_cgoexp_GoF, frame, ctxt) using the gc ABI.</code></span>
+<span class="codeline" id="line-47"><code>// (crosscall2's framesize argument is no longer used, but there's one</code></span>
+<span class="codeline" id="line-48"><code>// case where SWIG calls crosscall2 directly and expects to pass this</code></span>
+<span class="codeline" id="line-49"><code>// argument. See _cgo_panic.)</code></span>
+<span class="codeline" id="line-50"><code>//</code></span>
+<span class="codeline" id="line-51"><code>// runtime.cgocallback (in asm_$GOARCH.s) switches from m.g0's stack</code></span>
+<span class="codeline" id="line-52"><code>// to the original g (m.curg)'s stack, on which it calls</code></span>
+<span class="codeline" id="line-53"><code>// runtime.cgocallbackg(_cgoexp_GoF, frame, ctxt). As part of the</code></span>
+<span class="codeline" id="line-54"><code>// stack switch, runtime.cgocallback saves the current SP as</code></span>
+<span class="codeline" id="line-55"><code>// m.g0.sched.sp, so that any use of m.g0's stack during the execution</code></span>
+<span class="codeline" id="line-56"><code>// of the callback will be done below the existing stack frames.</code></span>
+<span class="codeline" id="line-57"><code>// Before overwriting m.g0.sched.sp, it pushes the old value on the</code></span>
+<span class="codeline" id="line-58"><code>// m.g0 stack, so that it can be restored later.</code></span>
+<span class="codeline" id="line-59"><code>//</code></span>
+<span class="codeline" id="line-60"><code>// runtime.cgocallbackg (below) is now running on a real goroutine</code></span>
+<span class="codeline" id="line-61"><code>// stack (not an m.g0 stack).  First it calls runtime.exitsyscall, which will</code></span>
+<span class="codeline" id="line-62"><code>// block until the $GOMAXPROCS limit allows running this goroutine.</code></span>
+<span class="codeline" id="line-63"><code>// Once exitsyscall has returned, it is safe to do things like call the memory</code></span>
+<span class="codeline" id="line-64"><code>// allocator or invoke the Go callback function.  runtime.cgocallbackg</code></span>
+<span class="codeline" id="line-65"><code>// first defers a function to unwind m.g0.sched.sp, so that if p.GoF</code></span>
+<span class="codeline" id="line-66"><code>// panics, m.g0.sched.sp will be restored to its old value: the m.g0 stack</code></span>
+<span class="codeline" id="line-67"><code>// and the m.curg stack will be unwound in lock step.</code></span>
+<span class="codeline" id="line-68"><code>// Then it calls _cgoexp_GoF(frame).</code></span>
+<span class="codeline" id="line-69"><code>//</code></span>
+<span class="codeline" id="line-70"><code>// _cgoexp_GoF, which was generated by cmd/cgo, unpacks the arguments</code></span>
+<span class="codeline" id="line-71"><code>// from frame, calls p.GoF, writes the results back to frame, and</code></span>
+<span class="codeline" id="line-72"><code>// returns. Now we start unwinding this whole process.</code></span>
+<span class="codeline" id="line-73"><code>//</code></span>
+<span class="codeline" id="line-74"><code>// runtime.cgocallbackg pops but does not execute the deferred</code></span>
+<span class="codeline" id="line-75"><code>// function to unwind m.g0.sched.sp, calls runtime.entersyscall, and</code></span>
+<span class="codeline" id="line-76"><code>// returns to runtime.cgocallback.</code></span>
+<span class="codeline" id="line-77"><code>//</code></span>
+<span class="codeline" id="line-78"><code>// After it regains control, runtime.cgocallback switches back to</code></span>
+<span class="codeline" id="line-79"><code>// m.g0's stack (the pointer is still in m.g0.sched.sp), restores the old</code></span>
+<span class="codeline" id="line-80"><code>// m.g0.sched.sp value from the stack, and returns to crosscall2.</code></span>
+<span class="codeline" id="line-81"><code>//</code></span>
+<span class="codeline" id="line-82"><code>// crosscall2 restores the callee-save registers for gcc and returns</code></span>
+<span class="codeline" id="line-83"><code>// to GoF, which unpacks any result values and returns to f.</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>package runtime</code></span>
+<span class="codeline" id="line-86"><code></code></span>
+<span class="codeline" id="line-87"><code>import (</code></span>
+<span class="codeline" id="line-88"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-89"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-90"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-91"><code>)</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>// Addresses collected in a cgo backtrace when crashing.</code></span>
+<span class="codeline" id="line-94"><code>// Length must match arg.Max in x_cgo_callers in runtime/cgo/gcc_traceback.c.</code></span>
+<span class="codeline" id="line-95"><code>type cgoCallers [32]uintptr</code></span>
+<span class="codeline" id="line-96"><code></code></span>
+<span class="codeline" id="line-97"><code>// argset matches runtime/cgo/linux_syscall.c:argset_t</code></span>
+<span class="codeline" id="line-98"><code>type argset struct {</code></span>
+<span class="codeline" id="line-99"><code>	args   unsafe.Pointer</code></span>
+<span class="codeline" id="line-100"><code>	retval uintptr</code></span>
+<span class="codeline" id="line-101"><code>}</code></span>
+<span class="codeline" id="line-102"><code></code></span>
+<span class="codeline" id="line-103"><code>// wrapper for syscall package to call cgocall for libc (cgo) calls.</code></span>
+<span class="codeline" id="line-104"><code>//go:linkname syscall_cgocaller syscall.cgocaller</code></span>
+<span class="codeline" id="line-105"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-106"><code>//go:uintptrescapes</code></span>
+<span class="codeline" id="line-107"><code>func syscall_cgocaller(fn unsafe.Pointer, args ...uintptr) uintptr {</code></span>
+<span class="codeline" id="line-108"><code>	as := argset{args: unsafe.Pointer(&amp;args[0])}</code></span>
+<span class="codeline" id="line-109"><code>	cgocall(fn, unsafe.Pointer(&amp;as))</code></span>
+<span class="codeline" id="line-110"><code>	return as.retval</code></span>
+<span class="codeline" id="line-111"><code>}</code></span>
+<span class="codeline" id="line-112"><code></code></span>
+<span class="codeline" id="line-113"><code>// Call from Go to C.</code></span>
+<span class="codeline" id="line-114"><code>//</code></span>
+<span class="codeline" id="line-115"><code>// This must be nosplit because it's used for syscalls on some</code></span>
+<span class="codeline" id="line-116"><code>// platforms. Syscalls may have untyped arguments on the stack, so</code></span>
+<span class="codeline" id="line-117"><code>// it's not safe to grow or scan the stack.</code></span>
+<span class="codeline" id="line-118"><code>//</code></span>
+<span class="codeline" id="line-119"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-120"><code>func cgocall(fn, arg unsafe.Pointer) int32 {</code></span>
+<span class="codeline" id="line-121"><code>	if !iscgo &amp;&amp; GOOS != "solaris" &amp;&amp; GOOS != "illumos" &amp;&amp; GOOS != "windows" {</code></span>
+<span class="codeline" id="line-122"><code>		throw("cgocall unavailable")</code></span>
+<span class="codeline" id="line-123"><code>	}</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>	if fn == nil {</code></span>
+<span class="codeline" id="line-126"><code>		throw("cgocall nil")</code></span>
+<span class="codeline" id="line-127"><code>	}</code></span>
+<span class="codeline" id="line-128"><code></code></span>
+<span class="codeline" id="line-129"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-130"><code>		racereleasemerge(unsafe.Pointer(&amp;racecgosync))</code></span>
+<span class="codeline" id="line-131"><code>	}</code></span>
+<span class="codeline" id="line-132"><code></code></span>
+<span class="codeline" id="line-133"><code>	mp := getg().m</code></span>
+<span class="codeline" id="line-134"><code>	mp.ncgocall++</code></span>
+<span class="codeline" id="line-135"><code>	mp.ncgo++</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>	// Reset traceback.</code></span>
+<span class="codeline" id="line-138"><code>	mp.cgoCallers[0] = 0</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>	// Announce we are entering a system call</code></span>
+<span class="codeline" id="line-141"><code>	// so that the scheduler knows to create another</code></span>
+<span class="codeline" id="line-142"><code>	// M to run goroutines while we are in the</code></span>
+<span class="codeline" id="line-143"><code>	// foreign code.</code></span>
+<span class="codeline" id="line-144"><code>	//</code></span>
+<span class="codeline" id="line-145"><code>	// The call to asmcgocall is guaranteed not to</code></span>
+<span class="codeline" id="line-146"><code>	// grow the stack and does not allocate memory,</code></span>
+<span class="codeline" id="line-147"><code>	// so it is safe to call while "in a system call", outside</code></span>
+<span class="codeline" id="line-148"><code>	// the $GOMAXPROCS accounting.</code></span>
+<span class="codeline" id="line-149"><code>	//</code></span>
+<span class="codeline" id="line-150"><code>	// fn may call back into Go code, in which case we'll exit the</code></span>
+<span class="codeline" id="line-151"><code>	// "system call", run the Go code (which may grow the stack),</code></span>
+<span class="codeline" id="line-152"><code>	// and then re-enter the "system call" reusing the PC and SP</code></span>
+<span class="codeline" id="line-153"><code>	// saved by entersyscall here.</code></span>
+<span class="codeline" id="line-154"><code>	entersyscall()</code></span>
+<span class="codeline" id="line-155"><code></code></span>
+<span class="codeline" id="line-156"><code>	// Tell asynchronous preemption that we're entering external</code></span>
+<span class="codeline" id="line-157"><code>	// code. We do this after entersyscall because this may block</code></span>
+<span class="codeline" id="line-158"><code>	// and cause an async preemption to fail, but at this point a</code></span>
+<span class="codeline" id="line-159"><code>	// sync preemption will succeed (though this is not a matter</code></span>
+<span class="codeline" id="line-160"><code>	// of correctness).</code></span>
+<span class="codeline" id="line-161"><code>	osPreemptExtEnter(mp)</code></span>
+<span class="codeline" id="line-162"><code></code></span>
+<span class="codeline" id="line-163"><code>	mp.incgo = true</code></span>
+<span class="codeline" id="line-164"><code>	errno := asmcgocall(fn, arg)</code></span>
+<span class="codeline" id="line-165"><code></code></span>
+<span class="codeline" id="line-166"><code>	// Update accounting before exitsyscall because exitsyscall may</code></span>
+<span class="codeline" id="line-167"><code>	// reschedule us on to a different M.</code></span>
+<span class="codeline" id="line-168"><code>	mp.incgo = false</code></span>
+<span class="codeline" id="line-169"><code>	mp.ncgo--</code></span>
+<span class="codeline" id="line-170"><code></code></span>
+<span class="codeline" id="line-171"><code>	osPreemptExtExit(mp)</code></span>
+<span class="codeline" id="line-172"><code></code></span>
+<span class="codeline" id="line-173"><code>	exitsyscall()</code></span>
+<span class="codeline" id="line-174"><code></code></span>
+<span class="codeline" id="line-175"><code>	// Note that raceacquire must be called only after exitsyscall has</code></span>
+<span class="codeline" id="line-176"><code>	// wired this M to a P.</code></span>
+<span class="codeline" id="line-177"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-178"><code>		raceacquire(unsafe.Pointer(&amp;racecgosync))</code></span>
+<span class="codeline" id="line-179"><code>	}</code></span>
+<span class="codeline" id="line-180"><code></code></span>
+<span class="codeline" id="line-181"><code>	// From the garbage collector's perspective, time can move</code></span>
+<span class="codeline" id="line-182"><code>	// backwards in the sequence above. If there's a callback into</code></span>
+<span class="codeline" id="line-183"><code>	// Go code, GC will see this function at the call to</code></span>
+<span class="codeline" id="line-184"><code>	// asmcgocall. When the Go call later returns to C, the</code></span>
+<span class="codeline" id="line-185"><code>	// syscall PC/SP is rolled back and the GC sees this function</code></span>
+<span class="codeline" id="line-186"><code>	// back at the call to entersyscall. Normally, fn and arg</code></span>
+<span class="codeline" id="line-187"><code>	// would be live at entersyscall and dead at asmcgocall, so if</code></span>
+<span class="codeline" id="line-188"><code>	// time moved backwards, GC would see these arguments as dead</code></span>
+<span class="codeline" id="line-189"><code>	// and then live. Prevent these undead arguments from crashing</code></span>
+<span class="codeline" id="line-190"><code>	// GC by forcing them to stay live across this time warp.</code></span>
+<span class="codeline" id="line-191"><code>	KeepAlive(fn)</code></span>
+<span class="codeline" id="line-192"><code>	KeepAlive(arg)</code></span>
+<span class="codeline" id="line-193"><code>	KeepAlive(mp)</code></span>
+<span class="codeline" id="line-194"><code></code></span>
+<span class="codeline" id="line-195"><code>	return errno</code></span>
+<span class="codeline" id="line-196"><code>}</code></span>
+<span class="codeline" id="line-197"><code></code></span>
+<span class="codeline" id="line-198"><code>// Call from C back to Go.</code></span>
+<span class="codeline" id="line-199"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-200"><code>func cgocallbackg(fn, frame unsafe.Pointer, ctxt uintptr) {</code></span>
+<span class="codeline" id="line-201"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-202"><code>	if gp != gp.m.curg {</code></span>
+<span class="codeline" id="line-203"><code>		println("runtime: bad g in cgocallback")</code></span>
+<span class="codeline" id="line-204"><code>		exit(2)</code></span>
+<span class="codeline" id="line-205"><code>	}</code></span>
+<span class="codeline" id="line-206"><code></code></span>
+<span class="codeline" id="line-207"><code>	// The call from C is on gp.m's g0 stack, so we must ensure</code></span>
+<span class="codeline" id="line-208"><code>	// that we stay on that M. We have to do this before calling</code></span>
+<span class="codeline" id="line-209"><code>	// exitsyscall, since it would otherwise be free to move us to</code></span>
+<span class="codeline" id="line-210"><code>	// a different M. The call to unlockOSThread is in unwindm.</code></span>
+<span class="codeline" id="line-211"><code>	lockOSThread()</code></span>
+<span class="codeline" id="line-212"><code></code></span>
+<span class="codeline" id="line-213"><code>	// Save current syscall parameters, so m.syscall can be</code></span>
+<span class="codeline" id="line-214"><code>	// used again if callback decide to make syscall.</code></span>
+<span class="codeline" id="line-215"><code>	syscall := gp.m.syscall</code></span>
+<span class="codeline" id="line-216"><code></code></span>
+<span class="codeline" id="line-217"><code>	// entersyscall saves the caller's SP to allow the GC to trace the Go</code></span>
+<span class="codeline" id="line-218"><code>	// stack. However, since we're returning to an earlier stack frame and</code></span>
+<span class="codeline" id="line-219"><code>	// need to pair with the entersyscall() call made by cgocall, we must</code></span>
+<span class="codeline" id="line-220"><code>	// save syscall* and let reentersyscall restore them.</code></span>
+<span class="codeline" id="line-221"><code>	savedsp := unsafe.Pointer(gp.syscallsp)</code></span>
+<span class="codeline" id="line-222"><code>	savedpc := gp.syscallpc</code></span>
+<span class="codeline" id="line-223"><code>	exitsyscall() // coming out of cgo call</code></span>
+<span class="codeline" id="line-224"><code>	gp.m.incgo = false</code></span>
+<span class="codeline" id="line-225"><code></code></span>
+<span class="codeline" id="line-226"><code>	osPreemptExtExit(gp.m)</code></span>
+<span class="codeline" id="line-227"><code></code></span>
+<span class="codeline" id="line-228"><code>	cgocallbackg1(fn, frame, ctxt)</code></span>
+<span class="codeline" id="line-229"><code></code></span>
+<span class="codeline" id="line-230"><code>	// At this point unlockOSThread has been called.</code></span>
+<span class="codeline" id="line-231"><code>	// The following code must not change to a different m.</code></span>
+<span class="codeline" id="line-232"><code>	// This is enforced by checking incgo in the schedule function.</code></span>
+<span class="codeline" id="line-233"><code></code></span>
+<span class="codeline" id="line-234"><code>	osPreemptExtEnter(gp.m)</code></span>
+<span class="codeline" id="line-235"><code></code></span>
+<span class="codeline" id="line-236"><code>	gp.m.incgo = true</code></span>
+<span class="codeline" id="line-237"><code>	// going back to cgo call</code></span>
+<span class="codeline" id="line-238"><code>	reentersyscall(savedpc, uintptr(savedsp))</code></span>
+<span class="codeline" id="line-239"><code></code></span>
+<span class="codeline" id="line-240"><code>	gp.m.syscall = syscall</code></span>
+<span class="codeline" id="line-241"><code>}</code></span>
+<span class="codeline" id="line-242"><code></code></span>
+<span class="codeline" id="line-243"><code>func cgocallbackg1(fn, frame unsafe.Pointer, ctxt uintptr) {</code></span>
+<span class="codeline" id="line-244"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-245"><code>	if gp.m.needextram || atomic.Load(&amp;extraMWaiters) &gt; 0 {</code></span>
+<span class="codeline" id="line-246"><code>		gp.m.needextram = false</code></span>
+<span class="codeline" id="line-247"><code>		systemstack(newextram)</code></span>
+<span class="codeline" id="line-248"><code>	}</code></span>
+<span class="codeline" id="line-249"><code></code></span>
+<span class="codeline" id="line-250"><code>	if ctxt != 0 {</code></span>
+<span class="codeline" id="line-251"><code>		s := append(gp.cgoCtxt, ctxt)</code></span>
+<span class="codeline" id="line-252"><code></code></span>
+<span class="codeline" id="line-253"><code>		// Now we need to set gp.cgoCtxt = s, but we could get</code></span>
+<span class="codeline" id="line-254"><code>		// a SIGPROF signal while manipulating the slice, and</code></span>
+<span class="codeline" id="line-255"><code>		// the SIGPROF handler could pick up gp.cgoCtxt while</code></span>
+<span class="codeline" id="line-256"><code>		// tracing up the stack.  We need to ensure that the</code></span>
+<span class="codeline" id="line-257"><code>		// handler always sees a valid slice, so set the</code></span>
+<span class="codeline" id="line-258"><code>		// values in an order such that it always does.</code></span>
+<span class="codeline" id="line-259"><code>		p := (*slice)(unsafe.Pointer(&amp;gp.cgoCtxt))</code></span>
+<span class="codeline" id="line-260"><code>		atomicstorep(unsafe.Pointer(&amp;p.array), unsafe.Pointer(&amp;s[0]))</code></span>
+<span class="codeline" id="line-261"><code>		p.cap = cap(s)</code></span>
+<span class="codeline" id="line-262"><code>		p.len = len(s)</code></span>
+<span class="codeline" id="line-263"><code></code></span>
+<span class="codeline" id="line-264"><code>		defer func(gp *g) {</code></span>
+<span class="codeline" id="line-265"><code>			// Decrease the length of the slice by one, safely.</code></span>
+<span class="codeline" id="line-266"><code>			p := (*slice)(unsafe.Pointer(&amp;gp.cgoCtxt))</code></span>
+<span class="codeline" id="line-267"><code>			p.len--</code></span>
+<span class="codeline" id="line-268"><code>		}(gp)</code></span>
+<span class="codeline" id="line-269"><code>	}</code></span>
+<span class="codeline" id="line-270"><code></code></span>
+<span class="codeline" id="line-271"><code>	if gp.m.ncgo == 0 {</code></span>
+<span class="codeline" id="line-272"><code>		// The C call to Go came from a thread not currently running</code></span>
+<span class="codeline" id="line-273"><code>		// any Go. In the case of -buildmode=c-archive or c-shared,</code></span>
+<span class="codeline" id="line-274"><code>		// this call may be coming in before package initialization</code></span>
+<span class="codeline" id="line-275"><code>		// is complete. Wait until it is.</code></span>
+<span class="codeline" id="line-276"><code>		&lt;-main_init_done</code></span>
+<span class="codeline" id="line-277"><code>	}</code></span>
+<span class="codeline" id="line-278"><code></code></span>
+<span class="codeline" id="line-279"><code>	// Add entry to defer stack in case of panic.</code></span>
+<span class="codeline" id="line-280"><code>	restore := true</code></span>
+<span class="codeline" id="line-281"><code>	defer unwindm(&amp;restore)</code></span>
+<span class="codeline" id="line-282"><code></code></span>
+<span class="codeline" id="line-283"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-284"><code>		raceacquire(unsafe.Pointer(&amp;racecgosync))</code></span>
+<span class="codeline" id="line-285"><code>	}</code></span>
+<span class="codeline" id="line-286"><code></code></span>
+<span class="codeline" id="line-287"><code>	// Invoke callback. This function is generated by cmd/cgo and</code></span>
+<span class="codeline" id="line-288"><code>	// will unpack the argument frame and call the Go function.</code></span>
+<span class="codeline" id="line-289"><code>	var cb func(frame unsafe.Pointer)</code></span>
+<span class="codeline" id="line-290"><code>	cbFV := funcval{uintptr(fn)}</code></span>
+<span class="codeline" id="line-291"><code>	*(*unsafe.Pointer)(unsafe.Pointer(&amp;cb)) = noescape(unsafe.Pointer(&amp;cbFV))</code></span>
+<span class="codeline" id="line-292"><code>	cb(frame)</code></span>
+<span class="codeline" id="line-293"><code></code></span>
+<span class="codeline" id="line-294"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-295"><code>		racereleasemerge(unsafe.Pointer(&amp;racecgosync))</code></span>
+<span class="codeline" id="line-296"><code>	}</code></span>
+<span class="codeline" id="line-297"><code></code></span>
+<span class="codeline" id="line-298"><code>	// Do not unwind m-&gt;g0-&gt;sched.sp.</code></span>
+<span class="codeline" id="line-299"><code>	// Our caller, cgocallback, will do that.</code></span>
+<span class="codeline" id="line-300"><code>	restore = false</code></span>
+<span class="codeline" id="line-301"><code>}</code></span>
+<span class="codeline" id="line-302"><code></code></span>
+<span class="codeline" id="line-303"><code>func unwindm(restore *bool) {</code></span>
+<span class="codeline" id="line-304"><code>	if *restore {</code></span>
+<span class="codeline" id="line-305"><code>		// Restore sp saved by cgocallback during</code></span>
+<span class="codeline" id="line-306"><code>		// unwind of g's stack (see comment at top of file).</code></span>
+<span class="codeline" id="line-307"><code>		mp := acquirem()</code></span>
+<span class="codeline" id="line-308"><code>		sched := &amp;mp.g0.sched</code></span>
+<span class="codeline" id="line-309"><code>		switch GOARCH {</code></span>
+<span class="codeline" id="line-310"><code>		default:</code></span>
+<span class="codeline" id="line-311"><code>			throw("unwindm not implemented")</code></span>
+<span class="codeline" id="line-312"><code>		case "386", "amd64", "arm", "ppc64", "ppc64le", "mips64", "mips64le", "s390x", "mips", "mipsle", "riscv64":</code></span>
+<span class="codeline" id="line-313"><code>			sched.sp = *(*uintptr)(unsafe.Pointer(sched.sp + sys.MinFrameSize))</code></span>
+<span class="codeline" id="line-314"><code>		case "arm64":</code></span>
+<span class="codeline" id="line-315"><code>			sched.sp = *(*uintptr)(unsafe.Pointer(sched.sp + 16))</code></span>
+<span class="codeline" id="line-316"><code>		}</code></span>
+<span class="codeline" id="line-317"><code></code></span>
+<span class="codeline" id="line-318"><code>		// Do the accounting that cgocall will not have a chance to do</code></span>
+<span class="codeline" id="line-319"><code>		// during an unwind.</code></span>
+<span class="codeline" id="line-320"><code>		//</code></span>
+<span class="codeline" id="line-321"><code>		// In the case where a Go call originates from C, ncgo is 0</code></span>
+<span class="codeline" id="line-322"><code>		// and there is no matching cgocall to end.</code></span>
+<span class="codeline" id="line-323"><code>		if mp.ncgo &gt; 0 {</code></span>
+<span class="codeline" id="line-324"><code>			mp.incgo = false</code></span>
+<span class="codeline" id="line-325"><code>			mp.ncgo--</code></span>
+<span class="codeline" id="line-326"><code>			osPreemptExtExit(mp)</code></span>
+<span class="codeline" id="line-327"><code>		}</code></span>
+<span class="codeline" id="line-328"><code></code></span>
+<span class="codeline" id="line-329"><code>		releasem(mp)</code></span>
+<span class="codeline" id="line-330"><code>	}</code></span>
+<span class="codeline" id="line-331"><code></code></span>
+<span class="codeline" id="line-332"><code>	// Undo the call to lockOSThread in cgocallbackg.</code></span>
+<span class="codeline" id="line-333"><code>	// We must still stay on the same m.</code></span>
+<span class="codeline" id="line-334"><code>	unlockOSThread()</code></span>
+<span class="codeline" id="line-335"><code>}</code></span>
+<span class="codeline" id="line-336"><code></code></span>
+<span class="codeline" id="line-337"><code>// called from assembly</code></span>
+<span class="codeline" id="line-338"><code>func badcgocallback() {</code></span>
+<span class="codeline" id="line-339"><code>	throw("misaligned stack in cgocallback")</code></span>
+<span class="codeline" id="line-340"><code>}</code></span>
+<span class="codeline" id="line-341"><code></code></span>
+<span class="codeline" id="line-342"><code>// called from (incomplete) assembly</code></span>
+<span class="codeline" id="line-343"><code>func cgounimpl() {</code></span>
+<span class="codeline" id="line-344"><code>	throw("cgo not implemented")</code></span>
+<span class="codeline" id="line-345"><code>}</code></span>
+<span class="codeline" id="line-346"><code></code></span>
+<span class="codeline" id="line-347"><code>var racecgosync uint64 // represents possible synchronization in C code</code></span>
+<span class="codeline" id="line-348"><code></code></span>
+<span class="codeline" id="line-349"><code>// Pointer checking for cgo code.</code></span>
+<span class="codeline" id="line-350"><code></code></span>
+<span class="codeline" id="line-351"><code>// We want to detect all cases where a program that does not use</code></span>
+<span class="codeline" id="line-352"><code>// unsafe makes a cgo call passing a Go pointer to memory that</code></span>
+<span class="codeline" id="line-353"><code>// contains a Go pointer. Here a Go pointer is defined as a pointer</code></span>
+<span class="codeline" id="line-354"><code>// to memory allocated by the Go runtime. Programs that use unsafe</code></span>
+<span class="codeline" id="line-355"><code>// can evade this restriction easily, so we don't try to catch them.</code></span>
+<span class="codeline" id="line-356"><code>// The cgo program will rewrite all possibly bad pointer arguments to</code></span>
+<span class="codeline" id="line-357"><code>// call cgoCheckPointer, where we can catch cases of a Go pointer</code></span>
+<span class="codeline" id="line-358"><code>// pointing to a Go pointer.</code></span>
+<span class="codeline" id="line-359"><code></code></span>
+<span class="codeline" id="line-360"><code>// Complicating matters, taking the address of a slice or array</code></span>
+<span class="codeline" id="line-361"><code>// element permits the C program to access all elements of the slice</code></span>
+<span class="codeline" id="line-362"><code>// or array. In that case we will see a pointer to a single element,</code></span>
+<span class="codeline" id="line-363"><code>// but we need to check the entire data structure.</code></span>
+<span class="codeline" id="line-364"><code></code></span>
+<span class="codeline" id="line-365"><code>// The cgoCheckPointer call takes additional arguments indicating that</code></span>
+<span class="codeline" id="line-366"><code>// it was called on an address expression. An additional argument of</code></span>
+<span class="codeline" id="line-367"><code>// true means that it only needs to check a single element. An</code></span>
+<span class="codeline" id="line-368"><code>// additional argument of a slice or array means that it needs to</code></span>
+<span class="codeline" id="line-369"><code>// check the entire slice/array, but nothing else. Otherwise, the</code></span>
+<span class="codeline" id="line-370"><code>// pointer could be anything, and we check the entire heap object,</code></span>
+<span class="codeline" id="line-371"><code>// which is conservative but safe.</code></span>
+<span class="codeline" id="line-372"><code></code></span>
+<span class="codeline" id="line-373"><code>// When and if we implement a moving garbage collector,</code></span>
+<span class="codeline" id="line-374"><code>// cgoCheckPointer will pin the pointer for the duration of the cgo</code></span>
+<span class="codeline" id="line-375"><code>// call.  (This is necessary but not sufficient; the cgo program will</code></span>
+<span class="codeline" id="line-376"><code>// also have to change to pin Go pointers that cannot point to Go</code></span>
+<span class="codeline" id="line-377"><code>// pointers.)</code></span>
+<span class="codeline" id="line-378"><code></code></span>
+<span class="codeline" id="line-379"><code>// cgoCheckPointer checks if the argument contains a Go pointer that</code></span>
+<span class="codeline" id="line-380"><code>// points to a Go pointer, and panics if it does.</code></span>
+<span class="codeline" id="line-381"><code>func cgoCheckPointer(ptr interface{}, arg interface{}) {</code></span>
+<span class="codeline" id="line-382"><code>	if debug.cgocheck == 0 {</code></span>
+<span class="codeline" id="line-383"><code>		return</code></span>
+<span class="codeline" id="line-384"><code>	}</code></span>
+<span class="codeline" id="line-385"><code></code></span>
+<span class="codeline" id="line-386"><code>	ep := efaceOf(&amp;ptr)</code></span>
+<span class="codeline" id="line-387"><code>	t := ep._type</code></span>
+<span class="codeline" id="line-388"><code></code></span>
+<span class="codeline" id="line-389"><code>	top := true</code></span>
+<span class="codeline" id="line-390"><code>	if arg != nil &amp;&amp; (t.kind&amp;kindMask == kindPtr || t.kind&amp;kindMask == kindUnsafePointer) {</code></span>
+<span class="codeline" id="line-391"><code>		p := ep.data</code></span>
+<span class="codeline" id="line-392"><code>		if t.kind&amp;kindDirectIface == 0 {</code></span>
+<span class="codeline" id="line-393"><code>			p = *(*unsafe.Pointer)(p)</code></span>
+<span class="codeline" id="line-394"><code>		}</code></span>
+<span class="codeline" id="line-395"><code>		if p == nil || !cgoIsGoPointer(p) {</code></span>
+<span class="codeline" id="line-396"><code>			return</code></span>
+<span class="codeline" id="line-397"><code>		}</code></span>
+<span class="codeline" id="line-398"><code>		aep := efaceOf(&amp;arg)</code></span>
+<span class="codeline" id="line-399"><code>		switch aep._type.kind &amp; kindMask {</code></span>
+<span class="codeline" id="line-400"><code>		case kindBool:</code></span>
+<span class="codeline" id="line-401"><code>			if t.kind&amp;kindMask == kindUnsafePointer {</code></span>
+<span class="codeline" id="line-402"><code>				// We don't know the type of the element.</code></span>
+<span class="codeline" id="line-403"><code>				break</code></span>
+<span class="codeline" id="line-404"><code>			}</code></span>
+<span class="codeline" id="line-405"><code>			pt := (*ptrtype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-406"><code>			cgoCheckArg(pt.elem, p, true, false, cgoCheckPointerFail)</code></span>
+<span class="codeline" id="line-407"><code>			return</code></span>
+<span class="codeline" id="line-408"><code>		case kindSlice:</code></span>
+<span class="codeline" id="line-409"><code>			// Check the slice rather than the pointer.</code></span>
+<span class="codeline" id="line-410"><code>			ep = aep</code></span>
+<span class="codeline" id="line-411"><code>			t = ep._type</code></span>
+<span class="codeline" id="line-412"><code>		case kindArray:</code></span>
+<span class="codeline" id="line-413"><code>			// Check the array rather than the pointer.</code></span>
+<span class="codeline" id="line-414"><code>			// Pass top as false since we have a pointer</code></span>
+<span class="codeline" id="line-415"><code>			// to the array.</code></span>
+<span class="codeline" id="line-416"><code>			ep = aep</code></span>
+<span class="codeline" id="line-417"><code>			t = ep._type</code></span>
+<span class="codeline" id="line-418"><code>			top = false</code></span>
+<span class="codeline" id="line-419"><code>		default:</code></span>
+<span class="codeline" id="line-420"><code>			throw("can't happen")</code></span>
+<span class="codeline" id="line-421"><code>		}</code></span>
+<span class="codeline" id="line-422"><code>	}</code></span>
+<span class="codeline" id="line-423"><code></code></span>
+<span class="codeline" id="line-424"><code>	cgoCheckArg(t, ep.data, t.kind&amp;kindDirectIface == 0, top, cgoCheckPointerFail)</code></span>
+<span class="codeline" id="line-425"><code>}</code></span>
+<span class="codeline" id="line-426"><code></code></span>
+<span class="codeline" id="line-427"><code>const cgoCheckPointerFail = "cgo argument has Go pointer to Go pointer"</code></span>
+<span class="codeline" id="line-428"><code>const cgoResultFail = "cgo result has Go pointer"</code></span>
+<span class="codeline" id="line-429"><code></code></span>
+<span class="codeline" id="line-430"><code>// cgoCheckArg is the real work of cgoCheckPointer. The argument p</code></span>
+<span class="codeline" id="line-431"><code>// is either a pointer to the value (of type t), or the value itself,</code></span>
+<span class="codeline" id="line-432"><code>// depending on indir. The top parameter is whether we are at the top</code></span>
+<span class="codeline" id="line-433"><code>// level, where Go pointers are allowed.</code></span>
+<span class="codeline" id="line-434"><code>func cgoCheckArg(t *_type, p unsafe.Pointer, indir, top bool, msg string) {</code></span>
+<span class="codeline" id="line-435"><code>	if t.ptrdata == 0 || p == nil {</code></span>
+<span class="codeline" id="line-436"><code>		// If the type has no pointers there is nothing to do.</code></span>
+<span class="codeline" id="line-437"><code>		return</code></span>
+<span class="codeline" id="line-438"><code>	}</code></span>
+<span class="codeline" id="line-439"><code></code></span>
+<span class="codeline" id="line-440"><code>	switch t.kind &amp; kindMask {</code></span>
+<span class="codeline" id="line-441"><code>	default:</code></span>
+<span class="codeline" id="line-442"><code>		throw("can't happen")</code></span>
+<span class="codeline" id="line-443"><code>	case kindArray:</code></span>
+<span class="codeline" id="line-444"><code>		at := (*arraytype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-445"><code>		if !indir {</code></span>
+<span class="codeline" id="line-446"><code>			if at.len != 1 {</code></span>
+<span class="codeline" id="line-447"><code>				throw("can't happen")</code></span>
+<span class="codeline" id="line-448"><code>			}</code></span>
+<span class="codeline" id="line-449"><code>			cgoCheckArg(at.elem, p, at.elem.kind&amp;kindDirectIface == 0, top, msg)</code></span>
+<span class="codeline" id="line-450"><code>			return</code></span>
+<span class="codeline" id="line-451"><code>		}</code></span>
+<span class="codeline" id="line-452"><code>		for i := uintptr(0); i &lt; at.len; i++ {</code></span>
+<span class="codeline" id="line-453"><code>			cgoCheckArg(at.elem, p, true, top, msg)</code></span>
+<span class="codeline" id="line-454"><code>			p = add(p, at.elem.size)</code></span>
+<span class="codeline" id="line-455"><code>		}</code></span>
+<span class="codeline" id="line-456"><code>	case kindChan, kindMap:</code></span>
+<span class="codeline" id="line-457"><code>		// These types contain internal pointers that will</code></span>
+<span class="codeline" id="line-458"><code>		// always be allocated in the Go heap. It's never OK</code></span>
+<span class="codeline" id="line-459"><code>		// to pass them to C.</code></span>
+<span class="codeline" id="line-460"><code>		panic(errorString(msg))</code></span>
+<span class="codeline" id="line-461"><code>	case kindFunc:</code></span>
+<span class="codeline" id="line-462"><code>		if indir {</code></span>
+<span class="codeline" id="line-463"><code>			p = *(*unsafe.Pointer)(p)</code></span>
+<span class="codeline" id="line-464"><code>		}</code></span>
+<span class="codeline" id="line-465"><code>		if !cgoIsGoPointer(p) {</code></span>
+<span class="codeline" id="line-466"><code>			return</code></span>
+<span class="codeline" id="line-467"><code>		}</code></span>
+<span class="codeline" id="line-468"><code>		panic(errorString(msg))</code></span>
+<span class="codeline" id="line-469"><code>	case kindInterface:</code></span>
+<span class="codeline" id="line-470"><code>		it := *(**_type)(p)</code></span>
+<span class="codeline" id="line-471"><code>		if it == nil {</code></span>
+<span class="codeline" id="line-472"><code>			return</code></span>
+<span class="codeline" id="line-473"><code>		}</code></span>
+<span class="codeline" id="line-474"><code>		// A type known at compile time is OK since it's</code></span>
+<span class="codeline" id="line-475"><code>		// constant. A type not known at compile time will be</code></span>
+<span class="codeline" id="line-476"><code>		// in the heap and will not be OK.</code></span>
+<span class="codeline" id="line-477"><code>		if inheap(uintptr(unsafe.Pointer(it))) {</code></span>
+<span class="codeline" id="line-478"><code>			panic(errorString(msg))</code></span>
+<span class="codeline" id="line-479"><code>		}</code></span>
+<span class="codeline" id="line-480"><code>		p = *(*unsafe.Pointer)(add(p, sys.PtrSize))</code></span>
+<span class="codeline" id="line-481"><code>		if !cgoIsGoPointer(p) {</code></span>
+<span class="codeline" id="line-482"><code>			return</code></span>
+<span class="codeline" id="line-483"><code>		}</code></span>
+<span class="codeline" id="line-484"><code>		if !top {</code></span>
+<span class="codeline" id="line-485"><code>			panic(errorString(msg))</code></span>
+<span class="codeline" id="line-486"><code>		}</code></span>
+<span class="codeline" id="line-487"><code>		cgoCheckArg(it, p, it.kind&amp;kindDirectIface == 0, false, msg)</code></span>
+<span class="codeline" id="line-488"><code>	case kindSlice:</code></span>
+<span class="codeline" id="line-489"><code>		st := (*slicetype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-490"><code>		s := (*slice)(p)</code></span>
+<span class="codeline" id="line-491"><code>		p = s.array</code></span>
+<span class="codeline" id="line-492"><code>		if p == nil || !cgoIsGoPointer(p) {</code></span>
+<span class="codeline" id="line-493"><code>			return</code></span>
+<span class="codeline" id="line-494"><code>		}</code></span>
+<span class="codeline" id="line-495"><code>		if !top {</code></span>
+<span class="codeline" id="line-496"><code>			panic(errorString(msg))</code></span>
+<span class="codeline" id="line-497"><code>		}</code></span>
+<span class="codeline" id="line-498"><code>		if st.elem.ptrdata == 0 {</code></span>
+<span class="codeline" id="line-499"><code>			return</code></span>
+<span class="codeline" id="line-500"><code>		}</code></span>
+<span class="codeline" id="line-501"><code>		for i := 0; i &lt; s.cap; i++ {</code></span>
+<span class="codeline" id="line-502"><code>			cgoCheckArg(st.elem, p, true, false, msg)</code></span>
+<span class="codeline" id="line-503"><code>			p = add(p, st.elem.size)</code></span>
+<span class="codeline" id="line-504"><code>		}</code></span>
+<span class="codeline" id="line-505"><code>	case kindString:</code></span>
+<span class="codeline" id="line-506"><code>		ss := (*stringStruct)(p)</code></span>
+<span class="codeline" id="line-507"><code>		if !cgoIsGoPointer(ss.str) {</code></span>
+<span class="codeline" id="line-508"><code>			return</code></span>
+<span class="codeline" id="line-509"><code>		}</code></span>
+<span class="codeline" id="line-510"><code>		if !top {</code></span>
+<span class="codeline" id="line-511"><code>			panic(errorString(msg))</code></span>
+<span class="codeline" id="line-512"><code>		}</code></span>
+<span class="codeline" id="line-513"><code>	case kindStruct:</code></span>
+<span class="codeline" id="line-514"><code>		st := (*structtype)(unsafe.Pointer(t))</code></span>
+<span class="codeline" id="line-515"><code>		if !indir {</code></span>
+<span class="codeline" id="line-516"><code>			if len(st.fields) != 1 {</code></span>
+<span class="codeline" id="line-517"><code>				throw("can't happen")</code></span>
+<span class="codeline" id="line-518"><code>			}</code></span>
+<span class="codeline" id="line-519"><code>			cgoCheckArg(st.fields[0].typ, p, st.fields[0].typ.kind&amp;kindDirectIface == 0, top, msg)</code></span>
+<span class="codeline" id="line-520"><code>			return</code></span>
+<span class="codeline" id="line-521"><code>		}</code></span>
+<span class="codeline" id="line-522"><code>		for _, f := range st.fields {</code></span>
+<span class="codeline" id="line-523"><code>			if f.typ.ptrdata == 0 {</code></span>
+<span class="codeline" id="line-524"><code>				continue</code></span>
+<span class="codeline" id="line-525"><code>			}</code></span>
+<span class="codeline" id="line-526"><code>			cgoCheckArg(f.typ, add(p, f.offset()), true, top, msg)</code></span>
+<span class="codeline" id="line-527"><code>		}</code></span>
+<span class="codeline" id="line-528"><code>	case kindPtr, kindUnsafePointer:</code></span>
+<span class="codeline" id="line-529"><code>		if indir {</code></span>
+<span class="codeline" id="line-530"><code>			p = *(*unsafe.Pointer)(p)</code></span>
+<span class="codeline" id="line-531"><code>			if p == nil {</code></span>
+<span class="codeline" id="line-532"><code>				return</code></span>
+<span class="codeline" id="line-533"><code>			}</code></span>
+<span class="codeline" id="line-534"><code>		}</code></span>
+<span class="codeline" id="line-535"><code></code></span>
+<span class="codeline" id="line-536"><code>		if !cgoIsGoPointer(p) {</code></span>
+<span class="codeline" id="line-537"><code>			return</code></span>
+<span class="codeline" id="line-538"><code>		}</code></span>
+<span class="codeline" id="line-539"><code>		if !top {</code></span>
+<span class="codeline" id="line-540"><code>			panic(errorString(msg))</code></span>
+<span class="codeline" id="line-541"><code>		}</code></span>
+<span class="codeline" id="line-542"><code></code></span>
+<span class="codeline" id="line-543"><code>		cgoCheckUnknownPointer(p, msg)</code></span>
+<span class="codeline" id="line-544"><code>	}</code></span>
+<span class="codeline" id="line-545"><code>}</code></span>
+<span class="codeline" id="line-546"><code></code></span>
+<span class="codeline" id="line-547"><code>// cgoCheckUnknownPointer is called for an arbitrary pointer into Go</code></span>
+<span class="codeline" id="line-548"><code>// memory. It checks whether that Go memory contains any other</code></span>
+<span class="codeline" id="line-549"><code>// pointer into Go memory. If it does, we panic.</code></span>
+<span class="codeline" id="line-550"><code>// The return values are unused but useful to see in panic tracebacks.</code></span>
+<span class="codeline" id="line-551"><code>func cgoCheckUnknownPointer(p unsafe.Pointer, msg string) (base, i uintptr) {</code></span>
+<span class="codeline" id="line-552"><code>	if inheap(uintptr(p)) {</code></span>
+<span class="codeline" id="line-553"><code>		b, span, _ := findObject(uintptr(p), 0, 0)</code></span>
+<span class="codeline" id="line-554"><code>		base = b</code></span>
+<span class="codeline" id="line-555"><code>		if base == 0 {</code></span>
+<span class="codeline" id="line-556"><code>			return</code></span>
+<span class="codeline" id="line-557"><code>		}</code></span>
+<span class="codeline" id="line-558"><code>		hbits := heapBitsForAddr(base)</code></span>
+<span class="codeline" id="line-559"><code>		n := span.elemsize</code></span>
+<span class="codeline" id="line-560"><code>		for i = uintptr(0); i &lt; n; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-561"><code>			if !hbits.morePointers() {</code></span>
+<span class="codeline" id="line-562"><code>				// No more possible pointers.</code></span>
+<span class="codeline" id="line-563"><code>				break</code></span>
+<span class="codeline" id="line-564"><code>			}</code></span>
+<span class="codeline" id="line-565"><code>			if hbits.isPointer() &amp;&amp; cgoIsGoPointer(*(*unsafe.Pointer)(unsafe.Pointer(base + i))) {</code></span>
+<span class="codeline" id="line-566"><code>				panic(errorString(msg))</code></span>
+<span class="codeline" id="line-567"><code>			}</code></span>
+<span class="codeline" id="line-568"><code>			hbits = hbits.next()</code></span>
+<span class="codeline" id="line-569"><code>		}</code></span>
+<span class="codeline" id="line-570"><code></code></span>
+<span class="codeline" id="line-571"><code>		return</code></span>
+<span class="codeline" id="line-572"><code>	}</code></span>
+<span class="codeline" id="line-573"><code></code></span>
+<span class="codeline" id="line-574"><code>	for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-575"><code>		if cgoInRange(p, datap.data, datap.edata) || cgoInRange(p, datap.bss, datap.ebss) {</code></span>
+<span class="codeline" id="line-576"><code>			// We have no way to know the size of the object.</code></span>
+<span class="codeline" id="line-577"><code>			// We have to assume that it might contain a pointer.</code></span>
+<span class="codeline" id="line-578"><code>			panic(errorString(msg))</code></span>
+<span class="codeline" id="line-579"><code>		}</code></span>
+<span class="codeline" id="line-580"><code>		// In the text or noptr sections, we know that the</code></span>
+<span class="codeline" id="line-581"><code>		// pointer does not point to a Go pointer.</code></span>
+<span class="codeline" id="line-582"><code>	}</code></span>
+<span class="codeline" id="line-583"><code></code></span>
+<span class="codeline" id="line-584"><code>	return</code></span>
+<span class="codeline" id="line-585"><code>}</code></span>
+<span class="codeline" id="line-586"><code></code></span>
+<span class="codeline" id="line-587"><code>// cgoIsGoPointer reports whether the pointer is a Go pointer--a</code></span>
+<span class="codeline" id="line-588"><code>// pointer to Go memory. We only care about Go memory that might</code></span>
+<span class="codeline" id="line-589"><code>// contain pointers.</code></span>
+<span class="codeline" id="line-590"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-591"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-592"><code>func cgoIsGoPointer(p unsafe.Pointer) bool {</code></span>
+<span class="codeline" id="line-593"><code>	if p == nil {</code></span>
+<span class="codeline" id="line-594"><code>		return false</code></span>
+<span class="codeline" id="line-595"><code>	}</code></span>
+<span class="codeline" id="line-596"><code></code></span>
+<span class="codeline" id="line-597"><code>	if inHeapOrStack(uintptr(p)) {</code></span>
+<span class="codeline" id="line-598"><code>		return true</code></span>
+<span class="codeline" id="line-599"><code>	}</code></span>
+<span class="codeline" id="line-600"><code></code></span>
+<span class="codeline" id="line-601"><code>	for _, datap := range activeModules() {</code></span>
+<span class="codeline" id="line-602"><code>		if cgoInRange(p, datap.data, datap.edata) || cgoInRange(p, datap.bss, datap.ebss) {</code></span>
+<span class="codeline" id="line-603"><code>			return true</code></span>
+<span class="codeline" id="line-604"><code>		}</code></span>
+<span class="codeline" id="line-605"><code>	}</code></span>
+<span class="codeline" id="line-606"><code></code></span>
+<span class="codeline" id="line-607"><code>	return false</code></span>
+<span class="codeline" id="line-608"><code>}</code></span>
+<span class="codeline" id="line-609"><code></code></span>
+<span class="codeline" id="line-610"><code>// cgoInRange reports whether p is between start and end.</code></span>
+<span class="codeline" id="line-611"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-612"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-613"><code>func cgoInRange(p unsafe.Pointer, start, end uintptr) bool {</code></span>
+<span class="codeline" id="line-614"><code>	return start &lt;= uintptr(p) &amp;&amp; uintptr(p) &lt; end</code></span>
+<span class="codeline" id="line-615"><code>}</code></span>
+<span class="codeline" id="line-616"><code></code></span>
+<span class="codeline" id="line-617"><code>// cgoCheckResult is called to check the result parameter of an</code></span>
+<span class="codeline" id="line-618"><code>// exported Go function. It panics if the result is or contains a Go</code></span>
+<span class="codeline" id="line-619"><code>// pointer.</code></span>
+<span class="codeline" id="line-620"><code>func cgoCheckResult(val interface{}) {</code></span>
+<span class="codeline" id="line-621"><code>	if debug.cgocheck == 0 {</code></span>
+<span class="codeline" id="line-622"><code>		return</code></span>
+<span class="codeline" id="line-623"><code>	}</code></span>
+<span class="codeline" id="line-624"><code></code></span>
+<span class="codeline" id="line-625"><code>	ep := efaceOf(&amp;val)</code></span>
+<span class="codeline" id="line-626"><code>	t := ep._type</code></span>
+<span class="codeline" id="line-627"><code>	cgoCheckArg(t, ep.data, t.kind&amp;kindDirectIface == 0, false, cgoResultFail)</code></span>
+<span class="codeline" id="line-628"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

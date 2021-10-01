@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: plugin.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	plugin.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2016 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>//go:linkname plugin_lastmoduleinit plugin.lastmoduleinit</code></span>
+<span class="codeline" id="line-10"><code>func plugin_lastmoduleinit() (path string, syms map[string]interface{}, errstr string) {</code></span>
+<span class="codeline" id="line-11"><code>	var md *moduledata</code></span>
+<span class="codeline" id="line-12"><code>	for pmd := firstmoduledata.next; pmd != nil; pmd = pmd.next {</code></span>
+<span class="codeline" id="line-13"><code>		if pmd.bad {</code></span>
+<span class="codeline" id="line-14"><code>			md = nil // we only want the last module</code></span>
+<span class="codeline" id="line-15"><code>			continue</code></span>
+<span class="codeline" id="line-16"><code>		}</code></span>
+<span class="codeline" id="line-17"><code>		md = pmd</code></span>
+<span class="codeline" id="line-18"><code>	}</code></span>
+<span class="codeline" id="line-19"><code>	if md == nil {</code></span>
+<span class="codeline" id="line-20"><code>		throw("runtime: no plugin module data")</code></span>
+<span class="codeline" id="line-21"><code>	}</code></span>
+<span class="codeline" id="line-22"><code>	if md.pluginpath == "" {</code></span>
+<span class="codeline" id="line-23"><code>		throw("runtime: plugin has empty pluginpath")</code></span>
+<span class="codeline" id="line-24"><code>	}</code></span>
+<span class="codeline" id="line-25"><code>	if md.typemap != nil {</code></span>
+<span class="codeline" id="line-26"><code>		return "", nil, "plugin already loaded"</code></span>
+<span class="codeline" id="line-27"><code>	}</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>	for _, pmd := range activeModules() {</code></span>
+<span class="codeline" id="line-30"><code>		if pmd.pluginpath == md.pluginpath {</code></span>
+<span class="codeline" id="line-31"><code>			md.bad = true</code></span>
+<span class="codeline" id="line-32"><code>			return "", nil, "plugin already loaded"</code></span>
+<span class="codeline" id="line-33"><code>		}</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>		if inRange(pmd.text, pmd.etext, md.text, md.etext) ||</code></span>
+<span class="codeline" id="line-36"><code>			inRange(pmd.bss, pmd.ebss, md.bss, md.ebss) ||</code></span>
+<span class="codeline" id="line-37"><code>			inRange(pmd.data, pmd.edata, md.data, md.edata) ||</code></span>
+<span class="codeline" id="line-38"><code>			inRange(pmd.types, pmd.etypes, md.types, md.etypes) {</code></span>
+<span class="codeline" id="line-39"><code>			println("plugin: new module data overlaps with previous moduledata")</code></span>
+<span class="codeline" id="line-40"><code>			println("\tpmd.text-etext=", hex(pmd.text), "-", hex(pmd.etext))</code></span>
+<span class="codeline" id="line-41"><code>			println("\tpmd.bss-ebss=", hex(pmd.bss), "-", hex(pmd.ebss))</code></span>
+<span class="codeline" id="line-42"><code>			println("\tpmd.data-edata=", hex(pmd.data), "-", hex(pmd.edata))</code></span>
+<span class="codeline" id="line-43"><code>			println("\tpmd.types-etypes=", hex(pmd.types), "-", hex(pmd.etypes))</code></span>
+<span class="codeline" id="line-44"><code>			println("\tmd.text-etext=", hex(md.text), "-", hex(md.etext))</code></span>
+<span class="codeline" id="line-45"><code>			println("\tmd.bss-ebss=", hex(md.bss), "-", hex(md.ebss))</code></span>
+<span class="codeline" id="line-46"><code>			println("\tmd.data-edata=", hex(md.data), "-", hex(md.edata))</code></span>
+<span class="codeline" id="line-47"><code>			println("\tmd.types-etypes=", hex(md.types), "-", hex(md.etypes))</code></span>
+<span class="codeline" id="line-48"><code>			throw("plugin: new module data overlaps with previous moduledata")</code></span>
+<span class="codeline" id="line-49"><code>		}</code></span>
+<span class="codeline" id="line-50"><code>	}</code></span>
+<span class="codeline" id="line-51"><code>	for _, pkghash := range md.pkghashes {</code></span>
+<span class="codeline" id="line-52"><code>		if pkghash.linktimehash != *pkghash.runtimehash {</code></span>
+<span class="codeline" id="line-53"><code>			md.bad = true</code></span>
+<span class="codeline" id="line-54"><code>			return "", nil, "plugin was built with a different version of package " + pkghash.modulename</code></span>
+<span class="codeline" id="line-55"><code>		}</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>	// Initialize the freshly loaded module.</code></span>
+<span class="codeline" id="line-59"><code>	modulesinit()</code></span>
+<span class="codeline" id="line-60"><code>	typelinksinit()</code></span>
+<span class="codeline" id="line-61"><code></code></span>
+<span class="codeline" id="line-62"><code>	pluginftabverify(md)</code></span>
+<span class="codeline" id="line-63"><code>	moduledataverify1(md)</code></span>
+<span class="codeline" id="line-64"><code></code></span>
+<span class="codeline" id="line-65"><code>	lock(&amp;itabLock)</code></span>
+<span class="codeline" id="line-66"><code>	for _, i := range md.itablinks {</code></span>
+<span class="codeline" id="line-67"><code>		itabAdd(i)</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code>	unlock(&amp;itabLock)</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>	// Build a map of symbol names to symbols. Here in the runtime</code></span>
+<span class="codeline" id="line-72"><code>	// we fill out the first word of the interface, the type. We</code></span>
+<span class="codeline" id="line-73"><code>	// pass these zero value interfaces to the plugin package,</code></span>
+<span class="codeline" id="line-74"><code>	// where the symbol value is filled in (usually via cgo).</code></span>
+<span class="codeline" id="line-75"><code>	//</code></span>
+<span class="codeline" id="line-76"><code>	// Because functions are handled specially in the plugin package,</code></span>
+<span class="codeline" id="line-77"><code>	// function symbol names are prefixed here with '.' to avoid</code></span>
+<span class="codeline" id="line-78"><code>	// a dependency on the reflect package.</code></span>
+<span class="codeline" id="line-79"><code>	syms = make(map[string]interface{}, len(md.ptab))</code></span>
+<span class="codeline" id="line-80"><code>	for _, ptab := range md.ptab {</code></span>
+<span class="codeline" id="line-81"><code>		symName := resolveNameOff(unsafe.Pointer(md.types), ptab.name)</code></span>
+<span class="codeline" id="line-82"><code>		t := (*_type)(unsafe.Pointer(md.types)).typeOff(ptab.typ)</code></span>
+<span class="codeline" id="line-83"><code>		var val interface{}</code></span>
+<span class="codeline" id="line-84"><code>		valp := (*[2]unsafe.Pointer)(unsafe.Pointer(&amp;val))</code></span>
+<span class="codeline" id="line-85"><code>		(*valp)[0] = unsafe.Pointer(t)</code></span>
+<span class="codeline" id="line-86"><code></code></span>
+<span class="codeline" id="line-87"><code>		name := symName.name()</code></span>
+<span class="codeline" id="line-88"><code>		if t.kind&amp;kindMask == kindFunc {</code></span>
+<span class="codeline" id="line-89"><code>			name = "." + name</code></span>
+<span class="codeline" id="line-90"><code>		}</code></span>
+<span class="codeline" id="line-91"><code>		syms[name] = val</code></span>
+<span class="codeline" id="line-92"><code>	}</code></span>
+<span class="codeline" id="line-93"><code>	return md.pluginpath, syms, ""</code></span>
+<span class="codeline" id="line-94"><code>}</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>func pluginftabverify(md *moduledata) {</code></span>
+<span class="codeline" id="line-97"><code>	badtable := false</code></span>
+<span class="codeline" id="line-98"><code>	for i := 0; i &lt; len(md.ftab); i++ {</code></span>
+<span class="codeline" id="line-99"><code>		entry := md.ftab[i].entry</code></span>
+<span class="codeline" id="line-100"><code>		if md.minpc &lt;= entry &amp;&amp; entry &lt;= md.maxpc {</code></span>
+<span class="codeline" id="line-101"><code>			continue</code></span>
+<span class="codeline" id="line-102"><code>		}</code></span>
+<span class="codeline" id="line-103"><code></code></span>
+<span class="codeline" id="line-104"><code>		f := funcInfo{(*_func)(unsafe.Pointer(&amp;md.pclntable[md.ftab[i].funcoff])), md}</code></span>
+<span class="codeline" id="line-105"><code>		name := funcname(f)</code></span>
+<span class="codeline" id="line-106"><code></code></span>
+<span class="codeline" id="line-107"><code>		// A common bug is f.entry has a relocation to a duplicate</code></span>
+<span class="codeline" id="line-108"><code>		// function symbol, meaning if we search for its PC we get</code></span>
+<span class="codeline" id="line-109"><code>		// a valid entry with a name that is useful for debugging.</code></span>
+<span class="codeline" id="line-110"><code>		name2 := "none"</code></span>
+<span class="codeline" id="line-111"><code>		entry2 := uintptr(0)</code></span>
+<span class="codeline" id="line-112"><code>		f2 := findfunc(entry)</code></span>
+<span class="codeline" id="line-113"><code>		if f2.valid() {</code></span>
+<span class="codeline" id="line-114"><code>			name2 = funcname(f2)</code></span>
+<span class="codeline" id="line-115"><code>			entry2 = f2.entry</code></span>
+<span class="codeline" id="line-116"><code>		}</code></span>
+<span class="codeline" id="line-117"><code>		badtable = true</code></span>
+<span class="codeline" id="line-118"><code>		println("ftab entry outside pc range: ", hex(entry), "/", hex(entry2), ": ", name, "/", name2)</code></span>
+<span class="codeline" id="line-119"><code>	}</code></span>
+<span class="codeline" id="line-120"><code>	if badtable {</code></span>
+<span class="codeline" id="line-121"><code>		throw("runtime: plugin has bad symbol table")</code></span>
+<span class="codeline" id="line-122"><code>	}</code></span>
+<span class="codeline" id="line-123"><code>}</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>// inRange reports whether v0 or v1 are in the range [r0, r1].</code></span>
+<span class="codeline" id="line-126"><code>func inRange(r0, r1, v0, v1 uintptr) bool {</code></span>
+<span class="codeline" id="line-127"><code>	return (v0 &gt;= r0 &amp;&amp; v0 &lt;= r1) || (v1 &gt;= r0 &amp;&amp; v1 &lt;= r1)</code></span>
+<span class="codeline" id="line-128"><code>}</code></span>
+<span class="codeline" id="line-129"><code></code></span>
+<span class="codeline" id="line-130"><code>// A ptabEntry is generated by the compiler for each exported function</code></span>
+<span class="codeline" id="line-131"><code>// and global variable in the main package of a plugin. It is used to</code></span>
+<span class="codeline" id="line-132"><code>// initialize the plugin module's symbol map.</code></span>
+<span class="codeline" id="line-133"><code>type ptabEntry struct {</code></span>
+<span class="codeline" id="line-134"><code>	name nameOff</code></span>
+<span class="codeline" id="line-135"><code>	typ  typeOff</code></span>
+<span class="codeline" id="line-136"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

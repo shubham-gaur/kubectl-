@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: bits.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	bits.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>const (</code></span>
+<span class="codeline" id="line-8"><code>	uvnan    = 0x7FF8000000000001</code></span>
+<span class="codeline" id="line-9"><code>	uvinf    = 0x7FF0000000000000</code></span>
+<span class="codeline" id="line-10"><code>	uvneginf = 0xFFF0000000000000</code></span>
+<span class="codeline" id="line-11"><code>	uvone    = 0x3FF0000000000000</code></span>
+<span class="codeline" id="line-12"><code>	mask     = 0x7FF</code></span>
+<span class="codeline" id="line-13"><code>	shift    = 64 - 11 - 1</code></span>
+<span class="codeline" id="line-14"><code>	bias     = 1023</code></span>
+<span class="codeline" id="line-15"><code>	signMask = 1 &lt;&lt; 63</code></span>
+<span class="codeline" id="line-16"><code>	fracMask = 1&lt;&lt;shift - 1</code></span>
+<span class="codeline" id="line-17"><code>)</code></span>
+<span class="codeline" id="line-18"><code></code></span>
+<span class="codeline" id="line-19"><code>// Inf returns positive infinity if sign &gt;= 0, negative infinity if sign &lt; 0.</code></span>
+<span class="codeline" id="line-20"><code>func Inf(sign int) float64 {</code></span>
+<span class="codeline" id="line-21"><code>	var v uint64</code></span>
+<span class="codeline" id="line-22"><code>	if sign &gt;= 0 {</code></span>
+<span class="codeline" id="line-23"><code>		v = uvinf</code></span>
+<span class="codeline" id="line-24"><code>	} else {</code></span>
+<span class="codeline" id="line-25"><code>		v = uvneginf</code></span>
+<span class="codeline" id="line-26"><code>	}</code></span>
+<span class="codeline" id="line-27"><code>	return Float64frombits(v)</code></span>
+<span class="codeline" id="line-28"><code>}</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>// NaN returns an IEEE 754 ``not-a-number'' value.</code></span>
+<span class="codeline" id="line-31"><code>func NaN() float64 { return Float64frombits(uvnan) }</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>// IsNaN reports whether f is an IEEE 754 ``not-a-number'' value.</code></span>
+<span class="codeline" id="line-34"><code>func IsNaN(f float64) (is bool) {</code></span>
+<span class="codeline" id="line-35"><code>	// IEEE 754 says that only NaNs satisfy f != f.</code></span>
+<span class="codeline" id="line-36"><code>	// To avoid the floating-point hardware, could use:</code></span>
+<span class="codeline" id="line-37"><code>	//	x := Float64bits(f);</code></span>
+<span class="codeline" id="line-38"><code>	//	return uint32(x&gt;&gt;shift)&amp;mask == mask &amp;&amp; x != uvinf &amp;&amp; x != uvneginf</code></span>
+<span class="codeline" id="line-39"><code>	return f != f</code></span>
+<span class="codeline" id="line-40"><code>}</code></span>
+<span class="codeline" id="line-41"><code></code></span>
+<span class="codeline" id="line-42"><code>// IsInf reports whether f is an infinity, according to sign.</code></span>
+<span class="codeline" id="line-43"><code>// If sign &gt; 0, IsInf reports whether f is positive infinity.</code></span>
+<span class="codeline" id="line-44"><code>// If sign &lt; 0, IsInf reports whether f is negative infinity.</code></span>
+<span class="codeline" id="line-45"><code>// If sign == 0, IsInf reports whether f is either infinity.</code></span>
+<span class="codeline" id="line-46"><code>func IsInf(f float64, sign int) bool {</code></span>
+<span class="codeline" id="line-47"><code>	// Test for infinity by comparing against maximum float.</code></span>
+<span class="codeline" id="line-48"><code>	// To avoid the floating-point hardware, could use:</code></span>
+<span class="codeline" id="line-49"><code>	//	x := Float64bits(f);</code></span>
+<span class="codeline" id="line-50"><code>	//	return sign &gt;= 0 &amp;&amp; x == uvinf || sign &lt;= 0 &amp;&amp; x == uvneginf;</code></span>
+<span class="codeline" id="line-51"><code>	return sign &gt;= 0 &amp;&amp; f &gt; MaxFloat64 || sign &lt;= 0 &amp;&amp; f &lt; -MaxFloat64</code></span>
+<span class="codeline" id="line-52"><code>}</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>// normalize returns a normal number y and exponent exp</code></span>
+<span class="codeline" id="line-55"><code>// satisfying x == y × 2**exp. It assumes x is finite and non-zero.</code></span>
+<span class="codeline" id="line-56"><code>func normalize(x float64) (y float64, exp int) {</code></span>
+<span class="codeline" id="line-57"><code>	const SmallestNormal = 2.2250738585072014e-308 // 2**-1022</code></span>
+<span class="codeline" id="line-58"><code>	if Abs(x) &lt; SmallestNormal {</code></span>
+<span class="codeline" id="line-59"><code>		return x * (1 &lt;&lt; 52), -52</code></span>
+<span class="codeline" id="line-60"><code>	}</code></span>
+<span class="codeline" id="line-61"><code>	return x, 0</code></span>
+<span class="codeline" id="line-62"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

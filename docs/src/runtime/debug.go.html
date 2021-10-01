@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: debug.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	debug.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-9"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-10"><code>)</code></span>
+<span class="codeline" id="line-11"><code></code></span>
+<span class="codeline" id="line-12"><code>// GOMAXPROCS sets the maximum number of CPUs that can be executing</code></span>
+<span class="codeline" id="line-13"><code>// simultaneously and returns the previous setting. It defaults to</code></span>
+<span class="codeline" id="line-14"><code>// the value of runtime.NumCPU. If n &lt; 1, it does not change the current setting.</code></span>
+<span class="codeline" id="line-15"><code>// This call will go away when the scheduler improves.</code></span>
+<span class="codeline" id="line-16"><code>func GOMAXPROCS(n int) int {</code></span>
+<span class="codeline" id="line-17"><code>	if GOARCH == "wasm" &amp;&amp; n &gt; 1 {</code></span>
+<span class="codeline" id="line-18"><code>		n = 1 // WebAssembly has no threads yet, so only one CPU is possible.</code></span>
+<span class="codeline" id="line-19"><code>	}</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>	lock(&amp;sched.lock)</code></span>
+<span class="codeline" id="line-22"><code>	ret := int(gomaxprocs)</code></span>
+<span class="codeline" id="line-23"><code>	unlock(&amp;sched.lock)</code></span>
+<span class="codeline" id="line-24"><code>	if n &lt;= 0 || n == ret {</code></span>
+<span class="codeline" id="line-25"><code>		return ret</code></span>
+<span class="codeline" id="line-26"><code>	}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>	stopTheWorldGC("GOMAXPROCS")</code></span>
+<span class="codeline" id="line-29"><code></code></span>
+<span class="codeline" id="line-30"><code>	// newprocs will be processed by startTheWorld</code></span>
+<span class="codeline" id="line-31"><code>	newprocs = int32(n)</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>	startTheWorldGC()</code></span>
+<span class="codeline" id="line-34"><code>	return ret</code></span>
+<span class="codeline" id="line-35"><code>}</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>// NumCPU returns the number of logical CPUs usable by the current process.</code></span>
+<span class="codeline" id="line-38"><code>//</code></span>
+<span class="codeline" id="line-39"><code>// The set of available CPUs is checked by querying the operating system</code></span>
+<span class="codeline" id="line-40"><code>// at process startup. Changes to operating system CPU allocation after</code></span>
+<span class="codeline" id="line-41"><code>// process startup are not reflected.</code></span>
+<span class="codeline" id="line-42"><code>func NumCPU() int {</code></span>
+<span class="codeline" id="line-43"><code>	return int(ncpu)</code></span>
+<span class="codeline" id="line-44"><code>}</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>// NumCgoCall returns the number of cgo calls made by the current process.</code></span>
+<span class="codeline" id="line-47"><code>func NumCgoCall() int64 {</code></span>
+<span class="codeline" id="line-48"><code>	var n int64</code></span>
+<span class="codeline" id="line-49"><code>	for mp := (*m)(atomic.Loadp(unsafe.Pointer(&amp;allm))); mp != nil; mp = mp.alllink {</code></span>
+<span class="codeline" id="line-50"><code>		n += int64(mp.ncgocall)</code></span>
+<span class="codeline" id="line-51"><code>	}</code></span>
+<span class="codeline" id="line-52"><code>	return n</code></span>
+<span class="codeline" id="line-53"><code>}</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>// NumGoroutine returns the number of goroutines that currently exist.</code></span>
+<span class="codeline" id="line-56"><code>func NumGoroutine() int {</code></span>
+<span class="codeline" id="line-57"><code>	return int(gcount())</code></span>
+<span class="codeline" id="line-58"><code>}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>//go:linkname debug_modinfo runtime/debug.modinfo</code></span>
+<span class="codeline" id="line-61"><code>func debug_modinfo() string {</code></span>
+<span class="codeline" id="line-62"><code>	return modinfo</code></span>
+<span class="codeline" id="line-63"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

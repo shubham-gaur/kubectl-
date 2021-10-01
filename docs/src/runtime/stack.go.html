@@ -1,0 +1,1360 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: stack.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	stack.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2013 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"internal/cpu"</code></span>
+<span class="codeline" id="line-9"><code>	"runtime/internal/atomic"</code></span>
+<span class="codeline" id="line-10"><code>	"runtime/internal/sys"</code></span>
+<span class="codeline" id="line-11"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-12"><code>)</code></span>
+<span class="codeline" id="line-13"><code></code></span>
+<span class="codeline" id="line-14"><code>/*</code></span>
+<span class="codeline" id="line-15"><code>Stack layout parameters.</code></span>
+<span class="codeline" id="line-16"><code>Included both by runtime (compiled via 6c) and linkers (compiled via gcc).</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>The per-goroutine g-&gt;stackguard is set to point StackGuard bytes</code></span>
+<span class="codeline" id="line-19"><code>above the bottom of the stack.  Each function compares its stack</code></span>
+<span class="codeline" id="line-20"><code>pointer against g-&gt;stackguard to check for overflow.  To cut one</code></span>
+<span class="codeline" id="line-21"><code>instruction from the check sequence for functions with tiny frames,</code></span>
+<span class="codeline" id="line-22"><code>the stack is allowed to protrude StackSmall bytes below the stack</code></span>
+<span class="codeline" id="line-23"><code>guard.  Functions with large frames don't bother with the check and</code></span>
+<span class="codeline" id="line-24"><code>always call morestack.  The sequences are (for amd64, others are</code></span>
+<span class="codeline" id="line-25"><code>similar):</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>	guard = g-&gt;stackguard</code></span>
+<span class="codeline" id="line-28"><code>	frame = function's stack frame size</code></span>
+<span class="codeline" id="line-29"><code>	argsize = size of function arguments (call + return)</code></span>
+<span class="codeline" id="line-30"><code></code></span>
+<span class="codeline" id="line-31"><code>	stack frame size &lt;= StackSmall:</code></span>
+<span class="codeline" id="line-32"><code>		CMPQ guard, SP</code></span>
+<span class="codeline" id="line-33"><code>		JHI 3(PC)</code></span>
+<span class="codeline" id="line-34"><code>		MOVQ m-&gt;morearg, $(argsize &lt;&lt; 32)</code></span>
+<span class="codeline" id="line-35"><code>		CALL morestack(SB)</code></span>
+<span class="codeline" id="line-36"><code></code></span>
+<span class="codeline" id="line-37"><code>	stack frame size &gt; StackSmall but &lt; StackBig</code></span>
+<span class="codeline" id="line-38"><code>		LEAQ (frame-StackSmall)(SP), R0</code></span>
+<span class="codeline" id="line-39"><code>		CMPQ guard, R0</code></span>
+<span class="codeline" id="line-40"><code>		JHI 3(PC)</code></span>
+<span class="codeline" id="line-41"><code>		MOVQ m-&gt;morearg, $(argsize &lt;&lt; 32)</code></span>
+<span class="codeline" id="line-42"><code>		CALL morestack(SB)</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	stack frame size &gt;= StackBig:</code></span>
+<span class="codeline" id="line-45"><code>		MOVQ m-&gt;morearg, $((argsize &lt;&lt; 32) | frame)</code></span>
+<span class="codeline" id="line-46"><code>		CALL morestack(SB)</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>The bottom StackGuard - StackSmall bytes are important: there has</code></span>
+<span class="codeline" id="line-49"><code>to be enough room to execute functions that refuse to check for</code></span>
+<span class="codeline" id="line-50"><code>stack overflow, either because they need to be adjacent to the</code></span>
+<span class="codeline" id="line-51"><code>actual caller's frame (deferproc) or because they handle the imminent</code></span>
+<span class="codeline" id="line-52"><code>stack overflow (morestack).</code></span>
+<span class="codeline" id="line-53"><code></code></span>
+<span class="codeline" id="line-54"><code>For example, deferproc might call malloc, which does one of the</code></span>
+<span class="codeline" id="line-55"><code>above checks (without allocating a full frame), which might trigger</code></span>
+<span class="codeline" id="line-56"><code>a call to morestack.  This sequence needs to fit in the bottom</code></span>
+<span class="codeline" id="line-57"><code>section of the stack.  On amd64, morestack's frame is 40 bytes, and</code></span>
+<span class="codeline" id="line-58"><code>deferproc's frame is 56 bytes.  That fits well within the</code></span>
+<span class="codeline" id="line-59"><code>StackGuard - StackSmall bytes at the bottom.</code></span>
+<span class="codeline" id="line-60"><code>The linkers explore all possible call traces involving non-splitting</code></span>
+<span class="codeline" id="line-61"><code>functions to make sure that this limit cannot be violated.</code></span>
+<span class="codeline" id="line-62"><code>*/</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>const (</code></span>
+<span class="codeline" id="line-65"><code>	// StackSystem is a number of additional bytes to add</code></span>
+<span class="codeline" id="line-66"><code>	// to each stack below the usual guard area for OS-specific</code></span>
+<span class="codeline" id="line-67"><code>	// purposes like signal handling. Used on Windows, Plan 9,</code></span>
+<span class="codeline" id="line-68"><code>	// and iOS because they do not use a separate stack.</code></span>
+<span class="codeline" id="line-69"><code>	_StackSystem = sys.GoosWindows*512*sys.PtrSize + sys.GoosPlan9*512 + sys.GoosIos*sys.GoarchArm64*1024</code></span>
+<span class="codeline" id="line-70"><code></code></span>
+<span class="codeline" id="line-71"><code>	// The minimum size of stack used by Go code</code></span>
+<span class="codeline" id="line-72"><code>	_StackMin = 2048</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>	// The minimum stack size to allocate.</code></span>
+<span class="codeline" id="line-75"><code>	// The hackery here rounds FixedStack0 up to a power of 2.</code></span>
+<span class="codeline" id="line-76"><code>	_FixedStack0 = _StackMin + _StackSystem</code></span>
+<span class="codeline" id="line-77"><code>	_FixedStack1 = _FixedStack0 - 1</code></span>
+<span class="codeline" id="line-78"><code>	_FixedStack2 = _FixedStack1 | (_FixedStack1 &gt;&gt; 1)</code></span>
+<span class="codeline" id="line-79"><code>	_FixedStack3 = _FixedStack2 | (_FixedStack2 &gt;&gt; 2)</code></span>
+<span class="codeline" id="line-80"><code>	_FixedStack4 = _FixedStack3 | (_FixedStack3 &gt;&gt; 4)</code></span>
+<span class="codeline" id="line-81"><code>	_FixedStack5 = _FixedStack4 | (_FixedStack4 &gt;&gt; 8)</code></span>
+<span class="codeline" id="line-82"><code>	_FixedStack6 = _FixedStack5 | (_FixedStack5 &gt;&gt; 16)</code></span>
+<span class="codeline" id="line-83"><code>	_FixedStack  = _FixedStack6 + 1</code></span>
+<span class="codeline" id="line-84"><code></code></span>
+<span class="codeline" id="line-85"><code>	// Functions that need frames bigger than this use an extra</code></span>
+<span class="codeline" id="line-86"><code>	// instruction to do the stack split check, to avoid overflow</code></span>
+<span class="codeline" id="line-87"><code>	// in case SP - framesize wraps below zero.</code></span>
+<span class="codeline" id="line-88"><code>	// This value can be no bigger than the size of the unmapped</code></span>
+<span class="codeline" id="line-89"><code>	// space at zero.</code></span>
+<span class="codeline" id="line-90"><code>	_StackBig = 4096</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>	// The stack guard is a pointer this many bytes above the</code></span>
+<span class="codeline" id="line-93"><code>	// bottom of the stack.</code></span>
+<span class="codeline" id="line-94"><code>	_StackGuard = 928*sys.StackGuardMultiplier + _StackSystem</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>	// After a stack split check the SP is allowed to be this</code></span>
+<span class="codeline" id="line-97"><code>	// many bytes below the stack guard. This saves an instruction</code></span>
+<span class="codeline" id="line-98"><code>	// in the checking sequence for tiny frames.</code></span>
+<span class="codeline" id="line-99"><code>	_StackSmall = 128</code></span>
+<span class="codeline" id="line-100"><code></code></span>
+<span class="codeline" id="line-101"><code>	// The maximum number of bytes that a chain of NOSPLIT</code></span>
+<span class="codeline" id="line-102"><code>	// functions can use.</code></span>
+<span class="codeline" id="line-103"><code>	_StackLimit = _StackGuard - _StackSystem - _StackSmall</code></span>
+<span class="codeline" id="line-104"><code>)</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>const (</code></span>
+<span class="codeline" id="line-107"><code>	// stackDebug == 0: no logging</code></span>
+<span class="codeline" id="line-108"><code>	//            == 1: logging of per-stack operations</code></span>
+<span class="codeline" id="line-109"><code>	//            == 2: logging of per-frame operations</code></span>
+<span class="codeline" id="line-110"><code>	//            == 3: logging of per-word updates</code></span>
+<span class="codeline" id="line-111"><code>	//            == 4: logging of per-word reads</code></span>
+<span class="codeline" id="line-112"><code>	stackDebug       = 0</code></span>
+<span class="codeline" id="line-113"><code>	stackFromSystem  = 0 // allocate stacks from system memory instead of the heap</code></span>
+<span class="codeline" id="line-114"><code>	stackFaultOnFree = 0 // old stacks are mapped noaccess to detect use after free</code></span>
+<span class="codeline" id="line-115"><code>	stackPoisonCopy  = 0 // fill stack that should not be accessed with garbage, to detect bad dereferences during copy</code></span>
+<span class="codeline" id="line-116"><code>	stackNoCache     = 0 // disable per-P small stack caches</code></span>
+<span class="codeline" id="line-117"><code></code></span>
+<span class="codeline" id="line-118"><code>	// check the BP links during traceback.</code></span>
+<span class="codeline" id="line-119"><code>	debugCheckBP = false</code></span>
+<span class="codeline" id="line-120"><code>)</code></span>
+<span class="codeline" id="line-121"><code></code></span>
+<span class="codeline" id="line-122"><code>const (</code></span>
+<span class="codeline" id="line-123"><code>	uintptrMask = 1&lt;&lt;(8*sys.PtrSize) - 1</code></span>
+<span class="codeline" id="line-124"><code></code></span>
+<span class="codeline" id="line-125"><code>	// Goroutine preemption request.</code></span>
+<span class="codeline" id="line-126"><code>	// Stored into g-&gt;stackguard0 to cause split stack check failure.</code></span>
+<span class="codeline" id="line-127"><code>	// Must be greater than any real sp.</code></span>
+<span class="codeline" id="line-128"><code>	// 0xfffffade in hex.</code></span>
+<span class="codeline" id="line-129"><code>	stackPreempt = uintptrMask &amp; -1314</code></span>
+<span class="codeline" id="line-130"><code></code></span>
+<span class="codeline" id="line-131"><code>	// Thread is forking.</code></span>
+<span class="codeline" id="line-132"><code>	// Stored into g-&gt;stackguard0 to cause split stack check failure.</code></span>
+<span class="codeline" id="line-133"><code>	// Must be greater than any real sp.</code></span>
+<span class="codeline" id="line-134"><code>	stackFork = uintptrMask &amp; -1234</code></span>
+<span class="codeline" id="line-135"><code>)</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>// Global pool of spans that have free stacks.</code></span>
+<span class="codeline" id="line-138"><code>// Stacks are assigned an order according to size.</code></span>
+<span class="codeline" id="line-139"><code>//     order = log_2(size/FixedStack)</code></span>
+<span class="codeline" id="line-140"><code>// There is a free list for each order.</code></span>
+<span class="codeline" id="line-141"><code>var stackpool [_NumStackOrders]struct {</code></span>
+<span class="codeline" id="line-142"><code>	item stackpoolItem</code></span>
+<span class="codeline" id="line-143"><code>	_    [cpu.CacheLinePadSize - unsafe.Sizeof(stackpoolItem{})%cpu.CacheLinePadSize]byte</code></span>
+<span class="codeline" id="line-144"><code>}</code></span>
+<span class="codeline" id="line-145"><code></code></span>
+<span class="codeline" id="line-146"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-147"><code>type stackpoolItem struct {</code></span>
+<span class="codeline" id="line-148"><code>	mu   mutex</code></span>
+<span class="codeline" id="line-149"><code>	span mSpanList</code></span>
+<span class="codeline" id="line-150"><code>}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>// Global pool of large stack spans.</code></span>
+<span class="codeline" id="line-153"><code>var stackLarge struct {</code></span>
+<span class="codeline" id="line-154"><code>	lock mutex</code></span>
+<span class="codeline" id="line-155"><code>	free [heapAddrBits - pageShift]mSpanList // free lists by log_2(s.npages)</code></span>
+<span class="codeline" id="line-156"><code>}</code></span>
+<span class="codeline" id="line-157"><code></code></span>
+<span class="codeline" id="line-158"><code>func stackinit() {</code></span>
+<span class="codeline" id="line-159"><code>	if _StackCacheSize&amp;_PageMask != 0 {</code></span>
+<span class="codeline" id="line-160"><code>		throw("cache size must be a multiple of page size")</code></span>
+<span class="codeline" id="line-161"><code>	}</code></span>
+<span class="codeline" id="line-162"><code>	for i := range stackpool {</code></span>
+<span class="codeline" id="line-163"><code>		stackpool[i].item.span.init()</code></span>
+<span class="codeline" id="line-164"><code>		lockInit(&amp;stackpool[i].item.mu, lockRankStackpool)</code></span>
+<span class="codeline" id="line-165"><code>	}</code></span>
+<span class="codeline" id="line-166"><code>	for i := range stackLarge.free {</code></span>
+<span class="codeline" id="line-167"><code>		stackLarge.free[i].init()</code></span>
+<span class="codeline" id="line-168"><code>		lockInit(&amp;stackLarge.lock, lockRankStackLarge)</code></span>
+<span class="codeline" id="line-169"><code>	}</code></span>
+<span class="codeline" id="line-170"><code>}</code></span>
+<span class="codeline" id="line-171"><code></code></span>
+<span class="codeline" id="line-172"><code>// stacklog2 returns ⌊log_2(n)⌋.</code></span>
+<span class="codeline" id="line-173"><code>func stacklog2(n uintptr) int {</code></span>
+<span class="codeline" id="line-174"><code>	log2 := 0</code></span>
+<span class="codeline" id="line-175"><code>	for n &gt; 1 {</code></span>
+<span class="codeline" id="line-176"><code>		n &gt;&gt;= 1</code></span>
+<span class="codeline" id="line-177"><code>		log2++</code></span>
+<span class="codeline" id="line-178"><code>	}</code></span>
+<span class="codeline" id="line-179"><code>	return log2</code></span>
+<span class="codeline" id="line-180"><code>}</code></span>
+<span class="codeline" id="line-181"><code></code></span>
+<span class="codeline" id="line-182"><code>// Allocates a stack from the free pool. Must be called with</code></span>
+<span class="codeline" id="line-183"><code>// stackpool[order].item.mu held.</code></span>
+<span class="codeline" id="line-184"><code>func stackpoolalloc(order uint8) gclinkptr {</code></span>
+<span class="codeline" id="line-185"><code>	list := &amp;stackpool[order].item.span</code></span>
+<span class="codeline" id="line-186"><code>	s := list.first</code></span>
+<span class="codeline" id="line-187"><code>	lockWithRankMayAcquire(&amp;mheap_.lock, lockRankMheap)</code></span>
+<span class="codeline" id="line-188"><code>	if s == nil {</code></span>
+<span class="codeline" id="line-189"><code>		// no free stacks. Allocate another span worth.</code></span>
+<span class="codeline" id="line-190"><code>		s = mheap_.allocManual(_StackCacheSize&gt;&gt;_PageShift, spanAllocStack)</code></span>
+<span class="codeline" id="line-191"><code>		if s == nil {</code></span>
+<span class="codeline" id="line-192"><code>			throw("out of memory")</code></span>
+<span class="codeline" id="line-193"><code>		}</code></span>
+<span class="codeline" id="line-194"><code>		if s.allocCount != 0 {</code></span>
+<span class="codeline" id="line-195"><code>			throw("bad allocCount")</code></span>
+<span class="codeline" id="line-196"><code>		}</code></span>
+<span class="codeline" id="line-197"><code>		if s.manualFreeList.ptr() != nil {</code></span>
+<span class="codeline" id="line-198"><code>			throw("bad manualFreeList")</code></span>
+<span class="codeline" id="line-199"><code>		}</code></span>
+<span class="codeline" id="line-200"><code>		osStackAlloc(s)</code></span>
+<span class="codeline" id="line-201"><code>		s.elemsize = _FixedStack &lt;&lt; order</code></span>
+<span class="codeline" id="line-202"><code>		for i := uintptr(0); i &lt; _StackCacheSize; i += s.elemsize {</code></span>
+<span class="codeline" id="line-203"><code>			x := gclinkptr(s.base() + i)</code></span>
+<span class="codeline" id="line-204"><code>			x.ptr().next = s.manualFreeList</code></span>
+<span class="codeline" id="line-205"><code>			s.manualFreeList = x</code></span>
+<span class="codeline" id="line-206"><code>		}</code></span>
+<span class="codeline" id="line-207"><code>		list.insert(s)</code></span>
+<span class="codeline" id="line-208"><code>	}</code></span>
+<span class="codeline" id="line-209"><code>	x := s.manualFreeList</code></span>
+<span class="codeline" id="line-210"><code>	if x.ptr() == nil {</code></span>
+<span class="codeline" id="line-211"><code>		throw("span has no free stacks")</code></span>
+<span class="codeline" id="line-212"><code>	}</code></span>
+<span class="codeline" id="line-213"><code>	s.manualFreeList = x.ptr().next</code></span>
+<span class="codeline" id="line-214"><code>	s.allocCount++</code></span>
+<span class="codeline" id="line-215"><code>	if s.manualFreeList.ptr() == nil {</code></span>
+<span class="codeline" id="line-216"><code>		// all stacks in s are allocated.</code></span>
+<span class="codeline" id="line-217"><code>		list.remove(s)</code></span>
+<span class="codeline" id="line-218"><code>	}</code></span>
+<span class="codeline" id="line-219"><code>	return x</code></span>
+<span class="codeline" id="line-220"><code>}</code></span>
+<span class="codeline" id="line-221"><code></code></span>
+<span class="codeline" id="line-222"><code>// Adds stack x to the free pool. Must be called with stackpool[order].item.mu held.</code></span>
+<span class="codeline" id="line-223"><code>func stackpoolfree(x gclinkptr, order uint8) {</code></span>
+<span class="codeline" id="line-224"><code>	s := spanOfUnchecked(uintptr(x))</code></span>
+<span class="codeline" id="line-225"><code>	if s.state.get() != mSpanManual {</code></span>
+<span class="codeline" id="line-226"><code>		throw("freeing stack not in a stack span")</code></span>
+<span class="codeline" id="line-227"><code>	}</code></span>
+<span class="codeline" id="line-228"><code>	if s.manualFreeList.ptr() == nil {</code></span>
+<span class="codeline" id="line-229"><code>		// s will now have a free stack</code></span>
+<span class="codeline" id="line-230"><code>		stackpool[order].item.span.insert(s)</code></span>
+<span class="codeline" id="line-231"><code>	}</code></span>
+<span class="codeline" id="line-232"><code>	x.ptr().next = s.manualFreeList</code></span>
+<span class="codeline" id="line-233"><code>	s.manualFreeList = x</code></span>
+<span class="codeline" id="line-234"><code>	s.allocCount--</code></span>
+<span class="codeline" id="line-235"><code>	if gcphase == _GCoff &amp;&amp; s.allocCount == 0 {</code></span>
+<span class="codeline" id="line-236"><code>		// Span is completely free. Return it to the heap</code></span>
+<span class="codeline" id="line-237"><code>		// immediately if we're sweeping.</code></span>
+<span class="codeline" id="line-238"><code>		//</code></span>
+<span class="codeline" id="line-239"><code>		// If GC is active, we delay the free until the end of</code></span>
+<span class="codeline" id="line-240"><code>		// GC to avoid the following type of situation:</code></span>
+<span class="codeline" id="line-241"><code>		//</code></span>
+<span class="codeline" id="line-242"><code>		// 1) GC starts, scans a SudoG but does not yet mark the SudoG.elem pointer</code></span>
+<span class="codeline" id="line-243"><code>		// 2) The stack that pointer points to is copied</code></span>
+<span class="codeline" id="line-244"><code>		// 3) The old stack is freed</code></span>
+<span class="codeline" id="line-245"><code>		// 4) The containing span is marked free</code></span>
+<span class="codeline" id="line-246"><code>		// 5) GC attempts to mark the SudoG.elem pointer. The</code></span>
+<span class="codeline" id="line-247"><code>		//    marking fails because the pointer looks like a</code></span>
+<span class="codeline" id="line-248"><code>		//    pointer into a free span.</code></span>
+<span class="codeline" id="line-249"><code>		//</code></span>
+<span class="codeline" id="line-250"><code>		// By not freeing, we prevent step #4 until GC is done.</code></span>
+<span class="codeline" id="line-251"><code>		stackpool[order].item.span.remove(s)</code></span>
+<span class="codeline" id="line-252"><code>		s.manualFreeList = 0</code></span>
+<span class="codeline" id="line-253"><code>		osStackFree(s)</code></span>
+<span class="codeline" id="line-254"><code>		mheap_.freeManual(s, spanAllocStack)</code></span>
+<span class="codeline" id="line-255"><code>	}</code></span>
+<span class="codeline" id="line-256"><code>}</code></span>
+<span class="codeline" id="line-257"><code></code></span>
+<span class="codeline" id="line-258"><code>// stackcacherefill/stackcacherelease implement a global pool of stack segments.</code></span>
+<span class="codeline" id="line-259"><code>// The pool is required to prevent unlimited growth of per-thread caches.</code></span>
+<span class="codeline" id="line-260"><code>//</code></span>
+<span class="codeline" id="line-261"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-262"><code>func stackcacherefill(c *mcache, order uint8) {</code></span>
+<span class="codeline" id="line-263"><code>	if stackDebug &gt;= 1 {</code></span>
+<span class="codeline" id="line-264"><code>		print("stackcacherefill order=", order, "\n")</code></span>
+<span class="codeline" id="line-265"><code>	}</code></span>
+<span class="codeline" id="line-266"><code></code></span>
+<span class="codeline" id="line-267"><code>	// Grab some stacks from the global cache.</code></span>
+<span class="codeline" id="line-268"><code>	// Grab half of the allowed capacity (to prevent thrashing).</code></span>
+<span class="codeline" id="line-269"><code>	var list gclinkptr</code></span>
+<span class="codeline" id="line-270"><code>	var size uintptr</code></span>
+<span class="codeline" id="line-271"><code>	lock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-272"><code>	for size &lt; _StackCacheSize/2 {</code></span>
+<span class="codeline" id="line-273"><code>		x := stackpoolalloc(order)</code></span>
+<span class="codeline" id="line-274"><code>		x.ptr().next = list</code></span>
+<span class="codeline" id="line-275"><code>		list = x</code></span>
+<span class="codeline" id="line-276"><code>		size += _FixedStack &lt;&lt; order</code></span>
+<span class="codeline" id="line-277"><code>	}</code></span>
+<span class="codeline" id="line-278"><code>	unlock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-279"><code>	c.stackcache[order].list = list</code></span>
+<span class="codeline" id="line-280"><code>	c.stackcache[order].size = size</code></span>
+<span class="codeline" id="line-281"><code>}</code></span>
+<span class="codeline" id="line-282"><code></code></span>
+<span class="codeline" id="line-283"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-284"><code>func stackcacherelease(c *mcache, order uint8) {</code></span>
+<span class="codeline" id="line-285"><code>	if stackDebug &gt;= 1 {</code></span>
+<span class="codeline" id="line-286"><code>		print("stackcacherelease order=", order, "\n")</code></span>
+<span class="codeline" id="line-287"><code>	}</code></span>
+<span class="codeline" id="line-288"><code>	x := c.stackcache[order].list</code></span>
+<span class="codeline" id="line-289"><code>	size := c.stackcache[order].size</code></span>
+<span class="codeline" id="line-290"><code>	lock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-291"><code>	for size &gt; _StackCacheSize/2 {</code></span>
+<span class="codeline" id="line-292"><code>		y := x.ptr().next</code></span>
+<span class="codeline" id="line-293"><code>		stackpoolfree(x, order)</code></span>
+<span class="codeline" id="line-294"><code>		x = y</code></span>
+<span class="codeline" id="line-295"><code>		size -= _FixedStack &lt;&lt; order</code></span>
+<span class="codeline" id="line-296"><code>	}</code></span>
+<span class="codeline" id="line-297"><code>	unlock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-298"><code>	c.stackcache[order].list = x</code></span>
+<span class="codeline" id="line-299"><code>	c.stackcache[order].size = size</code></span>
+<span class="codeline" id="line-300"><code>}</code></span>
+<span class="codeline" id="line-301"><code></code></span>
+<span class="codeline" id="line-302"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-303"><code>func stackcache_clear(c *mcache) {</code></span>
+<span class="codeline" id="line-304"><code>	if stackDebug &gt;= 1 {</code></span>
+<span class="codeline" id="line-305"><code>		print("stackcache clear\n")</code></span>
+<span class="codeline" id="line-306"><code>	}</code></span>
+<span class="codeline" id="line-307"><code>	for order := uint8(0); order &lt; _NumStackOrders; order++ {</code></span>
+<span class="codeline" id="line-308"><code>		lock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-309"><code>		x := c.stackcache[order].list</code></span>
+<span class="codeline" id="line-310"><code>		for x.ptr() != nil {</code></span>
+<span class="codeline" id="line-311"><code>			y := x.ptr().next</code></span>
+<span class="codeline" id="line-312"><code>			stackpoolfree(x, order)</code></span>
+<span class="codeline" id="line-313"><code>			x = y</code></span>
+<span class="codeline" id="line-314"><code>		}</code></span>
+<span class="codeline" id="line-315"><code>		c.stackcache[order].list = 0</code></span>
+<span class="codeline" id="line-316"><code>		c.stackcache[order].size = 0</code></span>
+<span class="codeline" id="line-317"><code>		unlock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-318"><code>	}</code></span>
+<span class="codeline" id="line-319"><code>}</code></span>
+<span class="codeline" id="line-320"><code></code></span>
+<span class="codeline" id="line-321"><code>// stackalloc allocates an n byte stack.</code></span>
+<span class="codeline" id="line-322"><code>//</code></span>
+<span class="codeline" id="line-323"><code>// stackalloc must run on the system stack because it uses per-P</code></span>
+<span class="codeline" id="line-324"><code>// resources and must not split the stack.</code></span>
+<span class="codeline" id="line-325"><code>//</code></span>
+<span class="codeline" id="line-326"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-327"><code>func stackalloc(n uint32) stack {</code></span>
+<span class="codeline" id="line-328"><code>	// Stackalloc must be called on scheduler stack, so that we</code></span>
+<span class="codeline" id="line-329"><code>	// never try to grow the stack during the code that stackalloc runs.</code></span>
+<span class="codeline" id="line-330"><code>	// Doing so would cause a deadlock (issue 1547).</code></span>
+<span class="codeline" id="line-331"><code>	thisg := getg()</code></span>
+<span class="codeline" id="line-332"><code>	if thisg != thisg.m.g0 {</code></span>
+<span class="codeline" id="line-333"><code>		throw("stackalloc not on scheduler stack")</code></span>
+<span class="codeline" id="line-334"><code>	}</code></span>
+<span class="codeline" id="line-335"><code>	if n&amp;(n-1) != 0 {</code></span>
+<span class="codeline" id="line-336"><code>		throw("stack size not a power of 2")</code></span>
+<span class="codeline" id="line-337"><code>	}</code></span>
+<span class="codeline" id="line-338"><code>	if stackDebug &gt;= 1 {</code></span>
+<span class="codeline" id="line-339"><code>		print("stackalloc ", n, "\n")</code></span>
+<span class="codeline" id="line-340"><code>	}</code></span>
+<span class="codeline" id="line-341"><code></code></span>
+<span class="codeline" id="line-342"><code>	if debug.efence != 0 || stackFromSystem != 0 {</code></span>
+<span class="codeline" id="line-343"><code>		n = uint32(alignUp(uintptr(n), physPageSize))</code></span>
+<span class="codeline" id="line-344"><code>		v := sysAlloc(uintptr(n), &amp;memstats.stacks_sys)</code></span>
+<span class="codeline" id="line-345"><code>		if v == nil {</code></span>
+<span class="codeline" id="line-346"><code>			throw("out of memory (stackalloc)")</code></span>
+<span class="codeline" id="line-347"><code>		}</code></span>
+<span class="codeline" id="line-348"><code>		return stack{uintptr(v), uintptr(v) + uintptr(n)}</code></span>
+<span class="codeline" id="line-349"><code>	}</code></span>
+<span class="codeline" id="line-350"><code></code></span>
+<span class="codeline" id="line-351"><code>	// Small stacks are allocated with a fixed-size free-list allocator.</code></span>
+<span class="codeline" id="line-352"><code>	// If we need a stack of a bigger size, we fall back on allocating</code></span>
+<span class="codeline" id="line-353"><code>	// a dedicated span.</code></span>
+<span class="codeline" id="line-354"><code>	var v unsafe.Pointer</code></span>
+<span class="codeline" id="line-355"><code>	if n &lt; _FixedStack&lt;&lt;_NumStackOrders &amp;&amp; n &lt; _StackCacheSize {</code></span>
+<span class="codeline" id="line-356"><code>		order := uint8(0)</code></span>
+<span class="codeline" id="line-357"><code>		n2 := n</code></span>
+<span class="codeline" id="line-358"><code>		for n2 &gt; _FixedStack {</code></span>
+<span class="codeline" id="line-359"><code>			order++</code></span>
+<span class="codeline" id="line-360"><code>			n2 &gt;&gt;= 1</code></span>
+<span class="codeline" id="line-361"><code>		}</code></span>
+<span class="codeline" id="line-362"><code>		var x gclinkptr</code></span>
+<span class="codeline" id="line-363"><code>		if stackNoCache != 0 || thisg.m.p == 0 || thisg.m.preemptoff != "" {</code></span>
+<span class="codeline" id="line-364"><code>			// thisg.m.p == 0 can happen in the guts of exitsyscall</code></span>
+<span class="codeline" id="line-365"><code>			// or procresize. Just get a stack from the global pool.</code></span>
+<span class="codeline" id="line-366"><code>			// Also don't touch stackcache during gc</code></span>
+<span class="codeline" id="line-367"><code>			// as it's flushed concurrently.</code></span>
+<span class="codeline" id="line-368"><code>			lock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-369"><code>			x = stackpoolalloc(order)</code></span>
+<span class="codeline" id="line-370"><code>			unlock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-371"><code>		} else {</code></span>
+<span class="codeline" id="line-372"><code>			c := thisg.m.p.ptr().mcache</code></span>
+<span class="codeline" id="line-373"><code>			x = c.stackcache[order].list</code></span>
+<span class="codeline" id="line-374"><code>			if x.ptr() == nil {</code></span>
+<span class="codeline" id="line-375"><code>				stackcacherefill(c, order)</code></span>
+<span class="codeline" id="line-376"><code>				x = c.stackcache[order].list</code></span>
+<span class="codeline" id="line-377"><code>			}</code></span>
+<span class="codeline" id="line-378"><code>			c.stackcache[order].list = x.ptr().next</code></span>
+<span class="codeline" id="line-379"><code>			c.stackcache[order].size -= uintptr(n)</code></span>
+<span class="codeline" id="line-380"><code>		}</code></span>
+<span class="codeline" id="line-381"><code>		v = unsafe.Pointer(x)</code></span>
+<span class="codeline" id="line-382"><code>	} else {</code></span>
+<span class="codeline" id="line-383"><code>		var s *mspan</code></span>
+<span class="codeline" id="line-384"><code>		npage := uintptr(n) &gt;&gt; _PageShift</code></span>
+<span class="codeline" id="line-385"><code>		log2npage := stacklog2(npage)</code></span>
+<span class="codeline" id="line-386"><code></code></span>
+<span class="codeline" id="line-387"><code>		// Try to get a stack from the large stack cache.</code></span>
+<span class="codeline" id="line-388"><code>		lock(&amp;stackLarge.lock)</code></span>
+<span class="codeline" id="line-389"><code>		if !stackLarge.free[log2npage].isEmpty() {</code></span>
+<span class="codeline" id="line-390"><code>			s = stackLarge.free[log2npage].first</code></span>
+<span class="codeline" id="line-391"><code>			stackLarge.free[log2npage].remove(s)</code></span>
+<span class="codeline" id="line-392"><code>		}</code></span>
+<span class="codeline" id="line-393"><code>		unlock(&amp;stackLarge.lock)</code></span>
+<span class="codeline" id="line-394"><code></code></span>
+<span class="codeline" id="line-395"><code>		lockWithRankMayAcquire(&amp;mheap_.lock, lockRankMheap)</code></span>
+<span class="codeline" id="line-396"><code></code></span>
+<span class="codeline" id="line-397"><code>		if s == nil {</code></span>
+<span class="codeline" id="line-398"><code>			// Allocate a new stack from the heap.</code></span>
+<span class="codeline" id="line-399"><code>			s = mheap_.allocManual(npage, spanAllocStack)</code></span>
+<span class="codeline" id="line-400"><code>			if s == nil {</code></span>
+<span class="codeline" id="line-401"><code>				throw("out of memory")</code></span>
+<span class="codeline" id="line-402"><code>			}</code></span>
+<span class="codeline" id="line-403"><code>			osStackAlloc(s)</code></span>
+<span class="codeline" id="line-404"><code>			s.elemsize = uintptr(n)</code></span>
+<span class="codeline" id="line-405"><code>		}</code></span>
+<span class="codeline" id="line-406"><code>		v = unsafe.Pointer(s.base())</code></span>
+<span class="codeline" id="line-407"><code>	}</code></span>
+<span class="codeline" id="line-408"><code></code></span>
+<span class="codeline" id="line-409"><code>	if raceenabled {</code></span>
+<span class="codeline" id="line-410"><code>		racemalloc(v, uintptr(n))</code></span>
+<span class="codeline" id="line-411"><code>	}</code></span>
+<span class="codeline" id="line-412"><code>	if msanenabled {</code></span>
+<span class="codeline" id="line-413"><code>		msanmalloc(v, uintptr(n))</code></span>
+<span class="codeline" id="line-414"><code>	}</code></span>
+<span class="codeline" id="line-415"><code>	if stackDebug &gt;= 1 {</code></span>
+<span class="codeline" id="line-416"><code>		print("  allocated ", v, "\n")</code></span>
+<span class="codeline" id="line-417"><code>	}</code></span>
+<span class="codeline" id="line-418"><code>	return stack{uintptr(v), uintptr(v) + uintptr(n)}</code></span>
+<span class="codeline" id="line-419"><code>}</code></span>
+<span class="codeline" id="line-420"><code></code></span>
+<span class="codeline" id="line-421"><code>// stackfree frees an n byte stack allocation at stk.</code></span>
+<span class="codeline" id="line-422"><code>//</code></span>
+<span class="codeline" id="line-423"><code>// stackfree must run on the system stack because it uses per-P</code></span>
+<span class="codeline" id="line-424"><code>// resources and must not split the stack.</code></span>
+<span class="codeline" id="line-425"><code>//</code></span>
+<span class="codeline" id="line-426"><code>//go:systemstack</code></span>
+<span class="codeline" id="line-427"><code>func stackfree(stk stack) {</code></span>
+<span class="codeline" id="line-428"><code>	gp := getg()</code></span>
+<span class="codeline" id="line-429"><code>	v := unsafe.Pointer(stk.lo)</code></span>
+<span class="codeline" id="line-430"><code>	n := stk.hi - stk.lo</code></span>
+<span class="codeline" id="line-431"><code>	if n&amp;(n-1) != 0 {</code></span>
+<span class="codeline" id="line-432"><code>		throw("stack not a power of 2")</code></span>
+<span class="codeline" id="line-433"><code>	}</code></span>
+<span class="codeline" id="line-434"><code>	if stk.lo+n &lt; stk.hi {</code></span>
+<span class="codeline" id="line-435"><code>		throw("bad stack size")</code></span>
+<span class="codeline" id="line-436"><code>	}</code></span>
+<span class="codeline" id="line-437"><code>	if stackDebug &gt;= 1 {</code></span>
+<span class="codeline" id="line-438"><code>		println("stackfree", v, n)</code></span>
+<span class="codeline" id="line-439"><code>		memclrNoHeapPointers(v, n) // for testing, clobber stack data</code></span>
+<span class="codeline" id="line-440"><code>	}</code></span>
+<span class="codeline" id="line-441"><code>	if debug.efence != 0 || stackFromSystem != 0 {</code></span>
+<span class="codeline" id="line-442"><code>		if debug.efence != 0 || stackFaultOnFree != 0 {</code></span>
+<span class="codeline" id="line-443"><code>			sysFault(v, n)</code></span>
+<span class="codeline" id="line-444"><code>		} else {</code></span>
+<span class="codeline" id="line-445"><code>			sysFree(v, n, &amp;memstats.stacks_sys)</code></span>
+<span class="codeline" id="line-446"><code>		}</code></span>
+<span class="codeline" id="line-447"><code>		return</code></span>
+<span class="codeline" id="line-448"><code>	}</code></span>
+<span class="codeline" id="line-449"><code>	if msanenabled {</code></span>
+<span class="codeline" id="line-450"><code>		msanfree(v, n)</code></span>
+<span class="codeline" id="line-451"><code>	}</code></span>
+<span class="codeline" id="line-452"><code>	if n &lt; _FixedStack&lt;&lt;_NumStackOrders &amp;&amp; n &lt; _StackCacheSize {</code></span>
+<span class="codeline" id="line-453"><code>		order := uint8(0)</code></span>
+<span class="codeline" id="line-454"><code>		n2 := n</code></span>
+<span class="codeline" id="line-455"><code>		for n2 &gt; _FixedStack {</code></span>
+<span class="codeline" id="line-456"><code>			order++</code></span>
+<span class="codeline" id="line-457"><code>			n2 &gt;&gt;= 1</code></span>
+<span class="codeline" id="line-458"><code>		}</code></span>
+<span class="codeline" id="line-459"><code>		x := gclinkptr(v)</code></span>
+<span class="codeline" id="line-460"><code>		if stackNoCache != 0 || gp.m.p == 0 || gp.m.preemptoff != "" {</code></span>
+<span class="codeline" id="line-461"><code>			lock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-462"><code>			stackpoolfree(x, order)</code></span>
+<span class="codeline" id="line-463"><code>			unlock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-464"><code>		} else {</code></span>
+<span class="codeline" id="line-465"><code>			c := gp.m.p.ptr().mcache</code></span>
+<span class="codeline" id="line-466"><code>			if c.stackcache[order].size &gt;= _StackCacheSize {</code></span>
+<span class="codeline" id="line-467"><code>				stackcacherelease(c, order)</code></span>
+<span class="codeline" id="line-468"><code>			}</code></span>
+<span class="codeline" id="line-469"><code>			x.ptr().next = c.stackcache[order].list</code></span>
+<span class="codeline" id="line-470"><code>			c.stackcache[order].list = x</code></span>
+<span class="codeline" id="line-471"><code>			c.stackcache[order].size += n</code></span>
+<span class="codeline" id="line-472"><code>		}</code></span>
+<span class="codeline" id="line-473"><code>	} else {</code></span>
+<span class="codeline" id="line-474"><code>		s := spanOfUnchecked(uintptr(v))</code></span>
+<span class="codeline" id="line-475"><code>		if s.state.get() != mSpanManual {</code></span>
+<span class="codeline" id="line-476"><code>			println(hex(s.base()), v)</code></span>
+<span class="codeline" id="line-477"><code>			throw("bad span state")</code></span>
+<span class="codeline" id="line-478"><code>		}</code></span>
+<span class="codeline" id="line-479"><code>		if gcphase == _GCoff {</code></span>
+<span class="codeline" id="line-480"><code>			// Free the stack immediately if we're</code></span>
+<span class="codeline" id="line-481"><code>			// sweeping.</code></span>
+<span class="codeline" id="line-482"><code>			osStackFree(s)</code></span>
+<span class="codeline" id="line-483"><code>			mheap_.freeManual(s, spanAllocStack)</code></span>
+<span class="codeline" id="line-484"><code>		} else {</code></span>
+<span class="codeline" id="line-485"><code>			// If the GC is running, we can't return a</code></span>
+<span class="codeline" id="line-486"><code>			// stack span to the heap because it could be</code></span>
+<span class="codeline" id="line-487"><code>			// reused as a heap span, and this state</code></span>
+<span class="codeline" id="line-488"><code>			// change would race with GC. Add it to the</code></span>
+<span class="codeline" id="line-489"><code>			// large stack cache instead.</code></span>
+<span class="codeline" id="line-490"><code>			log2npage := stacklog2(s.npages)</code></span>
+<span class="codeline" id="line-491"><code>			lock(&amp;stackLarge.lock)</code></span>
+<span class="codeline" id="line-492"><code>			stackLarge.free[log2npage].insert(s)</code></span>
+<span class="codeline" id="line-493"><code>			unlock(&amp;stackLarge.lock)</code></span>
+<span class="codeline" id="line-494"><code>		}</code></span>
+<span class="codeline" id="line-495"><code>	}</code></span>
+<span class="codeline" id="line-496"><code>}</code></span>
+<span class="codeline" id="line-497"><code></code></span>
+<span class="codeline" id="line-498"><code>var maxstacksize uintptr = 1 &lt;&lt; 20 // enough until runtime.main sets it for real</code></span>
+<span class="codeline" id="line-499"><code></code></span>
+<span class="codeline" id="line-500"><code>var maxstackceiling = maxstacksize</code></span>
+<span class="codeline" id="line-501"><code></code></span>
+<span class="codeline" id="line-502"><code>var ptrnames = []string{</code></span>
+<span class="codeline" id="line-503"><code>	0: "scalar",</code></span>
+<span class="codeline" id="line-504"><code>	1: "ptr",</code></span>
+<span class="codeline" id="line-505"><code>}</code></span>
+<span class="codeline" id="line-506"><code></code></span>
+<span class="codeline" id="line-507"><code>// Stack frame layout</code></span>
+<span class="codeline" id="line-508"><code>//</code></span>
+<span class="codeline" id="line-509"><code>// (x86)</code></span>
+<span class="codeline" id="line-510"><code>// +------------------+</code></span>
+<span class="codeline" id="line-511"><code>// | args from caller |</code></span>
+<span class="codeline" id="line-512"><code>// +------------------+ &lt;- frame-&gt;argp</code></span>
+<span class="codeline" id="line-513"><code>// |  return address  |</code></span>
+<span class="codeline" id="line-514"><code>// +------------------+</code></span>
+<span class="codeline" id="line-515"><code>// |  caller's BP (*) | (*) if framepointer_enabled &amp;&amp; varp &lt; sp</code></span>
+<span class="codeline" id="line-516"><code>// +------------------+ &lt;- frame-&gt;varp</code></span>
+<span class="codeline" id="line-517"><code>// |     locals       |</code></span>
+<span class="codeline" id="line-518"><code>// +------------------+</code></span>
+<span class="codeline" id="line-519"><code>// |  args to callee  |</code></span>
+<span class="codeline" id="line-520"><code>// +------------------+ &lt;- frame-&gt;sp</code></span>
+<span class="codeline" id="line-521"><code>//</code></span>
+<span class="codeline" id="line-522"><code>// (arm)</code></span>
+<span class="codeline" id="line-523"><code>// +------------------+</code></span>
+<span class="codeline" id="line-524"><code>// | args from caller |</code></span>
+<span class="codeline" id="line-525"><code>// +------------------+ &lt;- frame-&gt;argp</code></span>
+<span class="codeline" id="line-526"><code>// | caller's retaddr |</code></span>
+<span class="codeline" id="line-527"><code>// +------------------+ &lt;- frame-&gt;varp</code></span>
+<span class="codeline" id="line-528"><code>// |     locals       |</code></span>
+<span class="codeline" id="line-529"><code>// +------------------+</code></span>
+<span class="codeline" id="line-530"><code>// |  args to callee  |</code></span>
+<span class="codeline" id="line-531"><code>// +------------------+</code></span>
+<span class="codeline" id="line-532"><code>// |  return address  |</code></span>
+<span class="codeline" id="line-533"><code>// +------------------+ &lt;- frame-&gt;sp</code></span>
+<span class="codeline" id="line-534"><code></code></span>
+<span class="codeline" id="line-535"><code>type adjustinfo struct {</code></span>
+<span class="codeline" id="line-536"><code>	old   stack</code></span>
+<span class="codeline" id="line-537"><code>	delta uintptr // ptr distance from old to new stack (newbase - oldbase)</code></span>
+<span class="codeline" id="line-538"><code>	cache pcvalueCache</code></span>
+<span class="codeline" id="line-539"><code></code></span>
+<span class="codeline" id="line-540"><code>	// sghi is the highest sudog.elem on the stack.</code></span>
+<span class="codeline" id="line-541"><code>	sghi uintptr</code></span>
+<span class="codeline" id="line-542"><code>}</code></span>
+<span class="codeline" id="line-543"><code></code></span>
+<span class="codeline" id="line-544"><code>// Adjustpointer checks whether *vpp is in the old stack described by adjinfo.</code></span>
+<span class="codeline" id="line-545"><code>// If so, it rewrites *vpp to point into the new stack.</code></span>
+<span class="codeline" id="line-546"><code>func adjustpointer(adjinfo *adjustinfo, vpp unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-547"><code>	pp := (*uintptr)(vpp)</code></span>
+<span class="codeline" id="line-548"><code>	p := *pp</code></span>
+<span class="codeline" id="line-549"><code>	if stackDebug &gt;= 4 {</code></span>
+<span class="codeline" id="line-550"><code>		print("        ", pp, ":", hex(p), "\n")</code></span>
+<span class="codeline" id="line-551"><code>	}</code></span>
+<span class="codeline" id="line-552"><code>	if adjinfo.old.lo &lt;= p &amp;&amp; p &lt; adjinfo.old.hi {</code></span>
+<span class="codeline" id="line-553"><code>		*pp = p + adjinfo.delta</code></span>
+<span class="codeline" id="line-554"><code>		if stackDebug &gt;= 3 {</code></span>
+<span class="codeline" id="line-555"><code>			print("        adjust ptr ", pp, ":", hex(p), " -&gt; ", hex(*pp), "\n")</code></span>
+<span class="codeline" id="line-556"><code>		}</code></span>
+<span class="codeline" id="line-557"><code>	}</code></span>
+<span class="codeline" id="line-558"><code>}</code></span>
+<span class="codeline" id="line-559"><code></code></span>
+<span class="codeline" id="line-560"><code>// Information from the compiler about the layout of stack frames.</code></span>
+<span class="codeline" id="line-561"><code>// Note: this type must agree with reflect.bitVector.</code></span>
+<span class="codeline" id="line-562"><code>type bitvector struct {</code></span>
+<span class="codeline" id="line-563"><code>	n        int32 // # of bits</code></span>
+<span class="codeline" id="line-564"><code>	bytedata *uint8</code></span>
+<span class="codeline" id="line-565"><code>}</code></span>
+<span class="codeline" id="line-566"><code></code></span>
+<span class="codeline" id="line-567"><code>// ptrbit returns the i'th bit in bv.</code></span>
+<span class="codeline" id="line-568"><code>// ptrbit is less efficient than iterating directly over bitvector bits,</code></span>
+<span class="codeline" id="line-569"><code>// and should only be used in non-performance-critical code.</code></span>
+<span class="codeline" id="line-570"><code>// See adjustpointers for an example of a high-efficiency walk of a bitvector.</code></span>
+<span class="codeline" id="line-571"><code>func (bv *bitvector) ptrbit(i uintptr) uint8 {</code></span>
+<span class="codeline" id="line-572"><code>	b := *(addb(bv.bytedata, i/8))</code></span>
+<span class="codeline" id="line-573"><code>	return (b &gt;&gt; (i % 8)) &amp; 1</code></span>
+<span class="codeline" id="line-574"><code>}</code></span>
+<span class="codeline" id="line-575"><code></code></span>
+<span class="codeline" id="line-576"><code>// bv describes the memory starting at address scanp.</code></span>
+<span class="codeline" id="line-577"><code>// Adjust any pointers contained therein.</code></span>
+<span class="codeline" id="line-578"><code>func adjustpointers(scanp unsafe.Pointer, bv *bitvector, adjinfo *adjustinfo, f funcInfo) {</code></span>
+<span class="codeline" id="line-579"><code>	minp := adjinfo.old.lo</code></span>
+<span class="codeline" id="line-580"><code>	maxp := adjinfo.old.hi</code></span>
+<span class="codeline" id="line-581"><code>	delta := adjinfo.delta</code></span>
+<span class="codeline" id="line-582"><code>	num := uintptr(bv.n)</code></span>
+<span class="codeline" id="line-583"><code>	// If this frame might contain channel receive slots, use CAS</code></span>
+<span class="codeline" id="line-584"><code>	// to adjust pointers. If the slot hasn't been received into</code></span>
+<span class="codeline" id="line-585"><code>	// yet, it may contain stack pointers and a concurrent send</code></span>
+<span class="codeline" id="line-586"><code>	// could race with adjusting those pointers. (The sent value</code></span>
+<span class="codeline" id="line-587"><code>	// itself can never contain stack pointers.)</code></span>
+<span class="codeline" id="line-588"><code>	useCAS := uintptr(scanp) &lt; adjinfo.sghi</code></span>
+<span class="codeline" id="line-589"><code>	for i := uintptr(0); i &lt; num; i += 8 {</code></span>
+<span class="codeline" id="line-590"><code>		if stackDebug &gt;= 4 {</code></span>
+<span class="codeline" id="line-591"><code>			for j := uintptr(0); j &lt; 8; j++ {</code></span>
+<span class="codeline" id="line-592"><code>				print("        ", add(scanp, (i+j)*sys.PtrSize), ":", ptrnames[bv.ptrbit(i+j)], ":", hex(*(*uintptr)(add(scanp, (i+j)*sys.PtrSize))), " # ", i, " ", *addb(bv.bytedata, i/8), "\n")</code></span>
+<span class="codeline" id="line-593"><code>			}</code></span>
+<span class="codeline" id="line-594"><code>		}</code></span>
+<span class="codeline" id="line-595"><code>		b := *(addb(bv.bytedata, i/8))</code></span>
+<span class="codeline" id="line-596"><code>		for b != 0 {</code></span>
+<span class="codeline" id="line-597"><code>			j := uintptr(sys.Ctz8(b))</code></span>
+<span class="codeline" id="line-598"><code>			b &amp;= b - 1</code></span>
+<span class="codeline" id="line-599"><code>			pp := (*uintptr)(add(scanp, (i+j)*sys.PtrSize))</code></span>
+<span class="codeline" id="line-600"><code>		retry:</code></span>
+<span class="codeline" id="line-601"><code>			p := *pp</code></span>
+<span class="codeline" id="line-602"><code>			if f.valid() &amp;&amp; 0 &lt; p &amp;&amp; p &lt; minLegalPointer &amp;&amp; debug.invalidptr != 0 {</code></span>
+<span class="codeline" id="line-603"><code>				// Looks like a junk value in a pointer slot.</code></span>
+<span class="codeline" id="line-604"><code>				// Live analysis wrong?</code></span>
+<span class="codeline" id="line-605"><code>				getg().m.traceback = 2</code></span>
+<span class="codeline" id="line-606"><code>				print("runtime: bad pointer in frame ", funcname(f), " at ", pp, ": ", hex(p), "\n")</code></span>
+<span class="codeline" id="line-607"><code>				throw("invalid pointer found on stack")</code></span>
+<span class="codeline" id="line-608"><code>			}</code></span>
+<span class="codeline" id="line-609"><code>			if minp &lt;= p &amp;&amp; p &lt; maxp {</code></span>
+<span class="codeline" id="line-610"><code>				if stackDebug &gt;= 3 {</code></span>
+<span class="codeline" id="line-611"><code>					print("adjust ptr ", hex(p), " ", funcname(f), "\n")</code></span>
+<span class="codeline" id="line-612"><code>				}</code></span>
+<span class="codeline" id="line-613"><code>				if useCAS {</code></span>
+<span class="codeline" id="line-614"><code>					ppu := (*unsafe.Pointer)(unsafe.Pointer(pp))</code></span>
+<span class="codeline" id="line-615"><code>					if !atomic.Casp1(ppu, unsafe.Pointer(p), unsafe.Pointer(p+delta)) {</code></span>
+<span class="codeline" id="line-616"><code>						goto retry</code></span>
+<span class="codeline" id="line-617"><code>					}</code></span>
+<span class="codeline" id="line-618"><code>				} else {</code></span>
+<span class="codeline" id="line-619"><code>					*pp = p + delta</code></span>
+<span class="codeline" id="line-620"><code>				}</code></span>
+<span class="codeline" id="line-621"><code>			}</code></span>
+<span class="codeline" id="line-622"><code>		}</code></span>
+<span class="codeline" id="line-623"><code>	}</code></span>
+<span class="codeline" id="line-624"><code>}</code></span>
+<span class="codeline" id="line-625"><code></code></span>
+<span class="codeline" id="line-626"><code>// Note: the argument/return area is adjusted by the callee.</code></span>
+<span class="codeline" id="line-627"><code>func adjustframe(frame *stkframe, arg unsafe.Pointer) bool {</code></span>
+<span class="codeline" id="line-628"><code>	adjinfo := (*adjustinfo)(arg)</code></span>
+<span class="codeline" id="line-629"><code>	if frame.continpc == 0 {</code></span>
+<span class="codeline" id="line-630"><code>		// Frame is dead.</code></span>
+<span class="codeline" id="line-631"><code>		return true</code></span>
+<span class="codeline" id="line-632"><code>	}</code></span>
+<span class="codeline" id="line-633"><code>	f := frame.fn</code></span>
+<span class="codeline" id="line-634"><code>	if stackDebug &gt;= 2 {</code></span>
+<span class="codeline" id="line-635"><code>		print("    adjusting ", funcname(f), " frame=[", hex(frame.sp), ",", hex(frame.fp), "] pc=", hex(frame.pc), " continpc=", hex(frame.continpc), "\n")</code></span>
+<span class="codeline" id="line-636"><code>	}</code></span>
+<span class="codeline" id="line-637"><code>	if f.funcID == funcID_systemstack_switch {</code></span>
+<span class="codeline" id="line-638"><code>		// A special routine at the bottom of stack of a goroutine that does a systemstack call.</code></span>
+<span class="codeline" id="line-639"><code>		// We will allow it to be copied even though we don't</code></span>
+<span class="codeline" id="line-640"><code>		// have full GC info for it (because it is written in asm).</code></span>
+<span class="codeline" id="line-641"><code>		return true</code></span>
+<span class="codeline" id="line-642"><code>	}</code></span>
+<span class="codeline" id="line-643"><code></code></span>
+<span class="codeline" id="line-644"><code>	locals, args, objs := getStackMap(frame, &amp;adjinfo.cache, true)</code></span>
+<span class="codeline" id="line-645"><code></code></span>
+<span class="codeline" id="line-646"><code>	// Adjust local variables if stack frame has been allocated.</code></span>
+<span class="codeline" id="line-647"><code>	if locals.n &gt; 0 {</code></span>
+<span class="codeline" id="line-648"><code>		size := uintptr(locals.n) * sys.PtrSize</code></span>
+<span class="codeline" id="line-649"><code>		adjustpointers(unsafe.Pointer(frame.varp-size), &amp;locals, adjinfo, f)</code></span>
+<span class="codeline" id="line-650"><code>	}</code></span>
+<span class="codeline" id="line-651"><code></code></span>
+<span class="codeline" id="line-652"><code>	// Adjust saved base pointer if there is one.</code></span>
+<span class="codeline" id="line-653"><code>	// TODO what about arm64 frame pointer adjustment?</code></span>
+<span class="codeline" id="line-654"><code>	if sys.ArchFamily == sys.AMD64 &amp;&amp; frame.argp-frame.varp == 2*sys.RegSize {</code></span>
+<span class="codeline" id="line-655"><code>		if stackDebug &gt;= 3 {</code></span>
+<span class="codeline" id="line-656"><code>			print("      saved bp\n")</code></span>
+<span class="codeline" id="line-657"><code>		}</code></span>
+<span class="codeline" id="line-658"><code>		if debugCheckBP {</code></span>
+<span class="codeline" id="line-659"><code>			// Frame pointers should always point to the next higher frame on</code></span>
+<span class="codeline" id="line-660"><code>			// the Go stack (or be nil, for the top frame on the stack).</code></span>
+<span class="codeline" id="line-661"><code>			bp := *(*uintptr)(unsafe.Pointer(frame.varp))</code></span>
+<span class="codeline" id="line-662"><code>			if bp != 0 &amp;&amp; (bp &lt; adjinfo.old.lo || bp &gt;= adjinfo.old.hi) {</code></span>
+<span class="codeline" id="line-663"><code>				println("runtime: found invalid frame pointer")</code></span>
+<span class="codeline" id="line-664"><code>				print("bp=", hex(bp), " min=", hex(adjinfo.old.lo), " max=", hex(adjinfo.old.hi), "\n")</code></span>
+<span class="codeline" id="line-665"><code>				throw("bad frame pointer")</code></span>
+<span class="codeline" id="line-666"><code>			}</code></span>
+<span class="codeline" id="line-667"><code>		}</code></span>
+<span class="codeline" id="line-668"><code>		adjustpointer(adjinfo, unsafe.Pointer(frame.varp))</code></span>
+<span class="codeline" id="line-669"><code>	}</code></span>
+<span class="codeline" id="line-670"><code></code></span>
+<span class="codeline" id="line-671"><code>	// Adjust arguments.</code></span>
+<span class="codeline" id="line-672"><code>	if args.n &gt; 0 {</code></span>
+<span class="codeline" id="line-673"><code>		if stackDebug &gt;= 3 {</code></span>
+<span class="codeline" id="line-674"><code>			print("      args\n")</code></span>
+<span class="codeline" id="line-675"><code>		}</code></span>
+<span class="codeline" id="line-676"><code>		adjustpointers(unsafe.Pointer(frame.argp), &amp;args, adjinfo, funcInfo{})</code></span>
+<span class="codeline" id="line-677"><code>	}</code></span>
+<span class="codeline" id="line-678"><code></code></span>
+<span class="codeline" id="line-679"><code>	// Adjust pointers in all stack objects (whether they are live or not).</code></span>
+<span class="codeline" id="line-680"><code>	// See comments in mgcmark.go:scanframeworker.</code></span>
+<span class="codeline" id="line-681"><code>	if frame.varp != 0 {</code></span>
+<span class="codeline" id="line-682"><code>		for _, obj := range objs {</code></span>
+<span class="codeline" id="line-683"><code>			off := obj.off</code></span>
+<span class="codeline" id="line-684"><code>			base := frame.varp // locals base pointer</code></span>
+<span class="codeline" id="line-685"><code>			if off &gt;= 0 {</code></span>
+<span class="codeline" id="line-686"><code>				base = frame.argp // arguments and return values base pointer</code></span>
+<span class="codeline" id="line-687"><code>			}</code></span>
+<span class="codeline" id="line-688"><code>			p := base + uintptr(off)</code></span>
+<span class="codeline" id="line-689"><code>			if p &lt; frame.sp {</code></span>
+<span class="codeline" id="line-690"><code>				// Object hasn't been allocated in the frame yet.</code></span>
+<span class="codeline" id="line-691"><code>				// (Happens when the stack bounds check fails and</code></span>
+<span class="codeline" id="line-692"><code>				// we call into morestack.)</code></span>
+<span class="codeline" id="line-693"><code>				continue</code></span>
+<span class="codeline" id="line-694"><code>			}</code></span>
+<span class="codeline" id="line-695"><code>			t := obj.typ</code></span>
+<span class="codeline" id="line-696"><code>			gcdata := t.gcdata</code></span>
+<span class="codeline" id="line-697"><code>			var s *mspan</code></span>
+<span class="codeline" id="line-698"><code>			if t.kind&amp;kindGCProg != 0 {</code></span>
+<span class="codeline" id="line-699"><code>				// See comments in mgcmark.go:scanstack</code></span>
+<span class="codeline" id="line-700"><code>				s = materializeGCProg(t.ptrdata, gcdata)</code></span>
+<span class="codeline" id="line-701"><code>				gcdata = (*byte)(unsafe.Pointer(s.startAddr))</code></span>
+<span class="codeline" id="line-702"><code>			}</code></span>
+<span class="codeline" id="line-703"><code>			for i := uintptr(0); i &lt; t.ptrdata; i += sys.PtrSize {</code></span>
+<span class="codeline" id="line-704"><code>				if *addb(gcdata, i/(8*sys.PtrSize))&gt;&gt;(i/sys.PtrSize&amp;7)&amp;1 != 0 {</code></span>
+<span class="codeline" id="line-705"><code>					adjustpointer(adjinfo, unsafe.Pointer(p+i))</code></span>
+<span class="codeline" id="line-706"><code>				}</code></span>
+<span class="codeline" id="line-707"><code>			}</code></span>
+<span class="codeline" id="line-708"><code>			if s != nil {</code></span>
+<span class="codeline" id="line-709"><code>				dematerializeGCProg(s)</code></span>
+<span class="codeline" id="line-710"><code>			}</code></span>
+<span class="codeline" id="line-711"><code>		}</code></span>
+<span class="codeline" id="line-712"><code>	}</code></span>
+<span class="codeline" id="line-713"><code></code></span>
+<span class="codeline" id="line-714"><code>	return true</code></span>
+<span class="codeline" id="line-715"><code>}</code></span>
+<span class="codeline" id="line-716"><code></code></span>
+<span class="codeline" id="line-717"><code>func adjustctxt(gp *g, adjinfo *adjustinfo) {</code></span>
+<span class="codeline" id="line-718"><code>	adjustpointer(adjinfo, unsafe.Pointer(&amp;gp.sched.ctxt))</code></span>
+<span class="codeline" id="line-719"><code>	if !framepointer_enabled {</code></span>
+<span class="codeline" id="line-720"><code>		return</code></span>
+<span class="codeline" id="line-721"><code>	}</code></span>
+<span class="codeline" id="line-722"><code>	if debugCheckBP {</code></span>
+<span class="codeline" id="line-723"><code>		bp := gp.sched.bp</code></span>
+<span class="codeline" id="line-724"><code>		if bp != 0 &amp;&amp; (bp &lt; adjinfo.old.lo || bp &gt;= adjinfo.old.hi) {</code></span>
+<span class="codeline" id="line-725"><code>			println("runtime: found invalid top frame pointer")</code></span>
+<span class="codeline" id="line-726"><code>			print("bp=", hex(bp), " min=", hex(adjinfo.old.lo), " max=", hex(adjinfo.old.hi), "\n")</code></span>
+<span class="codeline" id="line-727"><code>			throw("bad top frame pointer")</code></span>
+<span class="codeline" id="line-728"><code>		}</code></span>
+<span class="codeline" id="line-729"><code>	}</code></span>
+<span class="codeline" id="line-730"><code>	adjustpointer(adjinfo, unsafe.Pointer(&amp;gp.sched.bp))</code></span>
+<span class="codeline" id="line-731"><code>}</code></span>
+<span class="codeline" id="line-732"><code></code></span>
+<span class="codeline" id="line-733"><code>func adjustdefers(gp *g, adjinfo *adjustinfo) {</code></span>
+<span class="codeline" id="line-734"><code>	// Adjust pointers in the Defer structs.</code></span>
+<span class="codeline" id="line-735"><code>	// We need to do this first because we need to adjust the</code></span>
+<span class="codeline" id="line-736"><code>	// defer.link fields so we always work on the new stack.</code></span>
+<span class="codeline" id="line-737"><code>	adjustpointer(adjinfo, unsafe.Pointer(&amp;gp._defer))</code></span>
+<span class="codeline" id="line-738"><code>	for d := gp._defer; d != nil; d = d.link {</code></span>
+<span class="codeline" id="line-739"><code>		adjustpointer(adjinfo, unsafe.Pointer(&amp;d.fn))</code></span>
+<span class="codeline" id="line-740"><code>		adjustpointer(adjinfo, unsafe.Pointer(&amp;d.sp))</code></span>
+<span class="codeline" id="line-741"><code>		adjustpointer(adjinfo, unsafe.Pointer(&amp;d._panic))</code></span>
+<span class="codeline" id="line-742"><code>		adjustpointer(adjinfo, unsafe.Pointer(&amp;d.link))</code></span>
+<span class="codeline" id="line-743"><code>		adjustpointer(adjinfo, unsafe.Pointer(&amp;d.varp))</code></span>
+<span class="codeline" id="line-744"><code>		adjustpointer(adjinfo, unsafe.Pointer(&amp;d.fd))</code></span>
+<span class="codeline" id="line-745"><code>	}</code></span>
+<span class="codeline" id="line-746"><code></code></span>
+<span class="codeline" id="line-747"><code>	// Adjust defer argument blocks the same way we adjust active stack frames.</code></span>
+<span class="codeline" id="line-748"><code>	// Note: this code is after the loop above, so that if a defer record is</code></span>
+<span class="codeline" id="line-749"><code>	// stack allocated, we work on the copy in the new stack.</code></span>
+<span class="codeline" id="line-750"><code>	tracebackdefers(gp, adjustframe, noescape(unsafe.Pointer(adjinfo)))</code></span>
+<span class="codeline" id="line-751"><code>}</code></span>
+<span class="codeline" id="line-752"><code></code></span>
+<span class="codeline" id="line-753"><code>func adjustpanics(gp *g, adjinfo *adjustinfo) {</code></span>
+<span class="codeline" id="line-754"><code>	// Panics are on stack and already adjusted.</code></span>
+<span class="codeline" id="line-755"><code>	// Update pointer to head of list in G.</code></span>
+<span class="codeline" id="line-756"><code>	adjustpointer(adjinfo, unsafe.Pointer(&amp;gp._panic))</code></span>
+<span class="codeline" id="line-757"><code>}</code></span>
+<span class="codeline" id="line-758"><code></code></span>
+<span class="codeline" id="line-759"><code>func adjustsudogs(gp *g, adjinfo *adjustinfo) {</code></span>
+<span class="codeline" id="line-760"><code>	// the data elements pointed to by a SudoG structure</code></span>
+<span class="codeline" id="line-761"><code>	// might be in the stack.</code></span>
+<span class="codeline" id="line-762"><code>	for s := gp.waiting; s != nil; s = s.waitlink {</code></span>
+<span class="codeline" id="line-763"><code>		adjustpointer(adjinfo, unsafe.Pointer(&amp;s.elem))</code></span>
+<span class="codeline" id="line-764"><code>	}</code></span>
+<span class="codeline" id="line-765"><code>}</code></span>
+<span class="codeline" id="line-766"><code></code></span>
+<span class="codeline" id="line-767"><code>func fillstack(stk stack, b byte) {</code></span>
+<span class="codeline" id="line-768"><code>	for p := stk.lo; p &lt; stk.hi; p++ {</code></span>
+<span class="codeline" id="line-769"><code>		*(*byte)(unsafe.Pointer(p)) = b</code></span>
+<span class="codeline" id="line-770"><code>	}</code></span>
+<span class="codeline" id="line-771"><code>}</code></span>
+<span class="codeline" id="line-772"><code></code></span>
+<span class="codeline" id="line-773"><code>func findsghi(gp *g, stk stack) uintptr {</code></span>
+<span class="codeline" id="line-774"><code>	var sghi uintptr</code></span>
+<span class="codeline" id="line-775"><code>	for sg := gp.waiting; sg != nil; sg = sg.waitlink {</code></span>
+<span class="codeline" id="line-776"><code>		p := uintptr(sg.elem) + uintptr(sg.c.elemsize)</code></span>
+<span class="codeline" id="line-777"><code>		if stk.lo &lt;= p &amp;&amp; p &lt; stk.hi &amp;&amp; p &gt; sghi {</code></span>
+<span class="codeline" id="line-778"><code>			sghi = p</code></span>
+<span class="codeline" id="line-779"><code>		}</code></span>
+<span class="codeline" id="line-780"><code>	}</code></span>
+<span class="codeline" id="line-781"><code>	return sghi</code></span>
+<span class="codeline" id="line-782"><code>}</code></span>
+<span class="codeline" id="line-783"><code></code></span>
+<span class="codeline" id="line-784"><code>// syncadjustsudogs adjusts gp's sudogs and copies the part of gp's</code></span>
+<span class="codeline" id="line-785"><code>// stack they refer to while synchronizing with concurrent channel</code></span>
+<span class="codeline" id="line-786"><code>// operations. It returns the number of bytes of stack copied.</code></span>
+<span class="codeline" id="line-787"><code>func syncadjustsudogs(gp *g, used uintptr, adjinfo *adjustinfo) uintptr {</code></span>
+<span class="codeline" id="line-788"><code>	if gp.waiting == nil {</code></span>
+<span class="codeline" id="line-789"><code>		return 0</code></span>
+<span class="codeline" id="line-790"><code>	}</code></span>
+<span class="codeline" id="line-791"><code></code></span>
+<span class="codeline" id="line-792"><code>	// Lock channels to prevent concurrent send/receive.</code></span>
+<span class="codeline" id="line-793"><code>	var lastc *hchan</code></span>
+<span class="codeline" id="line-794"><code>	for sg := gp.waiting; sg != nil; sg = sg.waitlink {</code></span>
+<span class="codeline" id="line-795"><code>		if sg.c != lastc {</code></span>
+<span class="codeline" id="line-796"><code>			// There is a ranking cycle here between gscan bit and</code></span>
+<span class="codeline" id="line-797"><code>			// hchan locks. Normally, we only allow acquiring hchan</code></span>
+<span class="codeline" id="line-798"><code>			// locks and then getting a gscan bit. In this case, we</code></span>
+<span class="codeline" id="line-799"><code>			// already have the gscan bit. We allow acquiring hchan</code></span>
+<span class="codeline" id="line-800"><code>			// locks here as a special case, since a deadlock can't</code></span>
+<span class="codeline" id="line-801"><code>			// happen because the G involved must already be</code></span>
+<span class="codeline" id="line-802"><code>			// suspended. So, we get a special hchan lock rank here</code></span>
+<span class="codeline" id="line-803"><code>			// that is lower than gscan, but doesn't allow acquiring</code></span>
+<span class="codeline" id="line-804"><code>			// any other locks other than hchan.</code></span>
+<span class="codeline" id="line-805"><code>			lockWithRank(&amp;sg.c.lock, lockRankHchanLeaf)</code></span>
+<span class="codeline" id="line-806"><code>		}</code></span>
+<span class="codeline" id="line-807"><code>		lastc = sg.c</code></span>
+<span class="codeline" id="line-808"><code>	}</code></span>
+<span class="codeline" id="line-809"><code></code></span>
+<span class="codeline" id="line-810"><code>	// Adjust sudogs.</code></span>
+<span class="codeline" id="line-811"><code>	adjustsudogs(gp, adjinfo)</code></span>
+<span class="codeline" id="line-812"><code></code></span>
+<span class="codeline" id="line-813"><code>	// Copy the part of the stack the sudogs point in to</code></span>
+<span class="codeline" id="line-814"><code>	// while holding the lock to prevent races on</code></span>
+<span class="codeline" id="line-815"><code>	// send/receive slots.</code></span>
+<span class="codeline" id="line-816"><code>	var sgsize uintptr</code></span>
+<span class="codeline" id="line-817"><code>	if adjinfo.sghi != 0 {</code></span>
+<span class="codeline" id="line-818"><code>		oldBot := adjinfo.old.hi - used</code></span>
+<span class="codeline" id="line-819"><code>		newBot := oldBot + adjinfo.delta</code></span>
+<span class="codeline" id="line-820"><code>		sgsize = adjinfo.sghi - oldBot</code></span>
+<span class="codeline" id="line-821"><code>		memmove(unsafe.Pointer(newBot), unsafe.Pointer(oldBot), sgsize)</code></span>
+<span class="codeline" id="line-822"><code>	}</code></span>
+<span class="codeline" id="line-823"><code></code></span>
+<span class="codeline" id="line-824"><code>	// Unlock channels.</code></span>
+<span class="codeline" id="line-825"><code>	lastc = nil</code></span>
+<span class="codeline" id="line-826"><code>	for sg := gp.waiting; sg != nil; sg = sg.waitlink {</code></span>
+<span class="codeline" id="line-827"><code>		if sg.c != lastc {</code></span>
+<span class="codeline" id="line-828"><code>			unlock(&amp;sg.c.lock)</code></span>
+<span class="codeline" id="line-829"><code>		}</code></span>
+<span class="codeline" id="line-830"><code>		lastc = sg.c</code></span>
+<span class="codeline" id="line-831"><code>	}</code></span>
+<span class="codeline" id="line-832"><code></code></span>
+<span class="codeline" id="line-833"><code>	return sgsize</code></span>
+<span class="codeline" id="line-834"><code>}</code></span>
+<span class="codeline" id="line-835"><code></code></span>
+<span class="codeline" id="line-836"><code>// Copies gp's stack to a new stack of a different size.</code></span>
+<span class="codeline" id="line-837"><code>// Caller must have changed gp status to Gcopystack.</code></span>
+<span class="codeline" id="line-838"><code>func copystack(gp *g, newsize uintptr) {</code></span>
+<span class="codeline" id="line-839"><code>	if gp.syscallsp != 0 {</code></span>
+<span class="codeline" id="line-840"><code>		throw("stack growth not allowed in system call")</code></span>
+<span class="codeline" id="line-841"><code>	}</code></span>
+<span class="codeline" id="line-842"><code>	old := gp.stack</code></span>
+<span class="codeline" id="line-843"><code>	if old.lo == 0 {</code></span>
+<span class="codeline" id="line-844"><code>		throw("nil stackbase")</code></span>
+<span class="codeline" id="line-845"><code>	}</code></span>
+<span class="codeline" id="line-846"><code>	used := old.hi - gp.sched.sp</code></span>
+<span class="codeline" id="line-847"><code></code></span>
+<span class="codeline" id="line-848"><code>	// allocate new stack</code></span>
+<span class="codeline" id="line-849"><code>	new := stackalloc(uint32(newsize))</code></span>
+<span class="codeline" id="line-850"><code>	if stackPoisonCopy != 0 {</code></span>
+<span class="codeline" id="line-851"><code>		fillstack(new, 0xfd)</code></span>
+<span class="codeline" id="line-852"><code>	}</code></span>
+<span class="codeline" id="line-853"><code>	if stackDebug &gt;= 1 {</code></span>
+<span class="codeline" id="line-854"><code>		print("copystack gp=", gp, " [", hex(old.lo), " ", hex(old.hi-used), " ", hex(old.hi), "]", " -&gt; [", hex(new.lo), " ", hex(new.hi-used), " ", hex(new.hi), "]/", newsize, "\n")</code></span>
+<span class="codeline" id="line-855"><code>	}</code></span>
+<span class="codeline" id="line-856"><code></code></span>
+<span class="codeline" id="line-857"><code>	// Compute adjustment.</code></span>
+<span class="codeline" id="line-858"><code>	var adjinfo adjustinfo</code></span>
+<span class="codeline" id="line-859"><code>	adjinfo.old = old</code></span>
+<span class="codeline" id="line-860"><code>	adjinfo.delta = new.hi - old.hi</code></span>
+<span class="codeline" id="line-861"><code></code></span>
+<span class="codeline" id="line-862"><code>	// Adjust sudogs, synchronizing with channel ops if necessary.</code></span>
+<span class="codeline" id="line-863"><code>	ncopy := used</code></span>
+<span class="codeline" id="line-864"><code>	if !gp.activeStackChans {</code></span>
+<span class="codeline" id="line-865"><code>		if newsize &lt; old.hi-old.lo &amp;&amp; atomic.Load8(&amp;gp.parkingOnChan) != 0 {</code></span>
+<span class="codeline" id="line-866"><code>			// It's not safe for someone to shrink this stack while we're actively</code></span>
+<span class="codeline" id="line-867"><code>			// parking on a channel, but it is safe to grow since we do that</code></span>
+<span class="codeline" id="line-868"><code>			// ourselves and explicitly don't want to synchronize with channels</code></span>
+<span class="codeline" id="line-869"><code>			// since we could self-deadlock.</code></span>
+<span class="codeline" id="line-870"><code>			throw("racy sudog adjustment due to parking on channel")</code></span>
+<span class="codeline" id="line-871"><code>		}</code></span>
+<span class="codeline" id="line-872"><code>		adjustsudogs(gp, &amp;adjinfo)</code></span>
+<span class="codeline" id="line-873"><code>	} else {</code></span>
+<span class="codeline" id="line-874"><code>		// sudogs may be pointing in to the stack and gp has</code></span>
+<span class="codeline" id="line-875"><code>		// released channel locks, so other goroutines could</code></span>
+<span class="codeline" id="line-876"><code>		// be writing to gp's stack. Find the highest such</code></span>
+<span class="codeline" id="line-877"><code>		// pointer so we can handle everything there and below</code></span>
+<span class="codeline" id="line-878"><code>		// carefully. (This shouldn't be far from the bottom</code></span>
+<span class="codeline" id="line-879"><code>		// of the stack, so there's little cost in handling</code></span>
+<span class="codeline" id="line-880"><code>		// everything below it carefully.)</code></span>
+<span class="codeline" id="line-881"><code>		adjinfo.sghi = findsghi(gp, old)</code></span>
+<span class="codeline" id="line-882"><code></code></span>
+<span class="codeline" id="line-883"><code>		// Synchronize with channel ops and copy the part of</code></span>
+<span class="codeline" id="line-884"><code>		// the stack they may interact with.</code></span>
+<span class="codeline" id="line-885"><code>		ncopy -= syncadjustsudogs(gp, used, &amp;adjinfo)</code></span>
+<span class="codeline" id="line-886"><code>	}</code></span>
+<span class="codeline" id="line-887"><code></code></span>
+<span class="codeline" id="line-888"><code>	// Copy the stack (or the rest of it) to the new location</code></span>
+<span class="codeline" id="line-889"><code>	memmove(unsafe.Pointer(new.hi-ncopy), unsafe.Pointer(old.hi-ncopy), ncopy)</code></span>
+<span class="codeline" id="line-890"><code></code></span>
+<span class="codeline" id="line-891"><code>	// Adjust remaining structures that have pointers into stacks.</code></span>
+<span class="codeline" id="line-892"><code>	// We have to do most of these before we traceback the new</code></span>
+<span class="codeline" id="line-893"><code>	// stack because gentraceback uses them.</code></span>
+<span class="codeline" id="line-894"><code>	adjustctxt(gp, &amp;adjinfo)</code></span>
+<span class="codeline" id="line-895"><code>	adjustdefers(gp, &amp;adjinfo)</code></span>
+<span class="codeline" id="line-896"><code>	adjustpanics(gp, &amp;adjinfo)</code></span>
+<span class="codeline" id="line-897"><code>	if adjinfo.sghi != 0 {</code></span>
+<span class="codeline" id="line-898"><code>		adjinfo.sghi += adjinfo.delta</code></span>
+<span class="codeline" id="line-899"><code>	}</code></span>
+<span class="codeline" id="line-900"><code></code></span>
+<span class="codeline" id="line-901"><code>	// Swap out old stack for new one</code></span>
+<span class="codeline" id="line-902"><code>	gp.stack = new</code></span>
+<span class="codeline" id="line-903"><code>	gp.stackguard0 = new.lo + _StackGuard // NOTE: might clobber a preempt request</code></span>
+<span class="codeline" id="line-904"><code>	gp.sched.sp = new.hi - used</code></span>
+<span class="codeline" id="line-905"><code>	gp.stktopsp += adjinfo.delta</code></span>
+<span class="codeline" id="line-906"><code></code></span>
+<span class="codeline" id="line-907"><code>	// Adjust pointers in the new stack.</code></span>
+<span class="codeline" id="line-908"><code>	gentraceback(^uintptr(0), ^uintptr(0), 0, gp, 0, nil, 0x7fffffff, adjustframe, noescape(unsafe.Pointer(&amp;adjinfo)), 0)</code></span>
+<span class="codeline" id="line-909"><code></code></span>
+<span class="codeline" id="line-910"><code>	// free old stack</code></span>
+<span class="codeline" id="line-911"><code>	if stackPoisonCopy != 0 {</code></span>
+<span class="codeline" id="line-912"><code>		fillstack(old, 0xfc)</code></span>
+<span class="codeline" id="line-913"><code>	}</code></span>
+<span class="codeline" id="line-914"><code>	stackfree(old)</code></span>
+<span class="codeline" id="line-915"><code>}</code></span>
+<span class="codeline" id="line-916"><code></code></span>
+<span class="codeline" id="line-917"><code>// round x up to a power of 2.</code></span>
+<span class="codeline" id="line-918"><code>func round2(x int32) int32 {</code></span>
+<span class="codeline" id="line-919"><code>	s := uint(0)</code></span>
+<span class="codeline" id="line-920"><code>	for 1&lt;&lt;s &lt; x {</code></span>
+<span class="codeline" id="line-921"><code>		s++</code></span>
+<span class="codeline" id="line-922"><code>	}</code></span>
+<span class="codeline" id="line-923"><code>	return 1 &lt;&lt; s</code></span>
+<span class="codeline" id="line-924"><code>}</code></span>
+<span class="codeline" id="line-925"><code></code></span>
+<span class="codeline" id="line-926"><code>// Called from runtime·morestack when more stack is needed.</code></span>
+<span class="codeline" id="line-927"><code>// Allocate larger stack and relocate to new stack.</code></span>
+<span class="codeline" id="line-928"><code>// Stack growth is multiplicative, for constant amortized cost.</code></span>
+<span class="codeline" id="line-929"><code>//</code></span>
+<span class="codeline" id="line-930"><code>// g-&gt;atomicstatus will be Grunning or Gscanrunning upon entry.</code></span>
+<span class="codeline" id="line-931"><code>// If the scheduler is trying to stop this g, then it will set preemptStop.</code></span>
+<span class="codeline" id="line-932"><code>//</code></span>
+<span class="codeline" id="line-933"><code>// This must be nowritebarrierrec because it can be called as part of</code></span>
+<span class="codeline" id="line-934"><code>// stack growth from other nowritebarrierrec functions, but the</code></span>
+<span class="codeline" id="line-935"><code>// compiler doesn't check this.</code></span>
+<span class="codeline" id="line-936"><code>//</code></span>
+<span class="codeline" id="line-937"><code>//go:nowritebarrierrec</code></span>
+<span class="codeline" id="line-938"><code>func newstack() {</code></span>
+<span class="codeline" id="line-939"><code>	thisg := getg()</code></span>
+<span class="codeline" id="line-940"><code>	// TODO: double check all gp. shouldn't be getg().</code></span>
+<span class="codeline" id="line-941"><code>	if thisg.m.morebuf.g.ptr().stackguard0 == stackFork {</code></span>
+<span class="codeline" id="line-942"><code>		throw("stack growth after fork")</code></span>
+<span class="codeline" id="line-943"><code>	}</code></span>
+<span class="codeline" id="line-944"><code>	if thisg.m.morebuf.g.ptr() != thisg.m.curg {</code></span>
+<span class="codeline" id="line-945"><code>		print("runtime: newstack called from g=", hex(thisg.m.morebuf.g), "\n"+"\tm=", thisg.m, " m-&gt;curg=", thisg.m.curg, " m-&gt;g0=", thisg.m.g0, " m-&gt;gsignal=", thisg.m.gsignal, "\n")</code></span>
+<span class="codeline" id="line-946"><code>		morebuf := thisg.m.morebuf</code></span>
+<span class="codeline" id="line-947"><code>		traceback(morebuf.pc, morebuf.sp, morebuf.lr, morebuf.g.ptr())</code></span>
+<span class="codeline" id="line-948"><code>		throw("runtime: wrong goroutine in newstack")</code></span>
+<span class="codeline" id="line-949"><code>	}</code></span>
+<span class="codeline" id="line-950"><code></code></span>
+<span class="codeline" id="line-951"><code>	gp := thisg.m.curg</code></span>
+<span class="codeline" id="line-952"><code></code></span>
+<span class="codeline" id="line-953"><code>	if thisg.m.curg.throwsplit {</code></span>
+<span class="codeline" id="line-954"><code>		// Update syscallsp, syscallpc in case traceback uses them.</code></span>
+<span class="codeline" id="line-955"><code>		morebuf := thisg.m.morebuf</code></span>
+<span class="codeline" id="line-956"><code>		gp.syscallsp = morebuf.sp</code></span>
+<span class="codeline" id="line-957"><code>		gp.syscallpc = morebuf.pc</code></span>
+<span class="codeline" id="line-958"><code>		pcname, pcoff := "(unknown)", uintptr(0)</code></span>
+<span class="codeline" id="line-959"><code>		f := findfunc(gp.sched.pc)</code></span>
+<span class="codeline" id="line-960"><code>		if f.valid() {</code></span>
+<span class="codeline" id="line-961"><code>			pcname = funcname(f)</code></span>
+<span class="codeline" id="line-962"><code>			pcoff = gp.sched.pc - f.entry</code></span>
+<span class="codeline" id="line-963"><code>		}</code></span>
+<span class="codeline" id="line-964"><code>		print("runtime: newstack at ", pcname, "+", hex(pcoff),</code></span>
+<span class="codeline" id="line-965"><code>			" sp=", hex(gp.sched.sp), " stack=[", hex(gp.stack.lo), ", ", hex(gp.stack.hi), "]\n",</code></span>
+<span class="codeline" id="line-966"><code>			"\tmorebuf={pc:", hex(morebuf.pc), " sp:", hex(morebuf.sp), " lr:", hex(morebuf.lr), "}\n",</code></span>
+<span class="codeline" id="line-967"><code>			"\tsched={pc:", hex(gp.sched.pc), " sp:", hex(gp.sched.sp), " lr:", hex(gp.sched.lr), " ctxt:", gp.sched.ctxt, "}\n")</code></span>
+<span class="codeline" id="line-968"><code></code></span>
+<span class="codeline" id="line-969"><code>		thisg.m.traceback = 2 // Include runtime frames</code></span>
+<span class="codeline" id="line-970"><code>		traceback(morebuf.pc, morebuf.sp, morebuf.lr, gp)</code></span>
+<span class="codeline" id="line-971"><code>		throw("runtime: stack split at bad time")</code></span>
+<span class="codeline" id="line-972"><code>	}</code></span>
+<span class="codeline" id="line-973"><code></code></span>
+<span class="codeline" id="line-974"><code>	morebuf := thisg.m.morebuf</code></span>
+<span class="codeline" id="line-975"><code>	thisg.m.morebuf.pc = 0</code></span>
+<span class="codeline" id="line-976"><code>	thisg.m.morebuf.lr = 0</code></span>
+<span class="codeline" id="line-977"><code>	thisg.m.morebuf.sp = 0</code></span>
+<span class="codeline" id="line-978"><code>	thisg.m.morebuf.g = 0</code></span>
+<span class="codeline" id="line-979"><code></code></span>
+<span class="codeline" id="line-980"><code>	// NOTE: stackguard0 may change underfoot, if another thread</code></span>
+<span class="codeline" id="line-981"><code>	// is about to try to preempt gp. Read it just once and use that same</code></span>
+<span class="codeline" id="line-982"><code>	// value now and below.</code></span>
+<span class="codeline" id="line-983"><code>	preempt := atomic.Loaduintptr(&amp;gp.stackguard0) == stackPreempt</code></span>
+<span class="codeline" id="line-984"><code></code></span>
+<span class="codeline" id="line-985"><code>	// Be conservative about where we preempt.</code></span>
+<span class="codeline" id="line-986"><code>	// We are interested in preempting user Go code, not runtime code.</code></span>
+<span class="codeline" id="line-987"><code>	// If we're holding locks, mallocing, or preemption is disabled, don't</code></span>
+<span class="codeline" id="line-988"><code>	// preempt.</code></span>
+<span class="codeline" id="line-989"><code>	// This check is very early in newstack so that even the status change</code></span>
+<span class="codeline" id="line-990"><code>	// from Grunning to Gwaiting and back doesn't happen in this case.</code></span>
+<span class="codeline" id="line-991"><code>	// That status change by itself can be viewed as a small preemption,</code></span>
+<span class="codeline" id="line-992"><code>	// because the GC might change Gwaiting to Gscanwaiting, and then</code></span>
+<span class="codeline" id="line-993"><code>	// this goroutine has to wait for the GC to finish before continuing.</code></span>
+<span class="codeline" id="line-994"><code>	// If the GC is in some way dependent on this goroutine (for example,</code></span>
+<span class="codeline" id="line-995"><code>	// it needs a lock held by the goroutine), that small preemption turns</code></span>
+<span class="codeline" id="line-996"><code>	// into a real deadlock.</code></span>
+<span class="codeline" id="line-997"><code>	if preempt {</code></span>
+<span class="codeline" id="line-998"><code>		if !canPreemptM(thisg.m) {</code></span>
+<span class="codeline" id="line-999"><code>			// Let the goroutine keep running for now.</code></span>
+<span class="codeline" id="line-1000"><code>			// gp-&gt;preempt is set, so it will be preempted next time.</code></span>
+<span class="codeline" id="line-1001"><code>			gp.stackguard0 = gp.stack.lo + _StackGuard</code></span>
+<span class="codeline" id="line-1002"><code>			gogo(&amp;gp.sched) // never return</code></span>
+<span class="codeline" id="line-1003"><code>		}</code></span>
+<span class="codeline" id="line-1004"><code>	}</code></span>
+<span class="codeline" id="line-1005"><code></code></span>
+<span class="codeline" id="line-1006"><code>	if gp.stack.lo == 0 {</code></span>
+<span class="codeline" id="line-1007"><code>		throw("missing stack in newstack")</code></span>
+<span class="codeline" id="line-1008"><code>	}</code></span>
+<span class="codeline" id="line-1009"><code>	sp := gp.sched.sp</code></span>
+<span class="codeline" id="line-1010"><code>	if sys.ArchFamily == sys.AMD64 || sys.ArchFamily == sys.I386 || sys.ArchFamily == sys.WASM {</code></span>
+<span class="codeline" id="line-1011"><code>		// The call to morestack cost a word.</code></span>
+<span class="codeline" id="line-1012"><code>		sp -= sys.PtrSize</code></span>
+<span class="codeline" id="line-1013"><code>	}</code></span>
+<span class="codeline" id="line-1014"><code>	if stackDebug &gt;= 1 || sp &lt; gp.stack.lo {</code></span>
+<span class="codeline" id="line-1015"><code>		print("runtime: newstack sp=", hex(sp), " stack=[", hex(gp.stack.lo), ", ", hex(gp.stack.hi), "]\n",</code></span>
+<span class="codeline" id="line-1016"><code>			"\tmorebuf={pc:", hex(morebuf.pc), " sp:", hex(morebuf.sp), " lr:", hex(morebuf.lr), "}\n",</code></span>
+<span class="codeline" id="line-1017"><code>			"\tsched={pc:", hex(gp.sched.pc), " sp:", hex(gp.sched.sp), " lr:", hex(gp.sched.lr), " ctxt:", gp.sched.ctxt, "}\n")</code></span>
+<span class="codeline" id="line-1018"><code>	}</code></span>
+<span class="codeline" id="line-1019"><code>	if sp &lt; gp.stack.lo {</code></span>
+<span class="codeline" id="line-1020"><code>		print("runtime: gp=", gp, ", goid=", gp.goid, ", gp-&gt;status=", hex(readgstatus(gp)), "\n ")</code></span>
+<span class="codeline" id="line-1021"><code>		print("runtime: split stack overflow: ", hex(sp), " &lt; ", hex(gp.stack.lo), "\n")</code></span>
+<span class="codeline" id="line-1022"><code>		throw("runtime: split stack overflow")</code></span>
+<span class="codeline" id="line-1023"><code>	}</code></span>
+<span class="codeline" id="line-1024"><code></code></span>
+<span class="codeline" id="line-1025"><code>	if preempt {</code></span>
+<span class="codeline" id="line-1026"><code>		if gp == thisg.m.g0 {</code></span>
+<span class="codeline" id="line-1027"><code>			throw("runtime: preempt g0")</code></span>
+<span class="codeline" id="line-1028"><code>		}</code></span>
+<span class="codeline" id="line-1029"><code>		if thisg.m.p == 0 &amp;&amp; thisg.m.locks == 0 {</code></span>
+<span class="codeline" id="line-1030"><code>			throw("runtime: g is running but p is not")</code></span>
+<span class="codeline" id="line-1031"><code>		}</code></span>
+<span class="codeline" id="line-1032"><code></code></span>
+<span class="codeline" id="line-1033"><code>		if gp.preemptShrink {</code></span>
+<span class="codeline" id="line-1034"><code>			// We're at a synchronous safe point now, so</code></span>
+<span class="codeline" id="line-1035"><code>			// do the pending stack shrink.</code></span>
+<span class="codeline" id="line-1036"><code>			gp.preemptShrink = false</code></span>
+<span class="codeline" id="line-1037"><code>			shrinkstack(gp)</code></span>
+<span class="codeline" id="line-1038"><code>		}</code></span>
+<span class="codeline" id="line-1039"><code></code></span>
+<span class="codeline" id="line-1040"><code>		if gp.preemptStop {</code></span>
+<span class="codeline" id="line-1041"><code>			preemptPark(gp) // never returns</code></span>
+<span class="codeline" id="line-1042"><code>		}</code></span>
+<span class="codeline" id="line-1043"><code></code></span>
+<span class="codeline" id="line-1044"><code>		// Act like goroutine called runtime.Gosched.</code></span>
+<span class="codeline" id="line-1045"><code>		gopreempt_m(gp) // never return</code></span>
+<span class="codeline" id="line-1046"><code>	}</code></span>
+<span class="codeline" id="line-1047"><code></code></span>
+<span class="codeline" id="line-1048"><code>	// Allocate a bigger segment and move the stack.</code></span>
+<span class="codeline" id="line-1049"><code>	oldsize := gp.stack.hi - gp.stack.lo</code></span>
+<span class="codeline" id="line-1050"><code>	newsize := oldsize * 2</code></span>
+<span class="codeline" id="line-1051"><code></code></span>
+<span class="codeline" id="line-1052"><code>	// Make sure we grow at least as much as needed to fit the new frame.</code></span>
+<span class="codeline" id="line-1053"><code>	// (This is just an optimization - the caller of morestack will</code></span>
+<span class="codeline" id="line-1054"><code>	// recheck the bounds on return.)</code></span>
+<span class="codeline" id="line-1055"><code>	if f := findfunc(gp.sched.pc); f.valid() {</code></span>
+<span class="codeline" id="line-1056"><code>		max := uintptr(funcMaxSPDelta(f))</code></span>
+<span class="codeline" id="line-1057"><code>		for newsize-oldsize &lt; max+_StackGuard {</code></span>
+<span class="codeline" id="line-1058"><code>			newsize *= 2</code></span>
+<span class="codeline" id="line-1059"><code>		}</code></span>
+<span class="codeline" id="line-1060"><code>	}</code></span>
+<span class="codeline" id="line-1061"><code></code></span>
+<span class="codeline" id="line-1062"><code>	if newsize &gt; maxstacksize || newsize &gt; maxstackceiling {</code></span>
+<span class="codeline" id="line-1063"><code>		if maxstacksize &lt; maxstackceiling {</code></span>
+<span class="codeline" id="line-1064"><code>			print("runtime: goroutine stack exceeds ", maxstacksize, "-byte limit\n")</code></span>
+<span class="codeline" id="line-1065"><code>		} else {</code></span>
+<span class="codeline" id="line-1066"><code>			print("runtime: goroutine stack exceeds ", maxstackceiling, "-byte limit\n")</code></span>
+<span class="codeline" id="line-1067"><code>		}</code></span>
+<span class="codeline" id="line-1068"><code>		print("runtime: sp=", hex(sp), " stack=[", hex(gp.stack.lo), ", ", hex(gp.stack.hi), "]\n")</code></span>
+<span class="codeline" id="line-1069"><code>		throw("stack overflow")</code></span>
+<span class="codeline" id="line-1070"><code>	}</code></span>
+<span class="codeline" id="line-1071"><code></code></span>
+<span class="codeline" id="line-1072"><code>	// The goroutine must be executing in order to call newstack,</code></span>
+<span class="codeline" id="line-1073"><code>	// so it must be Grunning (or Gscanrunning).</code></span>
+<span class="codeline" id="line-1074"><code>	casgstatus(gp, _Grunning, _Gcopystack)</code></span>
+<span class="codeline" id="line-1075"><code></code></span>
+<span class="codeline" id="line-1076"><code>	// The concurrent GC will not scan the stack while we are doing the copy since</code></span>
+<span class="codeline" id="line-1077"><code>	// the gp is in a Gcopystack status.</code></span>
+<span class="codeline" id="line-1078"><code>	copystack(gp, newsize)</code></span>
+<span class="codeline" id="line-1079"><code>	if stackDebug &gt;= 1 {</code></span>
+<span class="codeline" id="line-1080"><code>		print("stack grow done\n")</code></span>
+<span class="codeline" id="line-1081"><code>	}</code></span>
+<span class="codeline" id="line-1082"><code>	casgstatus(gp, _Gcopystack, _Grunning)</code></span>
+<span class="codeline" id="line-1083"><code>	gogo(&amp;gp.sched)</code></span>
+<span class="codeline" id="line-1084"><code>}</code></span>
+<span class="codeline" id="line-1085"><code></code></span>
+<span class="codeline" id="line-1086"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-1087"><code>func nilfunc() {</code></span>
+<span class="codeline" id="line-1088"><code>	*(*uint8)(nil) = 0</code></span>
+<span class="codeline" id="line-1089"><code>}</code></span>
+<span class="codeline" id="line-1090"><code></code></span>
+<span class="codeline" id="line-1091"><code>// adjust Gobuf as if it executed a call to fn</code></span>
+<span class="codeline" id="line-1092"><code>// and then did an immediate gosave.</code></span>
+<span class="codeline" id="line-1093"><code>func gostartcallfn(gobuf *gobuf, fv *funcval) {</code></span>
+<span class="codeline" id="line-1094"><code>	var fn unsafe.Pointer</code></span>
+<span class="codeline" id="line-1095"><code>	if fv != nil {</code></span>
+<span class="codeline" id="line-1096"><code>		fn = unsafe.Pointer(fv.fn)</code></span>
+<span class="codeline" id="line-1097"><code>	} else {</code></span>
+<span class="codeline" id="line-1098"><code>		fn = unsafe.Pointer(funcPC(nilfunc))</code></span>
+<span class="codeline" id="line-1099"><code>	}</code></span>
+<span class="codeline" id="line-1100"><code>	gostartcall(gobuf, fn, unsafe.Pointer(fv))</code></span>
+<span class="codeline" id="line-1101"><code>}</code></span>
+<span class="codeline" id="line-1102"><code></code></span>
+<span class="codeline" id="line-1103"><code>// isShrinkStackSafe returns whether it's safe to attempt to shrink</code></span>
+<span class="codeline" id="line-1104"><code>// gp's stack. Shrinking the stack is only safe when we have precise</code></span>
+<span class="codeline" id="line-1105"><code>// pointer maps for all frames on the stack.</code></span>
+<span class="codeline" id="line-1106"><code>func isShrinkStackSafe(gp *g) bool {</code></span>
+<span class="codeline" id="line-1107"><code>	// We can't copy the stack if we're in a syscall.</code></span>
+<span class="codeline" id="line-1108"><code>	// The syscall might have pointers into the stack and</code></span>
+<span class="codeline" id="line-1109"><code>	// often we don't have precise pointer maps for the innermost</code></span>
+<span class="codeline" id="line-1110"><code>	// frames.</code></span>
+<span class="codeline" id="line-1111"><code>	//</code></span>
+<span class="codeline" id="line-1112"><code>	// We also can't copy the stack if we're at an asynchronous</code></span>
+<span class="codeline" id="line-1113"><code>	// safe-point because we don't have precise pointer maps for</code></span>
+<span class="codeline" id="line-1114"><code>	// all frames.</code></span>
+<span class="codeline" id="line-1115"><code>	//</code></span>
+<span class="codeline" id="line-1116"><code>	// We also can't *shrink* the stack in the window between the</code></span>
+<span class="codeline" id="line-1117"><code>	// goroutine calling gopark to park on a channel and</code></span>
+<span class="codeline" id="line-1118"><code>	// gp.activeStackChans being set.</code></span>
+<span class="codeline" id="line-1119"><code>	return gp.syscallsp == 0 &amp;&amp; !gp.asyncSafePoint &amp;&amp; atomic.Load8(&amp;gp.parkingOnChan) == 0</code></span>
+<span class="codeline" id="line-1120"><code>}</code></span>
+<span class="codeline" id="line-1121"><code></code></span>
+<span class="codeline" id="line-1122"><code>// Maybe shrink the stack being used by gp.</code></span>
+<span class="codeline" id="line-1123"><code>//</code></span>
+<span class="codeline" id="line-1124"><code>// gp must be stopped and we must own its stack. It may be in</code></span>
+<span class="codeline" id="line-1125"><code>// _Grunning, but only if this is our own user G.</code></span>
+<span class="codeline" id="line-1126"><code>func shrinkstack(gp *g) {</code></span>
+<span class="codeline" id="line-1127"><code>	if gp.stack.lo == 0 {</code></span>
+<span class="codeline" id="line-1128"><code>		throw("missing stack in shrinkstack")</code></span>
+<span class="codeline" id="line-1129"><code>	}</code></span>
+<span class="codeline" id="line-1130"><code>	if s := readgstatus(gp); s&amp;_Gscan == 0 {</code></span>
+<span class="codeline" id="line-1131"><code>		// We don't own the stack via _Gscan. We could still</code></span>
+<span class="codeline" id="line-1132"><code>		// own it if this is our own user G and we're on the</code></span>
+<span class="codeline" id="line-1133"><code>		// system stack.</code></span>
+<span class="codeline" id="line-1134"><code>		if !(gp == getg().m.curg &amp;&amp; getg() != getg().m.curg &amp;&amp; s == _Grunning) {</code></span>
+<span class="codeline" id="line-1135"><code>			// We don't own the stack.</code></span>
+<span class="codeline" id="line-1136"><code>			throw("bad status in shrinkstack")</code></span>
+<span class="codeline" id="line-1137"><code>		}</code></span>
+<span class="codeline" id="line-1138"><code>	}</code></span>
+<span class="codeline" id="line-1139"><code>	if !isShrinkStackSafe(gp) {</code></span>
+<span class="codeline" id="line-1140"><code>		throw("shrinkstack at bad time")</code></span>
+<span class="codeline" id="line-1141"><code>	}</code></span>
+<span class="codeline" id="line-1142"><code>	// Check for self-shrinks while in a libcall. These may have</code></span>
+<span class="codeline" id="line-1143"><code>	// pointers into the stack disguised as uintptrs, but these</code></span>
+<span class="codeline" id="line-1144"><code>	// code paths should all be nosplit.</code></span>
+<span class="codeline" id="line-1145"><code>	if gp == getg().m.curg &amp;&amp; gp.m.libcallsp != 0 {</code></span>
+<span class="codeline" id="line-1146"><code>		throw("shrinking stack in libcall")</code></span>
+<span class="codeline" id="line-1147"><code>	}</code></span>
+<span class="codeline" id="line-1148"><code></code></span>
+<span class="codeline" id="line-1149"><code>	if debug.gcshrinkstackoff &gt; 0 {</code></span>
+<span class="codeline" id="line-1150"><code>		return</code></span>
+<span class="codeline" id="line-1151"><code>	}</code></span>
+<span class="codeline" id="line-1152"><code>	f := findfunc(gp.startpc)</code></span>
+<span class="codeline" id="line-1153"><code>	if f.valid() &amp;&amp; f.funcID == funcID_gcBgMarkWorker {</code></span>
+<span class="codeline" id="line-1154"><code>		// We're not allowed to shrink the gcBgMarkWorker</code></span>
+<span class="codeline" id="line-1155"><code>		// stack (see gcBgMarkWorker for explanation).</code></span>
+<span class="codeline" id="line-1156"><code>		return</code></span>
+<span class="codeline" id="line-1157"><code>	}</code></span>
+<span class="codeline" id="line-1158"><code></code></span>
+<span class="codeline" id="line-1159"><code>	oldsize := gp.stack.hi - gp.stack.lo</code></span>
+<span class="codeline" id="line-1160"><code>	newsize := oldsize / 2</code></span>
+<span class="codeline" id="line-1161"><code>	// Don't shrink the allocation below the minimum-sized stack</code></span>
+<span class="codeline" id="line-1162"><code>	// allocation.</code></span>
+<span class="codeline" id="line-1163"><code>	if newsize &lt; _FixedStack {</code></span>
+<span class="codeline" id="line-1164"><code>		return</code></span>
+<span class="codeline" id="line-1165"><code>	}</code></span>
+<span class="codeline" id="line-1166"><code>	// Compute how much of the stack is currently in use and only</code></span>
+<span class="codeline" id="line-1167"><code>	// shrink the stack if gp is using less than a quarter of its</code></span>
+<span class="codeline" id="line-1168"><code>	// current stack. The currently used stack includes everything</code></span>
+<span class="codeline" id="line-1169"><code>	// down to the SP plus the stack guard space that ensures</code></span>
+<span class="codeline" id="line-1170"><code>	// there's room for nosplit functions.</code></span>
+<span class="codeline" id="line-1171"><code>	avail := gp.stack.hi - gp.stack.lo</code></span>
+<span class="codeline" id="line-1172"><code>	if used := gp.stack.hi - gp.sched.sp + _StackLimit; used &gt;= avail/4 {</code></span>
+<span class="codeline" id="line-1173"><code>		return</code></span>
+<span class="codeline" id="line-1174"><code>	}</code></span>
+<span class="codeline" id="line-1175"><code></code></span>
+<span class="codeline" id="line-1176"><code>	if stackDebug &gt; 0 {</code></span>
+<span class="codeline" id="line-1177"><code>		print("shrinking stack ", oldsize, "-&gt;", newsize, "\n")</code></span>
+<span class="codeline" id="line-1178"><code>	}</code></span>
+<span class="codeline" id="line-1179"><code></code></span>
+<span class="codeline" id="line-1180"><code>	copystack(gp, newsize)</code></span>
+<span class="codeline" id="line-1181"><code>}</code></span>
+<span class="codeline" id="line-1182"><code></code></span>
+<span class="codeline" id="line-1183"><code>// freeStackSpans frees unused stack spans at the end of GC.</code></span>
+<span class="codeline" id="line-1184"><code>func freeStackSpans() {</code></span>
+<span class="codeline" id="line-1185"><code></code></span>
+<span class="codeline" id="line-1186"><code>	// Scan stack pools for empty stack spans.</code></span>
+<span class="codeline" id="line-1187"><code>	for order := range stackpool {</code></span>
+<span class="codeline" id="line-1188"><code>		lock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-1189"><code>		list := &amp;stackpool[order].item.span</code></span>
+<span class="codeline" id="line-1190"><code>		for s := list.first; s != nil; {</code></span>
+<span class="codeline" id="line-1191"><code>			next := s.next</code></span>
+<span class="codeline" id="line-1192"><code>			if s.allocCount == 0 {</code></span>
+<span class="codeline" id="line-1193"><code>				list.remove(s)</code></span>
+<span class="codeline" id="line-1194"><code>				s.manualFreeList = 0</code></span>
+<span class="codeline" id="line-1195"><code>				osStackFree(s)</code></span>
+<span class="codeline" id="line-1196"><code>				mheap_.freeManual(s, spanAllocStack)</code></span>
+<span class="codeline" id="line-1197"><code>			}</code></span>
+<span class="codeline" id="line-1198"><code>			s = next</code></span>
+<span class="codeline" id="line-1199"><code>		}</code></span>
+<span class="codeline" id="line-1200"><code>		unlock(&amp;stackpool[order].item.mu)</code></span>
+<span class="codeline" id="line-1201"><code>	}</code></span>
+<span class="codeline" id="line-1202"><code></code></span>
+<span class="codeline" id="line-1203"><code>	// Free large stack spans.</code></span>
+<span class="codeline" id="line-1204"><code>	lock(&amp;stackLarge.lock)</code></span>
+<span class="codeline" id="line-1205"><code>	for i := range stackLarge.free {</code></span>
+<span class="codeline" id="line-1206"><code>		for s := stackLarge.free[i].first; s != nil; {</code></span>
+<span class="codeline" id="line-1207"><code>			next := s.next</code></span>
+<span class="codeline" id="line-1208"><code>			stackLarge.free[i].remove(s)</code></span>
+<span class="codeline" id="line-1209"><code>			osStackFree(s)</code></span>
+<span class="codeline" id="line-1210"><code>			mheap_.freeManual(s, spanAllocStack)</code></span>
+<span class="codeline" id="line-1211"><code>			s = next</code></span>
+<span class="codeline" id="line-1212"><code>		}</code></span>
+<span class="codeline" id="line-1213"><code>	}</code></span>
+<span class="codeline" id="line-1214"><code>	unlock(&amp;stackLarge.lock)</code></span>
+<span class="codeline" id="line-1215"><code>}</code></span>
+<span class="codeline" id="line-1216"><code></code></span>
+<span class="codeline" id="line-1217"><code>// getStackMap returns the locals and arguments live pointer maps, and</code></span>
+<span class="codeline" id="line-1218"><code>// stack object list for frame.</code></span>
+<span class="codeline" id="line-1219"><code>func getStackMap(frame *stkframe, cache *pcvalueCache, debug bool) (locals, args bitvector, objs []stackObjectRecord) {</code></span>
+<span class="codeline" id="line-1220"><code>	targetpc := frame.continpc</code></span>
+<span class="codeline" id="line-1221"><code>	if targetpc == 0 {</code></span>
+<span class="codeline" id="line-1222"><code>		// Frame is dead. Return empty bitvectors.</code></span>
+<span class="codeline" id="line-1223"><code>		return</code></span>
+<span class="codeline" id="line-1224"><code>	}</code></span>
+<span class="codeline" id="line-1225"><code></code></span>
+<span class="codeline" id="line-1226"><code>	f := frame.fn</code></span>
+<span class="codeline" id="line-1227"><code>	pcdata := int32(-1)</code></span>
+<span class="codeline" id="line-1228"><code>	if targetpc != f.entry {</code></span>
+<span class="codeline" id="line-1229"><code>		// Back up to the CALL. If we're at the function entry</code></span>
+<span class="codeline" id="line-1230"><code>		// point, we want to use the entry map (-1), even if</code></span>
+<span class="codeline" id="line-1231"><code>		// the first instruction of the function changes the</code></span>
+<span class="codeline" id="line-1232"><code>		// stack map.</code></span>
+<span class="codeline" id="line-1233"><code>		targetpc--</code></span>
+<span class="codeline" id="line-1234"><code>		pcdata = pcdatavalue(f, _PCDATA_StackMapIndex, targetpc, cache)</code></span>
+<span class="codeline" id="line-1235"><code>	}</code></span>
+<span class="codeline" id="line-1236"><code>	if pcdata == -1 {</code></span>
+<span class="codeline" id="line-1237"><code>		// We do not have a valid pcdata value but there might be a</code></span>
+<span class="codeline" id="line-1238"><code>		// stackmap for this function. It is likely that we are looking</code></span>
+<span class="codeline" id="line-1239"><code>		// at the function prologue, assume so and hope for the best.</code></span>
+<span class="codeline" id="line-1240"><code>		pcdata = 0</code></span>
+<span class="codeline" id="line-1241"><code>	}</code></span>
+<span class="codeline" id="line-1242"><code></code></span>
+<span class="codeline" id="line-1243"><code>	// Local variables.</code></span>
+<span class="codeline" id="line-1244"><code>	size := frame.varp - frame.sp</code></span>
+<span class="codeline" id="line-1245"><code>	var minsize uintptr</code></span>
+<span class="codeline" id="line-1246"><code>	switch sys.ArchFamily {</code></span>
+<span class="codeline" id="line-1247"><code>	case sys.ARM64:</code></span>
+<span class="codeline" id="line-1248"><code>		minsize = sys.SpAlign</code></span>
+<span class="codeline" id="line-1249"><code>	default:</code></span>
+<span class="codeline" id="line-1250"><code>		minsize = sys.MinFrameSize</code></span>
+<span class="codeline" id="line-1251"><code>	}</code></span>
+<span class="codeline" id="line-1252"><code>	if size &gt; minsize {</code></span>
+<span class="codeline" id="line-1253"><code>		stackid := pcdata</code></span>
+<span class="codeline" id="line-1254"><code>		stkmap := (*stackmap)(funcdata(f, _FUNCDATA_LocalsPointerMaps))</code></span>
+<span class="codeline" id="line-1255"><code>		if stkmap == nil || stkmap.n &lt;= 0 {</code></span>
+<span class="codeline" id="line-1256"><code>			print("runtime: frame ", funcname(f), " untyped locals ", hex(frame.varp-size), "+", hex(size), "\n")</code></span>
+<span class="codeline" id="line-1257"><code>			throw("missing stackmap")</code></span>
+<span class="codeline" id="line-1258"><code>		}</code></span>
+<span class="codeline" id="line-1259"><code>		// If nbit == 0, there's no work to do.</code></span>
+<span class="codeline" id="line-1260"><code>		if stkmap.nbit &gt; 0 {</code></span>
+<span class="codeline" id="line-1261"><code>			if stackid &lt; 0 || stackid &gt;= stkmap.n {</code></span>
+<span class="codeline" id="line-1262"><code>				// don't know where we are</code></span>
+<span class="codeline" id="line-1263"><code>				print("runtime: pcdata is ", stackid, " and ", stkmap.n, " locals stack map entries for ", funcname(f), " (targetpc=", hex(targetpc), ")\n")</code></span>
+<span class="codeline" id="line-1264"><code>				throw("bad symbol table")</code></span>
+<span class="codeline" id="line-1265"><code>			}</code></span>
+<span class="codeline" id="line-1266"><code>			locals = stackmapdata(stkmap, stackid)</code></span>
+<span class="codeline" id="line-1267"><code>			if stackDebug &gt;= 3 &amp;&amp; debug {</code></span>
+<span class="codeline" id="line-1268"><code>				print("      locals ", stackid, "/", stkmap.n, " ", locals.n, " words ", locals.bytedata, "\n")</code></span>
+<span class="codeline" id="line-1269"><code>			}</code></span>
+<span class="codeline" id="line-1270"><code>		} else if stackDebug &gt;= 3 &amp;&amp; debug {</code></span>
+<span class="codeline" id="line-1271"><code>			print("      no locals to adjust\n")</code></span>
+<span class="codeline" id="line-1272"><code>		}</code></span>
+<span class="codeline" id="line-1273"><code>	}</code></span>
+<span class="codeline" id="line-1274"><code></code></span>
+<span class="codeline" id="line-1275"><code>	// Arguments.</code></span>
+<span class="codeline" id="line-1276"><code>	if frame.arglen &gt; 0 {</code></span>
+<span class="codeline" id="line-1277"><code>		if frame.argmap != nil {</code></span>
+<span class="codeline" id="line-1278"><code>			// argmap is set when the function is reflect.makeFuncStub or reflect.methodValueCall.</code></span>
+<span class="codeline" id="line-1279"><code>			// In this case, arglen specifies how much of the args section is actually live.</code></span>
+<span class="codeline" id="line-1280"><code>			// (It could be either all the args + results, or just the args.)</code></span>
+<span class="codeline" id="line-1281"><code>			args = *frame.argmap</code></span>
+<span class="codeline" id="line-1282"><code>			n := int32(frame.arglen / sys.PtrSize)</code></span>
+<span class="codeline" id="line-1283"><code>			if n &lt; args.n {</code></span>
+<span class="codeline" id="line-1284"><code>				args.n = n // Don't use more of the arguments than arglen.</code></span>
+<span class="codeline" id="line-1285"><code>			}</code></span>
+<span class="codeline" id="line-1286"><code>		} else {</code></span>
+<span class="codeline" id="line-1287"><code>			stackmap := (*stackmap)(funcdata(f, _FUNCDATA_ArgsPointerMaps))</code></span>
+<span class="codeline" id="line-1288"><code>			if stackmap == nil || stackmap.n &lt;= 0 {</code></span>
+<span class="codeline" id="line-1289"><code>				print("runtime: frame ", funcname(f), " untyped args ", hex(frame.argp), "+", hex(frame.arglen), "\n")</code></span>
+<span class="codeline" id="line-1290"><code>				throw("missing stackmap")</code></span>
+<span class="codeline" id="line-1291"><code>			}</code></span>
+<span class="codeline" id="line-1292"><code>			if pcdata &lt; 0 || pcdata &gt;= stackmap.n {</code></span>
+<span class="codeline" id="line-1293"><code>				// don't know where we are</code></span>
+<span class="codeline" id="line-1294"><code>				print("runtime: pcdata is ", pcdata, " and ", stackmap.n, " args stack map entries for ", funcname(f), " (targetpc=", hex(targetpc), ")\n")</code></span>
+<span class="codeline" id="line-1295"><code>				throw("bad symbol table")</code></span>
+<span class="codeline" id="line-1296"><code>			}</code></span>
+<span class="codeline" id="line-1297"><code>			if stackmap.nbit &gt; 0 {</code></span>
+<span class="codeline" id="line-1298"><code>				args = stackmapdata(stackmap, pcdata)</code></span>
+<span class="codeline" id="line-1299"><code>			}</code></span>
+<span class="codeline" id="line-1300"><code>		}</code></span>
+<span class="codeline" id="line-1301"><code>	}</code></span>
+<span class="codeline" id="line-1302"><code></code></span>
+<span class="codeline" id="line-1303"><code>	// stack objects.</code></span>
+<span class="codeline" id="line-1304"><code>	p := funcdata(f, _FUNCDATA_StackObjects)</code></span>
+<span class="codeline" id="line-1305"><code>	if p != nil {</code></span>
+<span class="codeline" id="line-1306"><code>		n := *(*uintptr)(p)</code></span>
+<span class="codeline" id="line-1307"><code>		p = add(p, sys.PtrSize)</code></span>
+<span class="codeline" id="line-1308"><code>		*(*slice)(unsafe.Pointer(&amp;objs)) = slice{array: noescape(p), len: int(n), cap: int(n)}</code></span>
+<span class="codeline" id="line-1309"><code>		// Note: the noescape above is needed to keep</code></span>
+<span class="codeline" id="line-1310"><code>		// getStackMap from "leaking param content:</code></span>
+<span class="codeline" id="line-1311"><code>		// frame".  That leak propagates up to getgcmask, then</code></span>
+<span class="codeline" id="line-1312"><code>		// GCMask, then verifyGCInfo, which converts the stack</code></span>
+<span class="codeline" id="line-1313"><code>		// gcinfo tests into heap gcinfo tests :(</code></span>
+<span class="codeline" id="line-1314"><code>	}</code></span>
+<span class="codeline" id="line-1315"><code></code></span>
+<span class="codeline" id="line-1316"><code>	return</code></span>
+<span class="codeline" id="line-1317"><code>}</code></span>
+<span class="codeline" id="line-1318"><code></code></span>
+<span class="codeline" id="line-1319"><code>// A stackObjectRecord is generated by the compiler for each stack object in a stack frame.</code></span>
+<span class="codeline" id="line-1320"><code>// This record must match the generator code in cmd/compile/internal/gc/ssa.go:emitStackObjects.</code></span>
+<span class="codeline" id="line-1321"><code>type stackObjectRecord struct {</code></span>
+<span class="codeline" id="line-1322"><code>	// offset in frame</code></span>
+<span class="codeline" id="line-1323"><code>	// if negative, offset from varp</code></span>
+<span class="codeline" id="line-1324"><code>	// if non-negative, offset from argp</code></span>
+<span class="codeline" id="line-1325"><code>	off int</code></span>
+<span class="codeline" id="line-1326"><code>	typ *_type</code></span>
+<span class="codeline" id="line-1327"><code>}</code></span>
+<span class="codeline" id="line-1328"><code></code></span>
+<span class="codeline" id="line-1329"><code>// This is exported as ABI0 via linkname so obj can call it.</code></span>
+<span class="codeline" id="line-1330"><code>//</code></span>
+<span class="codeline" id="line-1331"><code>//go:nosplit</code></span>
+<span class="codeline" id="line-1332"><code>//go:linkname morestackc</code></span>
+<span class="codeline" id="line-1333"><code>func morestackc() {</code></span>
+<span class="codeline" id="line-1334"><code>	throw("attempt to execute system stack code on user stack")</code></span>
+<span class="codeline" id="line-1335"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

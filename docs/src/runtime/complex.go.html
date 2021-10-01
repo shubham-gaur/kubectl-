@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: complex.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	complex.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package runtime</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// inf2one returns a signed 1 if f is an infinity and a signed 0 otherwise.</code></span>
+<span class="codeline" id="line-8"><code>// The sign of the result is the sign of f.</code></span>
+<span class="codeline" id="line-9"><code>func inf2one(f float64) float64 {</code></span>
+<span class="codeline" id="line-10"><code>	g := 0.0</code></span>
+<span class="codeline" id="line-11"><code>	if isInf(f) {</code></span>
+<span class="codeline" id="line-12"><code>		g = 1.0</code></span>
+<span class="codeline" id="line-13"><code>	}</code></span>
+<span class="codeline" id="line-14"><code>	return copysign(g, f)</code></span>
+<span class="codeline" id="line-15"><code>}</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>func complex128div(n complex128, m complex128) complex128 {</code></span>
+<span class="codeline" id="line-18"><code>	var e, f float64 // complex(e, f) = n/m</code></span>
+<span class="codeline" id="line-19"><code></code></span>
+<span class="codeline" id="line-20"><code>	// Algorithm for robust complex division as described in</code></span>
+<span class="codeline" id="line-21"><code>	// Robert L. Smith: Algorithm 116: Complex division. Commun. ACM 5(8): 435 (1962).</code></span>
+<span class="codeline" id="line-22"><code>	if abs(real(m)) &gt;= abs(imag(m)) {</code></span>
+<span class="codeline" id="line-23"><code>		ratio := imag(m) / real(m)</code></span>
+<span class="codeline" id="line-24"><code>		denom := real(m) + ratio*imag(m)</code></span>
+<span class="codeline" id="line-25"><code>		e = (real(n) + imag(n)*ratio) / denom</code></span>
+<span class="codeline" id="line-26"><code>		f = (imag(n) - real(n)*ratio) / denom</code></span>
+<span class="codeline" id="line-27"><code>	} else {</code></span>
+<span class="codeline" id="line-28"><code>		ratio := real(m) / imag(m)</code></span>
+<span class="codeline" id="line-29"><code>		denom := imag(m) + ratio*real(m)</code></span>
+<span class="codeline" id="line-30"><code>		e = (real(n)*ratio + imag(n)) / denom</code></span>
+<span class="codeline" id="line-31"><code>		f = (imag(n)*ratio - real(n)) / denom</code></span>
+<span class="codeline" id="line-32"><code>	}</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>	if isNaN(e) &amp;&amp; isNaN(f) {</code></span>
+<span class="codeline" id="line-35"><code>		// Correct final result to infinities and zeros if applicable.</code></span>
+<span class="codeline" id="line-36"><code>		// Matches C99: ISO/IEC 9899:1999 - G.5.1  Multiplicative operators.</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>		a, b := real(n), imag(n)</code></span>
+<span class="codeline" id="line-39"><code>		c, d := real(m), imag(m)</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>		switch {</code></span>
+<span class="codeline" id="line-42"><code>		case m == 0 &amp;&amp; (!isNaN(a) || !isNaN(b)):</code></span>
+<span class="codeline" id="line-43"><code>			e = copysign(inf, c) * a</code></span>
+<span class="codeline" id="line-44"><code>			f = copysign(inf, c) * b</code></span>
+<span class="codeline" id="line-45"><code></code></span>
+<span class="codeline" id="line-46"><code>		case (isInf(a) || isInf(b)) &amp;&amp; isFinite(c) &amp;&amp; isFinite(d):</code></span>
+<span class="codeline" id="line-47"><code>			a = inf2one(a)</code></span>
+<span class="codeline" id="line-48"><code>			b = inf2one(b)</code></span>
+<span class="codeline" id="line-49"><code>			e = inf * (a*c + b*d)</code></span>
+<span class="codeline" id="line-50"><code>			f = inf * (b*c - a*d)</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>		case (isInf(c) || isInf(d)) &amp;&amp; isFinite(a) &amp;&amp; isFinite(b):</code></span>
+<span class="codeline" id="line-53"><code>			c = inf2one(c)</code></span>
+<span class="codeline" id="line-54"><code>			d = inf2one(d)</code></span>
+<span class="codeline" id="line-55"><code>			e = 0 * (a*c + b*d)</code></span>
+<span class="codeline" id="line-56"><code>			f = 0 * (b*c - a*d)</code></span>
+<span class="codeline" id="line-57"><code>		}</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code></code></span>
+<span class="codeline" id="line-60"><code>	return complex(e, f)</code></span>
+<span class="codeline" id="line-61"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

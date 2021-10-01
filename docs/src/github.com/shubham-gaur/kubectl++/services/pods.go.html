@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: pods.go in package github.com/shubham-gaur/kubectl++/services</title>
+<link href="../../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	pods.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../../pkg/github.com/shubham-gaur/kubectl++/services.html">github.com/shubham-gaur/kubectl++/services</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>package services</code></span>
+<span class="codeline" id="line-2"><code></code></span>
+<span class="codeline" id="line-3"><code>import (</code></span>
+<span class="codeline" id="line-4"><code>	"fmt"</code></span>
+<span class="codeline" id="line-5"><code>	"strings"</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>	help "github.com/shubham-gaur/kubectl++/helper"</code></span>
+<span class="codeline" id="line-8"><code>	log "github.com/shubham-gaur/kubectl++/logger"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>var podSt struct {</code></span>
+<span class="codeline" id="line-12"><code>	pods         []string</code></span>
+<span class="codeline" id="line-13"><code>	numverOfPods int</code></span>
+<span class="codeline" id="line-14"><code>}</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>var podStr string</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>func fetchPods(ns string) {</code></span>
+<span class="codeline" id="line-19"><code>	if ns == "" {</code></span>
+<span class="codeline" id="line-20"><code>		ns = "default"</code></span>
+<span class="codeline" id="line-21"><code>	}</code></span>
+<span class="codeline" id="line-22"><code>	kargs := []string{"get", "pods", "-n", ns}</code></span>
+<span class="codeline" id="line-23"><code>	podStr = help.ExecKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-24"><code>	podList := strings.Fields(podStr)</code></span>
+<span class="codeline" id="line-25"><code>	podSt.pods = []string{}</code></span>
+<span class="codeline" id="line-26"><code>	for pdIndex := 5; pdIndex &lt; len(podList); pdIndex = pdIndex + 5 {</code></span>
+<span class="codeline" id="line-27"><code>		podSt.pods = append(podSt.pods, podList[pdIndex])</code></span>
+<span class="codeline" id="line-28"><code>	}</code></span>
+<span class="codeline" id="line-29"><code>	podSt.numverOfPods = len(podSt.pods)</code></span>
+<span class="codeline" id="line-30"><code>}</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>func GetTaggedPods() (int, int) {</code></span>
+<span class="codeline" id="line-33"><code>	nsIndex := GetTaggedNamespaces()</code></span>
+<span class="codeline" id="line-34"><code>	fetchPods(namespacesSt.namespaces[nsIndex])</code></span>
+<span class="codeline" id="line-35"><code>	pdMap := make(map[int]string)</code></span>
+<span class="codeline" id="line-36"><code>	log.Info.Printf("🤔 Which pod you are looking for?")</code></span>
+<span class="codeline" id="line-37"><code>	log.Info.Printf("😀 Below list might help... Available pods 👇 ")</code></span>
+<span class="codeline" id="line-38"><code>	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")</code></span>
+<span class="codeline" id="line-39"><code>	for pd := 0; pd &lt; podSt.numverOfPods; pd++ {</code></span>
+<span class="codeline" id="line-40"><code>		pdMap[pd] = podSt.pods[pd]</code></span>
+<span class="codeline" id="line-41"><code>		fmt.Printf("%10v👉 Press [%-2v]: %v\n", "", pd, podSt.pods[pd])</code></span>
+<span class="codeline" id="line-42"><code>	}</code></span>
+<span class="codeline" id="line-43"><code>	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")</code></span>
+<span class="codeline" id="line-44"><code>	var pdIndex int</code></span>
+<span class="codeline" id="line-45"><code>	help.TakeIntInput(&amp;pdIndex, podSt.numverOfPods)</code></span>
+<span class="codeline" id="line-46"><code>	return pdIndex, nsIndex</code></span>
+<span class="codeline" id="line-47"><code>}</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>func DisplayPods() {</code></span>
+<span class="codeline" id="line-50"><code>	nsIndex := GetTaggedNamespaces()</code></span>
+<span class="codeline" id="line-51"><code>	fetchPods(namespacesSt.namespaces[nsIndex])</code></span>
+<span class="codeline" id="line-52"><code>	log.Info.Printf("🤔 %v namespace provided; will display pods in %v namespace", namespacesSt.namespaces[nsIndex], namespacesSt.namespaces[nsIndex])</code></span>
+<span class="codeline" id="line-53"><code>	log.Info.Printf("😓 Executing command: kubectl get pods -n %v", namespacesSt.namespaces[nsIndex])</code></span>
+<span class="codeline" id="line-54"><code>	log.PrintSpecial(log.GetCurrentFunctionName(), podStr)</code></span>
+<span class="codeline" id="line-55"><code>}</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>func MarkPod() {</code></span>
+<span class="codeline" id="line-58"><code>	log.Info.Printf("🤔 Mark active pod for operations...")</code></span>
+<span class="codeline" id="line-59"><code>	var pdIndex int</code></span>
+<span class="codeline" id="line-60"><code>	var nsIndex int</code></span>
+<span class="codeline" id="line-61"><code>	pdIndex, nsIndex = GetTaggedPods()</code></span>
+<span class="codeline" id="line-62"><code>	defaultPod := podSt.pods[pdIndex]</code></span>
+<span class="codeline" id="line-63"><code>	defaultNamespace := namespacesSt.namespaces[nsIndex]</code></span>
+<span class="codeline" id="line-64"><code>	options := make(map[int]string)</code></span>
+<span class="codeline" id="line-65"><code>	options[0] = "select another pod"</code></span>
+<span class="codeline" id="line-66"><code>	options[1] = "show all pod in current namespace"</code></span>
+<span class="codeline" id="line-67"><code>	options[2] = "show all pod in another namespace"</code></span>
+<span class="codeline" id="line-68"><code>	options[3] = "show all containers in a pod"</code></span>
+<span class="codeline" id="line-69"><code>	options[4] = "describe pod"</code></span>
+<span class="codeline" id="line-70"><code>	options[5] = "create pod"</code></span>
+<span class="codeline" id="line-71"><code>	options[6] = "delete pod"</code></span>
+<span class="codeline" id="line-72"><code>	options[7] = "return to main"</code></span>
+<span class="codeline" id="line-73"><code>	var opt int</code></span>
+<span class="codeline" id="line-74"><code>	for {</code></span>
+<span class="codeline" id="line-75"><code>		log.Info.Printf("😀 Refreshing %v pod status...", defaultPod)</code></span>
+<span class="codeline" id="line-76"><code>		kargs := []string{"get", "pod", defaultPod, "-n", defaultNamespace, "-o", "jsonpath={.status.phase}"}</code></span>
+<span class="codeline" id="line-77"><code>		status := help.ExecKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-78"><code>		if status == "Running" {</code></span>
+<span class="codeline" id="line-79"><code>			log.Info.Printf("😀 [Set Pod]|👉 %v pod |👉 %v namespace |👌 %v", defaultPod, defaultNamespace, status)</code></span>
+<span class="codeline" id="line-80"><code>		} else {</code></span>
+<span class="codeline" id="line-81"><code>			if status == "" {</code></span>
+<span class="codeline" id="line-82"><code>				status = "Error"</code></span>
+<span class="codeline" id="line-83"><code>			}</code></span>
+<span class="codeline" id="line-84"><code>			log.Info.Printf("😦 [Set Pod]|👉 %v pod |👉 %v namespace |❌ %v", defaultPod, defaultNamespace, status)</code></span>
+<span class="codeline" id="line-85"><code>			log.Error.Printf("🙏 |♻️ Please change pod!")</code></span>
+<span class="codeline" id="line-86"><code>		}</code></span>
+<span class="codeline" id="line-87"><code>		help.Default(options)</code></span>
+<span class="codeline" id="line-88"><code>		help.TakeIntInput(&amp;opt, len(options))</code></span>
+<span class="codeline" id="line-89"><code>		switch options[opt] {</code></span>
+<span class="codeline" id="line-90"><code>		case options[0]:</code></span>
+<span class="codeline" id="line-91"><code>			pdIndex, nsIndex = GetTaggedPods()</code></span>
+<span class="codeline" id="line-92"><code>			log.Info.Printf("😀 Active pod being set to 👉 %v pod 👉 %v namespace", defaultPod, defaultNamespace)</code></span>
+<span class="codeline" id="line-93"><code>		case options[1]:</code></span>
+<span class="codeline" id="line-94"><code>			log.Info.Printf("🤔 Displaying all pods in %v namespace", defaultNamespace)</code></span>
+<span class="codeline" id="line-95"><code>			kargs := []string{"get", "pods", "-n", defaultNamespace}</code></span>
+<span class="codeline" id="line-96"><code>			help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-97"><code>		case options[2]:</code></span>
+<span class="codeline" id="line-98"><code>			log.Info.Printf("🤔 Displaying all containers in %v pod %v namespace", defaultPod, defaultNamespace)</code></span>
+<span class="codeline" id="line-99"><code>			kargs := []string{"get", "pods", defaultPod, "-n", defaultNamespace, "-o", "jsonpath={.spec.containers[*].name}"}</code></span>
+<span class="codeline" id="line-100"><code>			help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-101"><code>		case options[3]:</code></span>
+<span class="codeline" id="line-102"><code>			log.Info.Printf("🤔 Displaying all containers in %v pod %v namespace", defaultPod, defaultNamespace)</code></span>
+<span class="codeline" id="line-103"><code>			DisplayContainers(pdIndex, nsIndex)</code></span>
+<span class="codeline" id="line-104"><code>		case options[4]:</code></span>
+<span class="codeline" id="line-105"><code>			log.Info.Printf("🤔 Describing %v pod in %v namespace", defaultPod, defaultNamespace)</code></span>
+<span class="codeline" id="line-106"><code>			kargs := []string{"describe", "pod", defaultPod, "-n", defaultNamespace}</code></span>
+<span class="codeline" id="line-107"><code>			help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-108"><code>		case options[5]:</code></span>
+<span class="codeline" id="line-109"><code>			log.Info.Printf("😅 Good things take time ⌛ to commit! Coming soon...")</code></span>
+<span class="codeline" id="line-110"><code>		case options[6]:</code></span>
+<span class="codeline" id="line-111"><code>			var confirm string</code></span>
+<span class="codeline" id="line-112"><code>			log.Info.Printf("😲 You are going to delete a pod..?")</code></span>
+<span class="codeline" id="line-113"><code>			log.Info.Printf("🙄 Deleting %v pod... This action is irreversible. Please confirm by typing 'y' for yes?", defaultPod)</code></span>
+<span class="codeline" id="line-114"><code>			help.TakeStrInput(&amp;confirm)</code></span>
+<span class="codeline" id="line-115"><code>			if confirm == "y" {</code></span>
+<span class="codeline" id="line-116"><code>				kargs := []string{"delete", "pod", defaultPod, "-n", defaultNamespace}</code></span>
+<span class="codeline" id="line-117"><code>				help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-118"><code>				log.Info.Printf("[✔️ ] %v pod delete operation successfull in %v namespace 😄 ", defaultPod, defaultNamespace)</code></span>
+<span class="codeline" id="line-119"><code>			} else {</code></span>
+<span class="codeline" id="line-120"><code>				log.Info.Printf("😐 Confirmation failed please try again?")</code></span>
+<span class="codeline" id="line-121"><code>			}</code></span>
+<span class="codeline" id="line-122"><code>		case options[7]:</code></span>
+<span class="codeline" id="line-123"><code>			return</code></span>
+<span class="codeline" id="line-124"><code>		}</code></span>
+<span class="codeline" id="line-125"><code>	}</code></span>
+<span class="codeline" id="line-126"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

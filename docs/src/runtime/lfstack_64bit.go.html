@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: lfstack_64bit.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	lfstack_64bit.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build amd64 arm64 mips64 mips64le ppc64 ppc64le riscv64 s390x wasm</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package runtime</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>const (</code></span>
+<span class="codeline" id="line-12"><code>	// addrBits is the number of bits needed to represent a virtual address.</code></span>
+<span class="codeline" id="line-13"><code>	//</code></span>
+<span class="codeline" id="line-14"><code>	// See heapAddrBits for a table of address space sizes on</code></span>
+<span class="codeline" id="line-15"><code>	// various architectures. 48 bits is enough for all</code></span>
+<span class="codeline" id="line-16"><code>	// architectures except s390x.</code></span>
+<span class="codeline" id="line-17"><code>	//</code></span>
+<span class="codeline" id="line-18"><code>	// On AMD64, virtual addresses are 48-bit (or 57-bit) numbers sign extended to 64.</code></span>
+<span class="codeline" id="line-19"><code>	// We shift the address left 16 to eliminate the sign extended part and make</code></span>
+<span class="codeline" id="line-20"><code>	// room in the bottom for the count.</code></span>
+<span class="codeline" id="line-21"><code>	//</code></span>
+<span class="codeline" id="line-22"><code>	// On s390x, virtual addresses are 64-bit. There's not much we</code></span>
+<span class="codeline" id="line-23"><code>	// can do about this, so we just hope that the kernel doesn't</code></span>
+<span class="codeline" id="line-24"><code>	// get to really high addresses and panic if it does.</code></span>
+<span class="codeline" id="line-25"><code>	addrBits = 48</code></span>
+<span class="codeline" id="line-26"><code></code></span>
+<span class="codeline" id="line-27"><code>	// In addition to the 16 bits taken from the top, we can take 3 from the</code></span>
+<span class="codeline" id="line-28"><code>	// bottom, because node must be pointer-aligned, giving a total of 19 bits</code></span>
+<span class="codeline" id="line-29"><code>	// of count.</code></span>
+<span class="codeline" id="line-30"><code>	cntBits = 64 - addrBits + 3</code></span>
+<span class="codeline" id="line-31"><code></code></span>
+<span class="codeline" id="line-32"><code>	// On AIX, 64-bit addresses are split into 36-bit segment number and 28-bit</code></span>
+<span class="codeline" id="line-33"><code>	// offset in segment.  Segment numbers in the range 0x0A0000000-0x0AFFFFFFF(LSA)</code></span>
+<span class="codeline" id="line-34"><code>	// are available for mmap.</code></span>
+<span class="codeline" id="line-35"><code>	// We assume all lfnode addresses are from memory allocated with mmap.</code></span>
+<span class="codeline" id="line-36"><code>	// We use one bit to distinguish between the two ranges.</code></span>
+<span class="codeline" id="line-37"><code>	aixAddrBits = 57</code></span>
+<span class="codeline" id="line-38"><code>	aixCntBits  = 64 - aixAddrBits + 3</code></span>
+<span class="codeline" id="line-39"><code>)</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>func lfstackPack(node *lfnode, cnt uintptr) uint64 {</code></span>
+<span class="codeline" id="line-42"><code>	if GOARCH == "ppc64" &amp;&amp; GOOS == "aix" {</code></span>
+<span class="codeline" id="line-43"><code>		return uint64(uintptr(unsafe.Pointer(node)))&lt;&lt;(64-aixAddrBits) | uint64(cnt&amp;(1&lt;&lt;aixCntBits-1))</code></span>
+<span class="codeline" id="line-44"><code>	}</code></span>
+<span class="codeline" id="line-45"><code>	return uint64(uintptr(unsafe.Pointer(node)))&lt;&lt;(64-addrBits) | uint64(cnt&amp;(1&lt;&lt;cntBits-1))</code></span>
+<span class="codeline" id="line-46"><code>}</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>func lfstackUnpack(val uint64) *lfnode {</code></span>
+<span class="codeline" id="line-49"><code>	if GOARCH == "amd64" {</code></span>
+<span class="codeline" id="line-50"><code>		// amd64 systems can place the stack above the VA hole, so we need to sign extend</code></span>
+<span class="codeline" id="line-51"><code>		// val before unpacking.</code></span>
+<span class="codeline" id="line-52"><code>		return (*lfnode)(unsafe.Pointer(uintptr(int64(val) &gt;&gt; cntBits &lt;&lt; 3)))</code></span>
+<span class="codeline" id="line-53"><code>	}</code></span>
+<span class="codeline" id="line-54"><code>	if GOARCH == "ppc64" &amp;&amp; GOOS == "aix" {</code></span>
+<span class="codeline" id="line-55"><code>		return (*lfnode)(unsafe.Pointer(uintptr((val &gt;&gt; aixCntBits &lt;&lt; 3) | 0xa&lt;&lt;56)))</code></span>
+<span class="codeline" id="line-56"><code>	}</code></span>
+<span class="codeline" id="line-57"><code>	return (*lfnode)(unsafe.Pointer(uintptr(val &gt;&gt; cntBits &lt;&lt; 3)))</code></span>
+<span class="codeline" id="line-58"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

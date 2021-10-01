@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: remainder.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	remainder.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// The original C code and the comment below are from</code></span>
+<span class="codeline" id="line-8"><code>// FreeBSD's /usr/src/lib/msun/src/e_remainder.c and came</code></span>
+<span class="codeline" id="line-9"><code>// with this notice. The go code is a simplified version of</code></span>
+<span class="codeline" id="line-10"><code>// the original C.</code></span>
+<span class="codeline" id="line-11"><code>//</code></span>
+<span class="codeline" id="line-12"><code>// ====================================================</code></span>
+<span class="codeline" id="line-13"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-14"><code>//</code></span>
+<span class="codeline" id="line-15"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-16"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-17"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-18"><code>// is preserved.</code></span>
+<span class="codeline" id="line-19"><code>// ====================================================</code></span>
+<span class="codeline" id="line-20"><code>//</code></span>
+<span class="codeline" id="line-21"><code>// __ieee754_remainder(x,y)</code></span>
+<span class="codeline" id="line-22"><code>// Return :</code></span>
+<span class="codeline" id="line-23"><code>//      returns  x REM y  =  x - [x/y]*y  as if in infinite</code></span>
+<span class="codeline" id="line-24"><code>//      precision arithmetic, where [x/y] is the (infinite bit)</code></span>
+<span class="codeline" id="line-25"><code>//      integer nearest x/y (in half way cases, choose the even one).</code></span>
+<span class="codeline" id="line-26"><code>// Method :</code></span>
+<span class="codeline" id="line-27"><code>//      Based on Mod() returning  x - [x/y]chopped * y  exactly.</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>// Remainder returns the IEEE 754 floating-point remainder of x/y.</code></span>
+<span class="codeline" id="line-30"><code>//</code></span>
+<span class="codeline" id="line-31"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-32"><code>//	Remainder(±Inf, y) = NaN</code></span>
+<span class="codeline" id="line-33"><code>//	Remainder(NaN, y) = NaN</code></span>
+<span class="codeline" id="line-34"><code>//	Remainder(x, 0) = NaN</code></span>
+<span class="codeline" id="line-35"><code>//	Remainder(x, ±Inf) = x</code></span>
+<span class="codeline" id="line-36"><code>//	Remainder(x, NaN) = NaN</code></span>
+<span class="codeline" id="line-37"><code>func Remainder(x, y float64) float64</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>func remainder(x, y float64) float64 {</code></span>
+<span class="codeline" id="line-40"><code>	const (</code></span>
+<span class="codeline" id="line-41"><code>		Tiny    = 4.45014771701440276618e-308 // 0x0020000000000000</code></span>
+<span class="codeline" id="line-42"><code>		HalfMax = MaxFloat64 / 2</code></span>
+<span class="codeline" id="line-43"><code>	)</code></span>
+<span class="codeline" id="line-44"><code>	// special cases</code></span>
+<span class="codeline" id="line-45"><code>	switch {</code></span>
+<span class="codeline" id="line-46"><code>	case IsNaN(x) || IsNaN(y) || IsInf(x, 0) || y == 0:</code></span>
+<span class="codeline" id="line-47"><code>		return NaN()</code></span>
+<span class="codeline" id="line-48"><code>	case IsInf(y, 0):</code></span>
+<span class="codeline" id="line-49"><code>		return x</code></span>
+<span class="codeline" id="line-50"><code>	}</code></span>
+<span class="codeline" id="line-51"><code>	sign := false</code></span>
+<span class="codeline" id="line-52"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-53"><code>		x = -x</code></span>
+<span class="codeline" id="line-54"><code>		sign = true</code></span>
+<span class="codeline" id="line-55"><code>	}</code></span>
+<span class="codeline" id="line-56"><code>	if y &lt; 0 {</code></span>
+<span class="codeline" id="line-57"><code>		y = -y</code></span>
+<span class="codeline" id="line-58"><code>	}</code></span>
+<span class="codeline" id="line-59"><code>	if x == y {</code></span>
+<span class="codeline" id="line-60"><code>		if sign {</code></span>
+<span class="codeline" id="line-61"><code>			zero := 0.0</code></span>
+<span class="codeline" id="line-62"><code>			return -zero</code></span>
+<span class="codeline" id="line-63"><code>		}</code></span>
+<span class="codeline" id="line-64"><code>		return 0</code></span>
+<span class="codeline" id="line-65"><code>	}</code></span>
+<span class="codeline" id="line-66"><code>	if y &lt;= HalfMax {</code></span>
+<span class="codeline" id="line-67"><code>		x = Mod(x, y+y) // now x &lt; 2y</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code>	if y &lt; Tiny {</code></span>
+<span class="codeline" id="line-70"><code>		if x+x &gt; y {</code></span>
+<span class="codeline" id="line-71"><code>			x -= y</code></span>
+<span class="codeline" id="line-72"><code>			if x+x &gt;= y {</code></span>
+<span class="codeline" id="line-73"><code>				x -= y</code></span>
+<span class="codeline" id="line-74"><code>			}</code></span>
+<span class="codeline" id="line-75"><code>		}</code></span>
+<span class="codeline" id="line-76"><code>	} else {</code></span>
+<span class="codeline" id="line-77"><code>		yHalf := 0.5 * y</code></span>
+<span class="codeline" id="line-78"><code>		if x &gt; yHalf {</code></span>
+<span class="codeline" id="line-79"><code>			x -= y</code></span>
+<span class="codeline" id="line-80"><code>			if x &gt;= yHalf {</code></span>
+<span class="codeline" id="line-81"><code>				x -= y</code></span>
+<span class="codeline" id="line-82"><code>			}</code></span>
+<span class="codeline" id="line-83"><code>		}</code></span>
+<span class="codeline" id="line-84"><code>	}</code></span>
+<span class="codeline" id="line-85"><code>	if sign {</code></span>
+<span class="codeline" id="line-86"><code>		x = -x</code></span>
+<span class="codeline" id="line-87"><code>	}</code></span>
+<span class="codeline" id="line-88"><code>	return x</code></span>
+<span class="codeline" id="line-89"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

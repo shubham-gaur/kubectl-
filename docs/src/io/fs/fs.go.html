@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: fs.go in package io/fs</title>
+<link href="../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	fs.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../pkg/io/fs.html">io/fs</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2020 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<div class="anchor" id="doc"><span class="codeline" id="line-5"><code>// Package fs defines basic interfaces to a file system.</code></span>
+<span class="codeline" id="line-6"><code>// A file system can be provided by the host operating system</code></span>
+<span class="codeline" id="line-7"><code>// but also by other packages.</code></span></div><span class="codeline" id="line-8"><code>package fs</code></span>
+<span class="codeline" id="line-9"><code></code></span>
+<span class="codeline" id="line-10"><code>import (</code></span>
+<span class="codeline" id="line-11"><code>	"internal/oserror"</code></span>
+<span class="codeline" id="line-12"><code>	"time"</code></span>
+<span class="codeline" id="line-13"><code>	"unicode/utf8"</code></span>
+<span class="codeline" id="line-14"><code>)</code></span>
+<span class="codeline" id="line-15"><code></code></span>
+<span class="codeline" id="line-16"><code>// An FS provides access to a hierarchical file system.</code></span>
+<span class="codeline" id="line-17"><code>//</code></span>
+<span class="codeline" id="line-18"><code>// The FS interface is the minimum implementation required of the file system.</code></span>
+<span class="codeline" id="line-19"><code>// A file system may implement additional interfaces,</code></span>
+<span class="codeline" id="line-20"><code>// such as ReadFileFS, to provide additional or optimized functionality.</code></span>
+<span class="codeline" id="line-21"><code>type FS interface {</code></span>
+<span class="codeline" id="line-22"><code>	// Open opens the named file.</code></span>
+<span class="codeline" id="line-23"><code>	//</code></span>
+<span class="codeline" id="line-24"><code>	// When Open returns an error, it should be of type *PathError</code></span>
+<span class="codeline" id="line-25"><code>	// with the Op field set to "open", the Path field set to name,</code></span>
+<span class="codeline" id="line-26"><code>	// and the Err field describing the problem.</code></span>
+<span class="codeline" id="line-27"><code>	//</code></span>
+<span class="codeline" id="line-28"><code>	// Open should reject attempts to open names that do not satisfy</code></span>
+<span class="codeline" id="line-29"><code>	// ValidPath(name), returning a *PathError with Err set to</code></span>
+<span class="codeline" id="line-30"><code>	// ErrInvalid or ErrNotExist.</code></span>
+<span class="codeline" id="line-31"><code>	Open(name string) (File, error)</code></span>
+<span class="codeline" id="line-32"><code>}</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>// ValidPath reports whether the given path name</code></span>
+<span class="codeline" id="line-35"><code>// is valid for use in a call to Open.</code></span>
+<span class="codeline" id="line-36"><code>//</code></span>
+<span class="codeline" id="line-37"><code>// Path names passed to open are UTF-8-encoded,</code></span>
+<span class="codeline" id="line-38"><code>// unrooted, slash-separated sequences of path elements, like “x/y/z”.</code></span>
+<span class="codeline" id="line-39"><code>// Path names must not contain an element that is “.” or “..” or the empty string,</code></span>
+<span class="codeline" id="line-40"><code>// except for the special case that the root directory is named “.”.</code></span>
+<span class="codeline" id="line-41"><code>// Paths must not start or end with a slash: “/x” and “x/” are invalid.</code></span>
+<span class="codeline" id="line-42"><code>//</code></span>
+<span class="codeline" id="line-43"><code>// Note that paths are slash-separated on all systems, even Windows.</code></span>
+<span class="codeline" id="line-44"><code>// Paths containing other characters such as backslash and colon</code></span>
+<span class="codeline" id="line-45"><code>// are accepted as valid, but those characters must never be</code></span>
+<span class="codeline" id="line-46"><code>// interpreted by an FS implementation as path element separators.</code></span>
+<span class="codeline" id="line-47"><code>func ValidPath(name string) bool {</code></span>
+<span class="codeline" id="line-48"><code>	if !utf8.ValidString(name) {</code></span>
+<span class="codeline" id="line-49"><code>		return false</code></span>
+<span class="codeline" id="line-50"><code>	}</code></span>
+<span class="codeline" id="line-51"><code></code></span>
+<span class="codeline" id="line-52"><code>	if name == "." {</code></span>
+<span class="codeline" id="line-53"><code>		// special case</code></span>
+<span class="codeline" id="line-54"><code>		return true</code></span>
+<span class="codeline" id="line-55"><code>	}</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>	// Iterate over elements in name, checking each.</code></span>
+<span class="codeline" id="line-58"><code>	for {</code></span>
+<span class="codeline" id="line-59"><code>		i := 0</code></span>
+<span class="codeline" id="line-60"><code>		for i &lt; len(name) &amp;&amp; name[i] != '/' {</code></span>
+<span class="codeline" id="line-61"><code>			i++</code></span>
+<span class="codeline" id="line-62"><code>		}</code></span>
+<span class="codeline" id="line-63"><code>		elem := name[:i]</code></span>
+<span class="codeline" id="line-64"><code>		if elem == "" || elem == "." || elem == ".." {</code></span>
+<span class="codeline" id="line-65"><code>			return false</code></span>
+<span class="codeline" id="line-66"><code>		}</code></span>
+<span class="codeline" id="line-67"><code>		if i == len(name) {</code></span>
+<span class="codeline" id="line-68"><code>			return true // reached clean ending</code></span>
+<span class="codeline" id="line-69"><code>		}</code></span>
+<span class="codeline" id="line-70"><code>		name = name[i+1:]</code></span>
+<span class="codeline" id="line-71"><code>	}</code></span>
+<span class="codeline" id="line-72"><code>}</code></span>
+<span class="codeline" id="line-73"><code></code></span>
+<span class="codeline" id="line-74"><code>// A File provides access to a single file.</code></span>
+<span class="codeline" id="line-75"><code>// The File interface is the minimum implementation required of the file.</code></span>
+<span class="codeline" id="line-76"><code>// A file may implement additional interfaces, such as</code></span>
+<span class="codeline" id="line-77"><code>// ReadDirFile, ReaderAt, or Seeker, to provide additional or optimized functionality.</code></span>
+<span class="codeline" id="line-78"><code>type File interface {</code></span>
+<span class="codeline" id="line-79"><code>	Stat() (FileInfo, error)</code></span>
+<span class="codeline" id="line-80"><code>	Read([]byte) (int, error)</code></span>
+<span class="codeline" id="line-81"><code>	Close() error</code></span>
+<span class="codeline" id="line-82"><code>}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>// A DirEntry is an entry read from a directory</code></span>
+<span class="codeline" id="line-85"><code>// (using the ReadDir function or a ReadDirFile's ReadDir method).</code></span>
+<span class="codeline" id="line-86"><code>type DirEntry interface {</code></span>
+<span class="codeline" id="line-87"><code>	// Name returns the name of the file (or subdirectory) described by the entry.</code></span>
+<span class="codeline" id="line-88"><code>	// This name is only the final element of the path (the base name), not the entire path.</code></span>
+<span class="codeline" id="line-89"><code>	// For example, Name would return "hello.go" not "/home/gopher/hello.go".</code></span>
+<span class="codeline" id="line-90"><code>	Name() string</code></span>
+<span class="codeline" id="line-91"><code></code></span>
+<span class="codeline" id="line-92"><code>	// IsDir reports whether the entry describes a directory.</code></span>
+<span class="codeline" id="line-93"><code>	IsDir() bool</code></span>
+<span class="codeline" id="line-94"><code></code></span>
+<span class="codeline" id="line-95"><code>	// Type returns the type bits for the entry.</code></span>
+<span class="codeline" id="line-96"><code>	// The type bits are a subset of the usual FileMode bits, those returned by the FileMode.Type method.</code></span>
+<span class="codeline" id="line-97"><code>	Type() FileMode</code></span>
+<span class="codeline" id="line-98"><code></code></span>
+<span class="codeline" id="line-99"><code>	// Info returns the FileInfo for the file or subdirectory described by the entry.</code></span>
+<span class="codeline" id="line-100"><code>	// The returned FileInfo may be from the time of the original directory read</code></span>
+<span class="codeline" id="line-101"><code>	// or from the time of the call to Info. If the file has been removed or renamed</code></span>
+<span class="codeline" id="line-102"><code>	// since the directory read, Info may return an error satisfying errors.Is(err, ErrNotExist).</code></span>
+<span class="codeline" id="line-103"><code>	// If the entry denotes a symbolic link, Info reports the information about the link itself,</code></span>
+<span class="codeline" id="line-104"><code>	// not the link's target.</code></span>
+<span class="codeline" id="line-105"><code>	Info() (FileInfo, error)</code></span>
+<span class="codeline" id="line-106"><code>}</code></span>
+<span class="codeline" id="line-107"><code></code></span>
+<span class="codeline" id="line-108"><code>// A ReadDirFile is a directory file whose entries can be read with the ReadDir method.</code></span>
+<span class="codeline" id="line-109"><code>// Every directory file should implement this interface.</code></span>
+<span class="codeline" id="line-110"><code>// (It is permissible for any file to implement this interface,</code></span>
+<span class="codeline" id="line-111"><code>// but if so ReadDir should return an error for non-directories.)</code></span>
+<span class="codeline" id="line-112"><code>type ReadDirFile interface {</code></span>
+<span class="codeline" id="line-113"><code>	File</code></span>
+<span class="codeline" id="line-114"><code></code></span>
+<span class="codeline" id="line-115"><code>	// ReadDir reads the contents of the directory and returns</code></span>
+<span class="codeline" id="line-116"><code>	// a slice of up to n DirEntry values in directory order.</code></span>
+<span class="codeline" id="line-117"><code>	// Subsequent calls on the same file will yield further DirEntry values.</code></span>
+<span class="codeline" id="line-118"><code>	//</code></span>
+<span class="codeline" id="line-119"><code>	// If n &gt; 0, ReadDir returns at most n DirEntry structures.</code></span>
+<span class="codeline" id="line-120"><code>	// In this case, if ReadDir returns an empty slice, it will return</code></span>
+<span class="codeline" id="line-121"><code>	// a non-nil error explaining why.</code></span>
+<span class="codeline" id="line-122"><code>	// At the end of a directory, the error is io.EOF.</code></span>
+<span class="codeline" id="line-123"><code>	//</code></span>
+<span class="codeline" id="line-124"><code>	// If n &lt;= 0, ReadDir returns all the DirEntry values from the directory</code></span>
+<span class="codeline" id="line-125"><code>	// in a single slice. In this case, if ReadDir succeeds (reads all the way</code></span>
+<span class="codeline" id="line-126"><code>	// to the end of the directory), it returns the slice and a nil error.</code></span>
+<span class="codeline" id="line-127"><code>	// If it encounters an error before the end of the directory,</code></span>
+<span class="codeline" id="line-128"><code>	// ReadDir returns the DirEntry list read until that point and a non-nil error.</code></span>
+<span class="codeline" id="line-129"><code>	ReadDir(n int) ([]DirEntry, error)</code></span>
+<span class="codeline" id="line-130"><code>}</code></span>
+<span class="codeline" id="line-131"><code></code></span>
+<span class="codeline" id="line-132"><code>// Generic file system errors.</code></span>
+<span class="codeline" id="line-133"><code>// Errors returned by file systems can be tested against these errors</code></span>
+<span class="codeline" id="line-134"><code>// using errors.Is.</code></span>
+<span class="codeline" id="line-135"><code>var (</code></span>
+<span class="codeline" id="line-136"><code>	ErrInvalid    = errInvalid()    // "invalid argument"</code></span>
+<span class="codeline" id="line-137"><code>	ErrPermission = errPermission() // "permission denied"</code></span>
+<span class="codeline" id="line-138"><code>	ErrExist      = errExist()      // "file already exists"</code></span>
+<span class="codeline" id="line-139"><code>	ErrNotExist   = errNotExist()   // "file does not exist"</code></span>
+<span class="codeline" id="line-140"><code>	ErrClosed     = errClosed()     // "file already closed"</code></span>
+<span class="codeline" id="line-141"><code>)</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>func errInvalid() error    { return oserror.ErrInvalid }</code></span>
+<span class="codeline" id="line-144"><code>func errPermission() error { return oserror.ErrPermission }</code></span>
+<span class="codeline" id="line-145"><code>func errExist() error      { return oserror.ErrExist }</code></span>
+<span class="codeline" id="line-146"><code>func errNotExist() error   { return oserror.ErrNotExist }</code></span>
+<span class="codeline" id="line-147"><code>func errClosed() error     { return oserror.ErrClosed }</code></span>
+<span class="codeline" id="line-148"><code></code></span>
+<span class="codeline" id="line-149"><code>// A FileInfo describes a file and is returned by Stat.</code></span>
+<span class="codeline" id="line-150"><code>type FileInfo interface {</code></span>
+<span class="codeline" id="line-151"><code>	Name() string       // base name of the file</code></span>
+<span class="codeline" id="line-152"><code>	Size() int64        // length in bytes for regular files; system-dependent for others</code></span>
+<span class="codeline" id="line-153"><code>	Mode() FileMode     // file mode bits</code></span>
+<span class="codeline" id="line-154"><code>	ModTime() time.Time // modification time</code></span>
+<span class="codeline" id="line-155"><code>	IsDir() bool        // abbreviation for Mode().IsDir()</code></span>
+<span class="codeline" id="line-156"><code>	Sys() interface{}   // underlying data source (can return nil)</code></span>
+<span class="codeline" id="line-157"><code>}</code></span>
+<span class="codeline" id="line-158"><code></code></span>
+<span class="codeline" id="line-159"><code>// A FileMode represents a file's mode and permission bits.</code></span>
+<span class="codeline" id="line-160"><code>// The bits have the same definition on all systems, so that</code></span>
+<span class="codeline" id="line-161"><code>// information about files can be moved from one system</code></span>
+<span class="codeline" id="line-162"><code>// to another portably. Not all bits apply to all systems.</code></span>
+<span class="codeline" id="line-163"><code>// The only required bit is ModeDir for directories.</code></span>
+<span class="codeline" id="line-164"><code>type FileMode uint32</code></span>
+<span class="codeline" id="line-165"><code></code></span>
+<span class="codeline" id="line-166"><code>// The defined file mode bits are the most significant bits of the FileMode.</code></span>
+<span class="codeline" id="line-167"><code>// The nine least-significant bits are the standard Unix rwxrwxrwx permissions.</code></span>
+<span class="codeline" id="line-168"><code>// The values of these bits should be considered part of the public API and</code></span>
+<span class="codeline" id="line-169"><code>// may be used in wire protocols or disk representations: they must not be</code></span>
+<span class="codeline" id="line-170"><code>// changed, although new bits might be added.</code></span>
+<span class="codeline" id="line-171"><code>const (</code></span>
+<span class="codeline" id="line-172"><code>	// The single letters are the abbreviations</code></span>
+<span class="codeline" id="line-173"><code>	// used by the String method's formatting.</code></span>
+<span class="codeline" id="line-174"><code>	ModeDir        FileMode = 1 &lt;&lt; (32 - 1 - iota) // d: is a directory</code></span>
+<span class="codeline" id="line-175"><code>	ModeAppend                                     // a: append-only</code></span>
+<span class="codeline" id="line-176"><code>	ModeExclusive                                  // l: exclusive use</code></span>
+<span class="codeline" id="line-177"><code>	ModeTemporary                                  // T: temporary file; Plan 9 only</code></span>
+<span class="codeline" id="line-178"><code>	ModeSymlink                                    // L: symbolic link</code></span>
+<span class="codeline" id="line-179"><code>	ModeDevice                                     // D: device file</code></span>
+<span class="codeline" id="line-180"><code>	ModeNamedPipe                                  // p: named pipe (FIFO)</code></span>
+<span class="codeline" id="line-181"><code>	ModeSocket                                     // S: Unix domain socket</code></span>
+<span class="codeline" id="line-182"><code>	ModeSetuid                                     // u: setuid</code></span>
+<span class="codeline" id="line-183"><code>	ModeSetgid                                     // g: setgid</code></span>
+<span class="codeline" id="line-184"><code>	ModeCharDevice                                 // c: Unix character device, when ModeDevice is set</code></span>
+<span class="codeline" id="line-185"><code>	ModeSticky                                     // t: sticky</code></span>
+<span class="codeline" id="line-186"><code>	ModeIrregular                                  // ?: non-regular file; nothing else is known about this file</code></span>
+<span class="codeline" id="line-187"><code></code></span>
+<span class="codeline" id="line-188"><code>	// Mask for the type bits. For regular files, none will be set.</code></span>
+<span class="codeline" id="line-189"><code>	ModeType = ModeDir | ModeSymlink | ModeNamedPipe | ModeSocket | ModeDevice | ModeCharDevice | ModeIrregular</code></span>
+<span class="codeline" id="line-190"><code></code></span>
+<span class="codeline" id="line-191"><code>	ModePerm FileMode = 0777 // Unix permission bits</code></span>
+<span class="codeline" id="line-192"><code>)</code></span>
+<span class="codeline" id="line-193"><code></code></span>
+<span class="codeline" id="line-194"><code>func (m FileMode) String() string {</code></span>
+<span class="codeline" id="line-195"><code>	const str = "dalTLDpSugct?"</code></span>
+<span class="codeline" id="line-196"><code>	var buf [32]byte // Mode is uint32.</code></span>
+<span class="codeline" id="line-197"><code>	w := 0</code></span>
+<span class="codeline" id="line-198"><code>	for i, c := range str {</code></span>
+<span class="codeline" id="line-199"><code>		if m&amp;(1&lt;&lt;uint(32-1-i)) != 0 {</code></span>
+<span class="codeline" id="line-200"><code>			buf[w] = byte(c)</code></span>
+<span class="codeline" id="line-201"><code>			w++</code></span>
+<span class="codeline" id="line-202"><code>		}</code></span>
+<span class="codeline" id="line-203"><code>	}</code></span>
+<span class="codeline" id="line-204"><code>	if w == 0 {</code></span>
+<span class="codeline" id="line-205"><code>		buf[w] = '-'</code></span>
+<span class="codeline" id="line-206"><code>		w++</code></span>
+<span class="codeline" id="line-207"><code>	}</code></span>
+<span class="codeline" id="line-208"><code>	const rwx = "rwxrwxrwx"</code></span>
+<span class="codeline" id="line-209"><code>	for i, c := range rwx {</code></span>
+<span class="codeline" id="line-210"><code>		if m&amp;(1&lt;&lt;uint(9-1-i)) != 0 {</code></span>
+<span class="codeline" id="line-211"><code>			buf[w] = byte(c)</code></span>
+<span class="codeline" id="line-212"><code>		} else {</code></span>
+<span class="codeline" id="line-213"><code>			buf[w] = '-'</code></span>
+<span class="codeline" id="line-214"><code>		}</code></span>
+<span class="codeline" id="line-215"><code>		w++</code></span>
+<span class="codeline" id="line-216"><code>	}</code></span>
+<span class="codeline" id="line-217"><code>	return string(buf[:w])</code></span>
+<span class="codeline" id="line-218"><code>}</code></span>
+<span class="codeline" id="line-219"><code></code></span>
+<span class="codeline" id="line-220"><code>// IsDir reports whether m describes a directory.</code></span>
+<span class="codeline" id="line-221"><code>// That is, it tests for the ModeDir bit being set in m.</code></span>
+<span class="codeline" id="line-222"><code>func (m FileMode) IsDir() bool {</code></span>
+<span class="codeline" id="line-223"><code>	return m&amp;ModeDir != 0</code></span>
+<span class="codeline" id="line-224"><code>}</code></span>
+<span class="codeline" id="line-225"><code></code></span>
+<span class="codeline" id="line-226"><code>// IsRegular reports whether m describes a regular file.</code></span>
+<span class="codeline" id="line-227"><code>// That is, it tests that no mode type bits are set.</code></span>
+<span class="codeline" id="line-228"><code>func (m FileMode) IsRegular() bool {</code></span>
+<span class="codeline" id="line-229"><code>	return m&amp;ModeType == 0</code></span>
+<span class="codeline" id="line-230"><code>}</code></span>
+<span class="codeline" id="line-231"><code></code></span>
+<span class="codeline" id="line-232"><code>// Perm returns the Unix permission bits in m (m &amp; ModePerm).</code></span>
+<span class="codeline" id="line-233"><code>func (m FileMode) Perm() FileMode {</code></span>
+<span class="codeline" id="line-234"><code>	return m &amp; ModePerm</code></span>
+<span class="codeline" id="line-235"><code>}</code></span>
+<span class="codeline" id="line-236"><code></code></span>
+<span class="codeline" id="line-237"><code>// Type returns type bits in m (m &amp; ModeType).</code></span>
+<span class="codeline" id="line-238"><code>func (m FileMode) Type() FileMode {</code></span>
+<span class="codeline" id="line-239"><code>	return m &amp; ModeType</code></span>
+<span class="codeline" id="line-240"><code>}</code></span>
+<span class="codeline" id="line-241"><code></code></span>
+<span class="codeline" id="line-242"><code>// PathError records an error and the operation and file path that caused it.</code></span>
+<span class="codeline" id="line-243"><code>type PathError struct {</code></span>
+<span class="codeline" id="line-244"><code>	Op   string</code></span>
+<span class="codeline" id="line-245"><code>	Path string</code></span>
+<span class="codeline" id="line-246"><code>	Err  error</code></span>
+<span class="codeline" id="line-247"><code>}</code></span>
+<span class="codeline" id="line-248"><code></code></span>
+<span class="codeline" id="line-249"><code>func (e *PathError) Error() string { return e.Op + " " + e.Path + ": " + e.Err.Error() }</code></span>
+<span class="codeline" id="line-250"><code></code></span>
+<span class="codeline" id="line-251"><code>func (e *PathError) Unwrap() error { return e.Err }</code></span>
+<span class="codeline" id="line-252"><code></code></span>
+<span class="codeline" id="line-253"><code>// Timeout reports whether this error represents a timeout.</code></span>
+<span class="codeline" id="line-254"><code>func (e *PathError) Timeout() bool {</code></span>
+<span class="codeline" id="line-255"><code>	t, ok := e.Err.(interface{ Timeout() bool })</code></span>
+<span class="codeline" id="line-256"><code>	return ok &amp;&amp; t.Timeout()</code></span>
+<span class="codeline" id="line-257"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

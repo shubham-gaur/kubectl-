@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: pipe.go in package io</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	pipe.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/io.html">io</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Pipe adapter to connect code expecting an io.Reader</code></span>
+<span class="codeline" id="line-6"><code>// with code expecting an io.Writer.</code></span>
+<span class="codeline" id="line-7"><code></code></span>
+<span class="codeline" id="line-8"><code>package io</code></span>
+<span class="codeline" id="line-9"><code></code></span>
+<span class="codeline" id="line-10"><code>import (</code></span>
+<span class="codeline" id="line-11"><code>	"errors"</code></span>
+<span class="codeline" id="line-12"><code>	"sync"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// onceError is an object that will only store an error once.</code></span>
+<span class="codeline" id="line-16"><code>type onceError struct {</code></span>
+<span class="codeline" id="line-17"><code>	sync.Mutex // guards following</code></span>
+<span class="codeline" id="line-18"><code>	err        error</code></span>
+<span class="codeline" id="line-19"><code>}</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>func (a *onceError) Store(err error) {</code></span>
+<span class="codeline" id="line-22"><code>	a.Lock()</code></span>
+<span class="codeline" id="line-23"><code>	defer a.Unlock()</code></span>
+<span class="codeline" id="line-24"><code>	if a.err != nil {</code></span>
+<span class="codeline" id="line-25"><code>		return</code></span>
+<span class="codeline" id="line-26"><code>	}</code></span>
+<span class="codeline" id="line-27"><code>	a.err = err</code></span>
+<span class="codeline" id="line-28"><code>}</code></span>
+<span class="codeline" id="line-29"><code>func (a *onceError) Load() error {</code></span>
+<span class="codeline" id="line-30"><code>	a.Lock()</code></span>
+<span class="codeline" id="line-31"><code>	defer a.Unlock()</code></span>
+<span class="codeline" id="line-32"><code>	return a.err</code></span>
+<span class="codeline" id="line-33"><code>}</code></span>
+<span class="codeline" id="line-34"><code></code></span>
+<span class="codeline" id="line-35"><code>// ErrClosedPipe is the error used for read or write operations on a closed pipe.</code></span>
+<span class="codeline" id="line-36"><code>var ErrClosedPipe = errors.New("io: read/write on closed pipe")</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>// A pipe is the shared pipe structure underlying PipeReader and PipeWriter.</code></span>
+<span class="codeline" id="line-39"><code>type pipe struct {</code></span>
+<span class="codeline" id="line-40"><code>	wrMu sync.Mutex // Serializes Write operations</code></span>
+<span class="codeline" id="line-41"><code>	wrCh chan []byte</code></span>
+<span class="codeline" id="line-42"><code>	rdCh chan int</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>	once sync.Once // Protects closing done</code></span>
+<span class="codeline" id="line-45"><code>	done chan struct{}</code></span>
+<span class="codeline" id="line-46"><code>	rerr onceError</code></span>
+<span class="codeline" id="line-47"><code>	werr onceError</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>func (p *pipe) Read(b []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-51"><code>	select {</code></span>
+<span class="codeline" id="line-52"><code>	case &lt;-p.done:</code></span>
+<span class="codeline" id="line-53"><code>		return 0, p.readCloseError()</code></span>
+<span class="codeline" id="line-54"><code>	default:</code></span>
+<span class="codeline" id="line-55"><code>	}</code></span>
+<span class="codeline" id="line-56"><code></code></span>
+<span class="codeline" id="line-57"><code>	select {</code></span>
+<span class="codeline" id="line-58"><code>	case bw := &lt;-p.wrCh:</code></span>
+<span class="codeline" id="line-59"><code>		nr := copy(b, bw)</code></span>
+<span class="codeline" id="line-60"><code>		p.rdCh &lt;- nr</code></span>
+<span class="codeline" id="line-61"><code>		return nr, nil</code></span>
+<span class="codeline" id="line-62"><code>	case &lt;-p.done:</code></span>
+<span class="codeline" id="line-63"><code>		return 0, p.readCloseError()</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code>}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>func (p *pipe) readCloseError() error {</code></span>
+<span class="codeline" id="line-68"><code>	rerr := p.rerr.Load()</code></span>
+<span class="codeline" id="line-69"><code>	if werr := p.werr.Load(); rerr == nil &amp;&amp; werr != nil {</code></span>
+<span class="codeline" id="line-70"><code>		return werr</code></span>
+<span class="codeline" id="line-71"><code>	}</code></span>
+<span class="codeline" id="line-72"><code>	return ErrClosedPipe</code></span>
+<span class="codeline" id="line-73"><code>}</code></span>
+<span class="codeline" id="line-74"><code></code></span>
+<span class="codeline" id="line-75"><code>func (p *pipe) CloseRead(err error) error {</code></span>
+<span class="codeline" id="line-76"><code>	if err == nil {</code></span>
+<span class="codeline" id="line-77"><code>		err = ErrClosedPipe</code></span>
+<span class="codeline" id="line-78"><code>	}</code></span>
+<span class="codeline" id="line-79"><code>	p.rerr.Store(err)</code></span>
+<span class="codeline" id="line-80"><code>	p.once.Do(func() { close(p.done) })</code></span>
+<span class="codeline" id="line-81"><code>	return nil</code></span>
+<span class="codeline" id="line-82"><code>}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>func (p *pipe) Write(b []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-85"><code>	select {</code></span>
+<span class="codeline" id="line-86"><code>	case &lt;-p.done:</code></span>
+<span class="codeline" id="line-87"><code>		return 0, p.writeCloseError()</code></span>
+<span class="codeline" id="line-88"><code>	default:</code></span>
+<span class="codeline" id="line-89"><code>		p.wrMu.Lock()</code></span>
+<span class="codeline" id="line-90"><code>		defer p.wrMu.Unlock()</code></span>
+<span class="codeline" id="line-91"><code>	}</code></span>
+<span class="codeline" id="line-92"><code></code></span>
+<span class="codeline" id="line-93"><code>	for once := true; once || len(b) &gt; 0; once = false {</code></span>
+<span class="codeline" id="line-94"><code>		select {</code></span>
+<span class="codeline" id="line-95"><code>		case p.wrCh &lt;- b:</code></span>
+<span class="codeline" id="line-96"><code>			nw := &lt;-p.rdCh</code></span>
+<span class="codeline" id="line-97"><code>			b = b[nw:]</code></span>
+<span class="codeline" id="line-98"><code>			n += nw</code></span>
+<span class="codeline" id="line-99"><code>		case &lt;-p.done:</code></span>
+<span class="codeline" id="line-100"><code>			return n, p.writeCloseError()</code></span>
+<span class="codeline" id="line-101"><code>		}</code></span>
+<span class="codeline" id="line-102"><code>	}</code></span>
+<span class="codeline" id="line-103"><code>	return n, nil</code></span>
+<span class="codeline" id="line-104"><code>}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>func (p *pipe) writeCloseError() error {</code></span>
+<span class="codeline" id="line-107"><code>	werr := p.werr.Load()</code></span>
+<span class="codeline" id="line-108"><code>	if rerr := p.rerr.Load(); werr == nil &amp;&amp; rerr != nil {</code></span>
+<span class="codeline" id="line-109"><code>		return rerr</code></span>
+<span class="codeline" id="line-110"><code>	}</code></span>
+<span class="codeline" id="line-111"><code>	return ErrClosedPipe</code></span>
+<span class="codeline" id="line-112"><code>}</code></span>
+<span class="codeline" id="line-113"><code></code></span>
+<span class="codeline" id="line-114"><code>func (p *pipe) CloseWrite(err error) error {</code></span>
+<span class="codeline" id="line-115"><code>	if err == nil {</code></span>
+<span class="codeline" id="line-116"><code>		err = EOF</code></span>
+<span class="codeline" id="line-117"><code>	}</code></span>
+<span class="codeline" id="line-118"><code>	p.werr.Store(err)</code></span>
+<span class="codeline" id="line-119"><code>	p.once.Do(func() { close(p.done) })</code></span>
+<span class="codeline" id="line-120"><code>	return nil</code></span>
+<span class="codeline" id="line-121"><code>}</code></span>
+<span class="codeline" id="line-122"><code></code></span>
+<span class="codeline" id="line-123"><code>// A PipeReader is the read half of a pipe.</code></span>
+<span class="codeline" id="line-124"><code>type PipeReader struct {</code></span>
+<span class="codeline" id="line-125"><code>	p *pipe</code></span>
+<span class="codeline" id="line-126"><code>}</code></span>
+<span class="codeline" id="line-127"><code></code></span>
+<span class="codeline" id="line-128"><code>// Read implements the standard Read interface:</code></span>
+<span class="codeline" id="line-129"><code>// it reads data from the pipe, blocking until a writer</code></span>
+<span class="codeline" id="line-130"><code>// arrives or the write end is closed.</code></span>
+<span class="codeline" id="line-131"><code>// If the write end is closed with an error, that error is</code></span>
+<span class="codeline" id="line-132"><code>// returned as err; otherwise err is EOF.</code></span>
+<span class="codeline" id="line-133"><code>func (r *PipeReader) Read(data []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-134"><code>	return r.p.Read(data)</code></span>
+<span class="codeline" id="line-135"><code>}</code></span>
+<span class="codeline" id="line-136"><code></code></span>
+<span class="codeline" id="line-137"><code>// Close closes the reader; subsequent writes to the</code></span>
+<span class="codeline" id="line-138"><code>// write half of the pipe will return the error ErrClosedPipe.</code></span>
+<span class="codeline" id="line-139"><code>func (r *PipeReader) Close() error {</code></span>
+<span class="codeline" id="line-140"><code>	return r.CloseWithError(nil)</code></span>
+<span class="codeline" id="line-141"><code>}</code></span>
+<span class="codeline" id="line-142"><code></code></span>
+<span class="codeline" id="line-143"><code>// CloseWithError closes the reader; subsequent writes</code></span>
+<span class="codeline" id="line-144"><code>// to the write half of the pipe will return the error err.</code></span>
+<span class="codeline" id="line-145"><code>//</code></span>
+<span class="codeline" id="line-146"><code>// CloseWithError never overwrites the previous error if it exists</code></span>
+<span class="codeline" id="line-147"><code>// and always returns nil.</code></span>
+<span class="codeline" id="line-148"><code>func (r *PipeReader) CloseWithError(err error) error {</code></span>
+<span class="codeline" id="line-149"><code>	return r.p.CloseRead(err)</code></span>
+<span class="codeline" id="line-150"><code>}</code></span>
+<span class="codeline" id="line-151"><code></code></span>
+<span class="codeline" id="line-152"><code>// A PipeWriter is the write half of a pipe.</code></span>
+<span class="codeline" id="line-153"><code>type PipeWriter struct {</code></span>
+<span class="codeline" id="line-154"><code>	p *pipe</code></span>
+<span class="codeline" id="line-155"><code>}</code></span>
+<span class="codeline" id="line-156"><code></code></span>
+<span class="codeline" id="line-157"><code>// Write implements the standard Write interface:</code></span>
+<span class="codeline" id="line-158"><code>// it writes data to the pipe, blocking until one or more readers</code></span>
+<span class="codeline" id="line-159"><code>// have consumed all the data or the read end is closed.</code></span>
+<span class="codeline" id="line-160"><code>// If the read end is closed with an error, that err is</code></span>
+<span class="codeline" id="line-161"><code>// returned as err; otherwise err is ErrClosedPipe.</code></span>
+<span class="codeline" id="line-162"><code>func (w *PipeWriter) Write(data []byte) (n int, err error) {</code></span>
+<span class="codeline" id="line-163"><code>	return w.p.Write(data)</code></span>
+<span class="codeline" id="line-164"><code>}</code></span>
+<span class="codeline" id="line-165"><code></code></span>
+<span class="codeline" id="line-166"><code>// Close closes the writer; subsequent reads from the</code></span>
+<span class="codeline" id="line-167"><code>// read half of the pipe will return no bytes and EOF.</code></span>
+<span class="codeline" id="line-168"><code>func (w *PipeWriter) Close() error {</code></span>
+<span class="codeline" id="line-169"><code>	return w.CloseWithError(nil)</code></span>
+<span class="codeline" id="line-170"><code>}</code></span>
+<span class="codeline" id="line-171"><code></code></span>
+<span class="codeline" id="line-172"><code>// CloseWithError closes the writer; subsequent reads from the</code></span>
+<span class="codeline" id="line-173"><code>// read half of the pipe will return no bytes and the error err,</code></span>
+<span class="codeline" id="line-174"><code>// or EOF if err is nil.</code></span>
+<span class="codeline" id="line-175"><code>//</code></span>
+<span class="codeline" id="line-176"><code>// CloseWithError never overwrites the previous error if it exists</code></span>
+<span class="codeline" id="line-177"><code>// and always returns nil.</code></span>
+<span class="codeline" id="line-178"><code>func (w *PipeWriter) CloseWithError(err error) error {</code></span>
+<span class="codeline" id="line-179"><code>	return w.p.CloseWrite(err)</code></span>
+<span class="codeline" id="line-180"><code>}</code></span>
+<span class="codeline" id="line-181"><code></code></span>
+<span class="codeline" id="line-182"><code>// Pipe creates a synchronous in-memory pipe.</code></span>
+<span class="codeline" id="line-183"><code>// It can be used to connect code expecting an io.Reader</code></span>
+<span class="codeline" id="line-184"><code>// with code expecting an io.Writer.</code></span>
+<span class="codeline" id="line-185"><code>//</code></span>
+<span class="codeline" id="line-186"><code>// Reads and Writes on the pipe are matched one to one</code></span>
+<span class="codeline" id="line-187"><code>// except when multiple Reads are needed to consume a single Write.</code></span>
+<span class="codeline" id="line-188"><code>// That is, each Write to the PipeWriter blocks until it has satisfied</code></span>
+<span class="codeline" id="line-189"><code>// one or more Reads from the PipeReader that fully consume</code></span>
+<span class="codeline" id="line-190"><code>// the written data.</code></span>
+<span class="codeline" id="line-191"><code>// The data is copied directly from the Write to the corresponding</code></span>
+<span class="codeline" id="line-192"><code>// Read (or Reads); there is no internal buffering.</code></span>
+<span class="codeline" id="line-193"><code>//</code></span>
+<span class="codeline" id="line-194"><code>// It is safe to call Read and Write in parallel with each other or with Close.</code></span>
+<span class="codeline" id="line-195"><code>// Parallel calls to Read and parallel calls to Write are also safe:</code></span>
+<span class="codeline" id="line-196"><code>// the individual calls will be gated sequentially.</code></span>
+<span class="codeline" id="line-197"><code>func Pipe() (*PipeReader, *PipeWriter) {</code></span>
+<span class="codeline" id="line-198"><code>	p := &amp;pipe{</code></span>
+<span class="codeline" id="line-199"><code>		wrCh: make(chan []byte),</code></span>
+<span class="codeline" id="line-200"><code>		rdCh: make(chan int),</code></span>
+<span class="codeline" id="line-201"><code>		done: make(chan struct{}),</code></span>
+<span class="codeline" id="line-202"><code>	}</code></span>
+<span class="codeline" id="line-203"><code>	return &amp;PipeReader{p}, &amp;PipeWriter{p}</code></span>
+<span class="codeline" id="line-204"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: sincos.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	sincos.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// Coefficients _sin[] and _cos[] are found in pkg/math/sin.go.</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>// Sincos returns Sin(x), Cos(x).</code></span>
+<span class="codeline" id="line-10"><code>//</code></span>
+<span class="codeline" id="line-11"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-12"><code>//	Sincos(±0) = ±0, 1</code></span>
+<span class="codeline" id="line-13"><code>//	Sincos(±Inf) = NaN, NaN</code></span>
+<span class="codeline" id="line-14"><code>//	Sincos(NaN) = NaN, NaN</code></span>
+<span class="codeline" id="line-15"><code>func Sincos(x float64) (sin, cos float64) {</code></span>
+<span class="codeline" id="line-16"><code>	const (</code></span>
+<span class="codeline" id="line-17"><code>		PI4A = 7.85398125648498535156e-1  // 0x3fe921fb40000000, Pi/4 split into three parts</code></span>
+<span class="codeline" id="line-18"><code>		PI4B = 3.77489470793079817668e-8  // 0x3e64442d00000000,</code></span>
+<span class="codeline" id="line-19"><code>		PI4C = 2.69515142907905952645e-15 // 0x3ce8469898cc5170,</code></span>
+<span class="codeline" id="line-20"><code>	)</code></span>
+<span class="codeline" id="line-21"><code>	// special cases</code></span>
+<span class="codeline" id="line-22"><code>	switch {</code></span>
+<span class="codeline" id="line-23"><code>	case x == 0:</code></span>
+<span class="codeline" id="line-24"><code>		return x, 1 // return ±0.0, 1.0</code></span>
+<span class="codeline" id="line-25"><code>	case IsNaN(x) || IsInf(x, 0):</code></span>
+<span class="codeline" id="line-26"><code>		return NaN(), NaN()</code></span>
+<span class="codeline" id="line-27"><code>	}</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>	// make argument positive</code></span>
+<span class="codeline" id="line-30"><code>	sinSign, cosSign := false, false</code></span>
+<span class="codeline" id="line-31"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-32"><code>		x = -x</code></span>
+<span class="codeline" id="line-33"><code>		sinSign = true</code></span>
+<span class="codeline" id="line-34"><code>	}</code></span>
+<span class="codeline" id="line-35"><code></code></span>
+<span class="codeline" id="line-36"><code>	var j uint64</code></span>
+<span class="codeline" id="line-37"><code>	var y, z float64</code></span>
+<span class="codeline" id="line-38"><code>	if x &gt;= reduceThreshold {</code></span>
+<span class="codeline" id="line-39"><code>		j, z = trigReduce(x)</code></span>
+<span class="codeline" id="line-40"><code>	} else {</code></span>
+<span class="codeline" id="line-41"><code>		j = uint64(x * (4 / Pi)) // integer part of x/(Pi/4), as integer for tests on the phase angle</code></span>
+<span class="codeline" id="line-42"><code>		y = float64(j)           // integer part of x/(Pi/4), as float</code></span>
+<span class="codeline" id="line-43"><code></code></span>
+<span class="codeline" id="line-44"><code>		if j&amp;1 == 1 { // map zeros to origin</code></span>
+<span class="codeline" id="line-45"><code>			j++</code></span>
+<span class="codeline" id="line-46"><code>			y++</code></span>
+<span class="codeline" id="line-47"><code>		}</code></span>
+<span class="codeline" id="line-48"><code>		j &amp;= 7                               // octant modulo 2Pi radians (360 degrees)</code></span>
+<span class="codeline" id="line-49"><code>		z = ((x - y*PI4A) - y*PI4B) - y*PI4C // Extended precision modular arithmetic</code></span>
+<span class="codeline" id="line-50"><code>	}</code></span>
+<span class="codeline" id="line-51"><code>	if j &gt; 3 { // reflect in x axis</code></span>
+<span class="codeline" id="line-52"><code>		j -= 4</code></span>
+<span class="codeline" id="line-53"><code>		sinSign, cosSign = !sinSign, !cosSign</code></span>
+<span class="codeline" id="line-54"><code>	}</code></span>
+<span class="codeline" id="line-55"><code>	if j &gt; 1 {</code></span>
+<span class="codeline" id="line-56"><code>		cosSign = !cosSign</code></span>
+<span class="codeline" id="line-57"><code>	}</code></span>
+<span class="codeline" id="line-58"><code></code></span>
+<span class="codeline" id="line-59"><code>	zz := z * z</code></span>
+<span class="codeline" id="line-60"><code>	cos = 1.0 - 0.5*zz + zz*zz*((((((_cos[0]*zz)+_cos[1])*zz+_cos[2])*zz+_cos[3])*zz+_cos[4])*zz+_cos[5])</code></span>
+<span class="codeline" id="line-61"><code>	sin = z + z*zz*((((((_sin[0]*zz)+_sin[1])*zz+_sin[2])*zz+_sin[3])*zz+_sin[4])*zz+_sin[5])</code></span>
+<span class="codeline" id="line-62"><code>	if j == 1 || j == 2 {</code></span>
+<span class="codeline" id="line-63"><code>		sin, cos = cos, sin</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code>	if cosSign {</code></span>
+<span class="codeline" id="line-66"><code>		cos = -cos</code></span>
+<span class="codeline" id="line-67"><code>	}</code></span>
+<span class="codeline" id="line-68"><code>	if sinSign {</code></span>
+<span class="codeline" id="line-69"><code>		sin = -sin</code></span>
+<span class="codeline" id="line-70"><code>	}</code></span>
+<span class="codeline" id="line-71"><code>	return</code></span>
+<span class="codeline" id="line-72"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

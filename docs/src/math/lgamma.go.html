@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: lgamma.go in package math</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	lgamma.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/math.html">math</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2010 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package math</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>/*</code></span>
+<span class="codeline" id="line-8"><code>	Floating-point logarithm of the Gamma function.</code></span>
+<span class="codeline" id="line-9"><code>*/</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>// The original C code and the long comment below are</code></span>
+<span class="codeline" id="line-12"><code>// from FreeBSD's /usr/src/lib/msun/src/e_lgamma_r.c and</code></span>
+<span class="codeline" id="line-13"><code>// came with this notice. The go code is a simplified</code></span>
+<span class="codeline" id="line-14"><code>// version of the original C.</code></span>
+<span class="codeline" id="line-15"><code>//</code></span>
+<span class="codeline" id="line-16"><code>// ====================================================</code></span>
+<span class="codeline" id="line-17"><code>// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.</code></span>
+<span class="codeline" id="line-18"><code>//</code></span>
+<span class="codeline" id="line-19"><code>// Developed at SunPro, a Sun Microsystems, Inc. business.</code></span>
+<span class="codeline" id="line-20"><code>// Permission to use, copy, modify, and distribute this</code></span>
+<span class="codeline" id="line-21"><code>// software is freely granted, provided that this notice</code></span>
+<span class="codeline" id="line-22"><code>// is preserved.</code></span>
+<span class="codeline" id="line-23"><code>// ====================================================</code></span>
+<span class="codeline" id="line-24"><code>//</code></span>
+<span class="codeline" id="line-25"><code>// __ieee754_lgamma_r(x, signgamp)</code></span>
+<span class="codeline" id="line-26"><code>// Reentrant version of the logarithm of the Gamma function</code></span>
+<span class="codeline" id="line-27"><code>// with user provided pointer for the sign of Gamma(x).</code></span>
+<span class="codeline" id="line-28"><code>//</code></span>
+<span class="codeline" id="line-29"><code>// Method:</code></span>
+<span class="codeline" id="line-30"><code>//   1. Argument Reduction for 0 &lt; x &lt;= 8</code></span>
+<span class="codeline" id="line-31"><code>//      Since gamma(1+s)=s*gamma(s), for x in [0,8], we may</code></span>
+<span class="codeline" id="line-32"><code>//      reduce x to a number in [1.5,2.5] by</code></span>
+<span class="codeline" id="line-33"><code>//              lgamma(1+s) = log(s) + lgamma(s)</code></span>
+<span class="codeline" id="line-34"><code>//      for example,</code></span>
+<span class="codeline" id="line-35"><code>//              lgamma(7.3) = log(6.3) + lgamma(6.3)</code></span>
+<span class="codeline" id="line-36"><code>//                          = log(6.3*5.3) + lgamma(5.3)</code></span>
+<span class="codeline" id="line-37"><code>//                          = log(6.3*5.3*4.3*3.3*2.3) + lgamma(2.3)</code></span>
+<span class="codeline" id="line-38"><code>//   2. Polynomial approximation of lgamma around its</code></span>
+<span class="codeline" id="line-39"><code>//      minimum (ymin=1.461632144968362245) to maintain monotonicity.</code></span>
+<span class="codeline" id="line-40"><code>//      On [ymin-0.23, ymin+0.27] (i.e., [1.23164,1.73163]), use</code></span>
+<span class="codeline" id="line-41"><code>//              Let z = x-ymin;</code></span>
+<span class="codeline" id="line-42"><code>//              lgamma(x) = -1.214862905358496078218 + z**2*poly(z)</code></span>
+<span class="codeline" id="line-43"><code>//              poly(z) is a 14 degree polynomial.</code></span>
+<span class="codeline" id="line-44"><code>//   2. Rational approximation in the primary interval [2,3]</code></span>
+<span class="codeline" id="line-45"><code>//      We use the following approximation:</code></span>
+<span class="codeline" id="line-46"><code>//              s = x-2.0;</code></span>
+<span class="codeline" id="line-47"><code>//              lgamma(x) = 0.5*s + s*P(s)/Q(s)</code></span>
+<span class="codeline" id="line-48"><code>//      with accuracy</code></span>
+<span class="codeline" id="line-49"><code>//              |P/Q - (lgamma(x)-0.5s)| &lt; 2**-61.71</code></span>
+<span class="codeline" id="line-50"><code>//      Our algorithms are based on the following observation</code></span>
+<span class="codeline" id="line-51"><code>//</code></span>
+<span class="codeline" id="line-52"><code>//                             zeta(2)-1    2    zeta(3)-1    3</code></span>
+<span class="codeline" id="line-53"><code>// lgamma(2+s) = s*(1-Euler) + --------- * s  -  --------- * s  + ...</code></span>
+<span class="codeline" id="line-54"><code>//                                 2                 3</code></span>
+<span class="codeline" id="line-55"><code>//</code></span>
+<span class="codeline" id="line-56"><code>//      where Euler = 0.5772156649... is the Euler constant, which</code></span>
+<span class="codeline" id="line-57"><code>//      is very close to 0.5.</code></span>
+<span class="codeline" id="line-58"><code>//</code></span>
+<span class="codeline" id="line-59"><code>//   3. For x&gt;=8, we have</code></span>
+<span class="codeline" id="line-60"><code>//      lgamma(x)~(x-0.5)log(x)-x+0.5*log(2pi)+1/(12x)-1/(360x**3)+....</code></span>
+<span class="codeline" id="line-61"><code>//      (better formula:</code></span>
+<span class="codeline" id="line-62"><code>//         lgamma(x)~(x-0.5)*(log(x)-1)-.5*(log(2pi)-1) + ...)</code></span>
+<span class="codeline" id="line-63"><code>//      Let z = 1/x, then we approximation</code></span>
+<span class="codeline" id="line-64"><code>//              f(z) = lgamma(x) - (x-0.5)(log(x)-1)</code></span>
+<span class="codeline" id="line-65"><code>//      by</code></span>
+<span class="codeline" id="line-66"><code>//                                  3       5             11</code></span>
+<span class="codeline" id="line-67"><code>//              w = w0 + w1*z + w2*z  + w3*z  + ... + w6*z</code></span>
+<span class="codeline" id="line-68"><code>//      where</code></span>
+<span class="codeline" id="line-69"><code>//              |w - f(z)| &lt; 2**-58.74</code></span>
+<span class="codeline" id="line-70"><code>//</code></span>
+<span class="codeline" id="line-71"><code>//   4. For negative x, since (G is gamma function)</code></span>
+<span class="codeline" id="line-72"><code>//              -x*G(-x)*G(x) = pi/sin(pi*x),</code></span>
+<span class="codeline" id="line-73"><code>//      we have</code></span>
+<span class="codeline" id="line-74"><code>//              G(x) = pi/(sin(pi*x)*(-x)*G(-x))</code></span>
+<span class="codeline" id="line-75"><code>//      since G(-x) is positive, sign(G(x)) = sign(sin(pi*x)) for x&lt;0</code></span>
+<span class="codeline" id="line-76"><code>//      Hence, for x&lt;0, signgam = sign(sin(pi*x)) and</code></span>
+<span class="codeline" id="line-77"><code>//              lgamma(x) = log(|Gamma(x)|)</code></span>
+<span class="codeline" id="line-78"><code>//                        = log(pi/(|x*sin(pi*x)|)) - lgamma(-x);</code></span>
+<span class="codeline" id="line-79"><code>//      Note: one should avoid computing pi*(-x) directly in the</code></span>
+<span class="codeline" id="line-80"><code>//            computation of sin(pi*(-x)).</code></span>
+<span class="codeline" id="line-81"><code>//</code></span>
+<span class="codeline" id="line-82"><code>//   5. Special Cases</code></span>
+<span class="codeline" id="line-83"><code>//              lgamma(2+s) ~ s*(1-Euler) for tiny s</code></span>
+<span class="codeline" id="line-84"><code>//              lgamma(1)=lgamma(2)=0</code></span>
+<span class="codeline" id="line-85"><code>//              lgamma(x) ~ -log(x) for tiny x</code></span>
+<span class="codeline" id="line-86"><code>//              lgamma(0) = lgamma(inf) = inf</code></span>
+<span class="codeline" id="line-87"><code>//              lgamma(-integer) = +-inf</code></span>
+<span class="codeline" id="line-88"><code>//</code></span>
+<span class="codeline" id="line-89"><code>//</code></span>
+<span class="codeline" id="line-90"><code></code></span>
+<span class="codeline" id="line-91"><code>var _lgamA = [...]float64{</code></span>
+<span class="codeline" id="line-92"><code>	7.72156649015328655494e-02, // 0x3FB3C467E37DB0C8</code></span>
+<span class="codeline" id="line-93"><code>	3.22467033424113591611e-01, // 0x3FD4A34CC4A60FAD</code></span>
+<span class="codeline" id="line-94"><code>	6.73523010531292681824e-02, // 0x3FB13E001A5562A7</code></span>
+<span class="codeline" id="line-95"><code>	2.05808084325167332806e-02, // 0x3F951322AC92547B</code></span>
+<span class="codeline" id="line-96"><code>	7.38555086081402883957e-03, // 0x3F7E404FB68FEFE8</code></span>
+<span class="codeline" id="line-97"><code>	2.89051383673415629091e-03, // 0x3F67ADD8CCB7926B</code></span>
+<span class="codeline" id="line-98"><code>	1.19270763183362067845e-03, // 0x3F538A94116F3F5D</code></span>
+<span class="codeline" id="line-99"><code>	5.10069792153511336608e-04, // 0x3F40B6C689B99C00</code></span>
+<span class="codeline" id="line-100"><code>	2.20862790713908385557e-04, // 0x3F2CF2ECED10E54D</code></span>
+<span class="codeline" id="line-101"><code>	1.08011567247583939954e-04, // 0x3F1C5088987DFB07</code></span>
+<span class="codeline" id="line-102"><code>	2.52144565451257326939e-05, // 0x3EFA7074428CFA52</code></span>
+<span class="codeline" id="line-103"><code>	4.48640949618915160150e-05, // 0x3F07858E90A45837</code></span>
+<span class="codeline" id="line-104"><code>}</code></span>
+<span class="codeline" id="line-105"><code>var _lgamR = [...]float64{</code></span>
+<span class="codeline" id="line-106"><code>	1.0,                        // placeholder</code></span>
+<span class="codeline" id="line-107"><code>	1.39200533467621045958e+00, // 0x3FF645A762C4AB74</code></span>
+<span class="codeline" id="line-108"><code>	7.21935547567138069525e-01, // 0x3FE71A1893D3DCDC</code></span>
+<span class="codeline" id="line-109"><code>	1.71933865632803078993e-01, // 0x3FC601EDCCFBDF27</code></span>
+<span class="codeline" id="line-110"><code>	1.86459191715652901344e-02, // 0x3F9317EA742ED475</code></span>
+<span class="codeline" id="line-111"><code>	7.77942496381893596434e-04, // 0x3F497DDACA41A95B</code></span>
+<span class="codeline" id="line-112"><code>	7.32668430744625636189e-06, // 0x3EDEBAF7A5B38140</code></span>
+<span class="codeline" id="line-113"><code>}</code></span>
+<span class="codeline" id="line-114"><code>var _lgamS = [...]float64{</code></span>
+<span class="codeline" id="line-115"><code>	-7.72156649015328655494e-02, // 0xBFB3C467E37DB0C8</code></span>
+<span class="codeline" id="line-116"><code>	2.14982415960608852501e-01,  // 0x3FCB848B36E20878</code></span>
+<span class="codeline" id="line-117"><code>	3.25778796408930981787e-01,  // 0x3FD4D98F4F139F59</code></span>
+<span class="codeline" id="line-118"><code>	1.46350472652464452805e-01,  // 0x3FC2BB9CBEE5F2F7</code></span>
+<span class="codeline" id="line-119"><code>	2.66422703033638609560e-02,  // 0x3F9B481C7E939961</code></span>
+<span class="codeline" id="line-120"><code>	1.84028451407337715652e-03,  // 0x3F5E26B67368F239</code></span>
+<span class="codeline" id="line-121"><code>	3.19475326584100867617e-05,  // 0x3F00BFECDD17E945</code></span>
+<span class="codeline" id="line-122"><code>}</code></span>
+<span class="codeline" id="line-123"><code>var _lgamT = [...]float64{</code></span>
+<span class="codeline" id="line-124"><code>	4.83836122723810047042e-01,  // 0x3FDEF72BC8EE38A2</code></span>
+<span class="codeline" id="line-125"><code>	-1.47587722994593911752e-01, // 0xBFC2E4278DC6C509</code></span>
+<span class="codeline" id="line-126"><code>	6.46249402391333854778e-02,  // 0x3FB08B4294D5419B</code></span>
+<span class="codeline" id="line-127"><code>	-3.27885410759859649565e-02, // 0xBFA0C9A8DF35B713</code></span>
+<span class="codeline" id="line-128"><code>	1.79706750811820387126e-02,  // 0x3F9266E7970AF9EC</code></span>
+<span class="codeline" id="line-129"><code>	-1.03142241298341437450e-02, // 0xBF851F9FBA91EC6A</code></span>
+<span class="codeline" id="line-130"><code>	6.10053870246291332635e-03,  // 0x3F78FCE0E370E344</code></span>
+<span class="codeline" id="line-131"><code>	-3.68452016781138256760e-03, // 0xBF6E2EFFB3E914D7</code></span>
+<span class="codeline" id="line-132"><code>	2.25964780900612472250e-03,  // 0x3F6282D32E15C915</code></span>
+<span class="codeline" id="line-133"><code>	-1.40346469989232843813e-03, // 0xBF56FE8EBF2D1AF1</code></span>
+<span class="codeline" id="line-134"><code>	8.81081882437654011382e-04,  // 0x3F4CDF0CEF61A8E9</code></span>
+<span class="codeline" id="line-135"><code>	-5.38595305356740546715e-04, // 0xBF41A6109C73E0EC</code></span>
+<span class="codeline" id="line-136"><code>	3.15632070903625950361e-04,  // 0x3F34AF6D6C0EBBF7</code></span>
+<span class="codeline" id="line-137"><code>	-3.12754168375120860518e-04, // 0xBF347F24ECC38C38</code></span>
+<span class="codeline" id="line-138"><code>	3.35529192635519073543e-04,  // 0x3F35FD3EE8C2D3F4</code></span>
+<span class="codeline" id="line-139"><code>}</code></span>
+<span class="codeline" id="line-140"><code>var _lgamU = [...]float64{</code></span>
+<span class="codeline" id="line-141"><code>	-7.72156649015328655494e-02, // 0xBFB3C467E37DB0C8</code></span>
+<span class="codeline" id="line-142"><code>	6.32827064025093366517e-01,  // 0x3FE4401E8B005DFF</code></span>
+<span class="codeline" id="line-143"><code>	1.45492250137234768737e+00,  // 0x3FF7475CD119BD6F</code></span>
+<span class="codeline" id="line-144"><code>	9.77717527963372745603e-01,  // 0x3FEF497644EA8450</code></span>
+<span class="codeline" id="line-145"><code>	2.28963728064692451092e-01,  // 0x3FCD4EAEF6010924</code></span>
+<span class="codeline" id="line-146"><code>	1.33810918536787660377e-02,  // 0x3F8B678BBF2BAB09</code></span>
+<span class="codeline" id="line-147"><code>}</code></span>
+<span class="codeline" id="line-148"><code>var _lgamV = [...]float64{</code></span>
+<span class="codeline" id="line-149"><code>	1.0,</code></span>
+<span class="codeline" id="line-150"><code>	2.45597793713041134822e+00, // 0x4003A5D7C2BD619C</code></span>
+<span class="codeline" id="line-151"><code>	2.12848976379893395361e+00, // 0x40010725A42B18F5</code></span>
+<span class="codeline" id="line-152"><code>	7.69285150456672783825e-01, // 0x3FE89DFBE45050AF</code></span>
+<span class="codeline" id="line-153"><code>	1.04222645593369134254e-01, // 0x3FBAAE55D6537C88</code></span>
+<span class="codeline" id="line-154"><code>	3.21709242282423911810e-03, // 0x3F6A5ABB57D0CF61</code></span>
+<span class="codeline" id="line-155"><code>}</code></span>
+<span class="codeline" id="line-156"><code>var _lgamW = [...]float64{</code></span>
+<span class="codeline" id="line-157"><code>	4.18938533204672725052e-01,  // 0x3FDACFE390C97D69</code></span>
+<span class="codeline" id="line-158"><code>	8.33333333333329678849e-02,  // 0x3FB555555555553B</code></span>
+<span class="codeline" id="line-159"><code>	-2.77777777728775536470e-03, // 0xBF66C16C16B02E5C</code></span>
+<span class="codeline" id="line-160"><code>	7.93650558643019558500e-04,  // 0x3F4A019F98CF38B6</code></span>
+<span class="codeline" id="line-161"><code>	-5.95187557450339963135e-04, // 0xBF4380CB8C0FE741</code></span>
+<span class="codeline" id="line-162"><code>	8.36339918996282139126e-04,  // 0x3F4B67BA4CDAD5D1</code></span>
+<span class="codeline" id="line-163"><code>	-1.63092934096575273989e-03, // 0xBF5AB89D0B9E43E4</code></span>
+<span class="codeline" id="line-164"><code>}</code></span>
+<span class="codeline" id="line-165"><code></code></span>
+<span class="codeline" id="line-166"><code>// Lgamma returns the natural logarithm and sign (-1 or +1) of Gamma(x).</code></span>
+<span class="codeline" id="line-167"><code>//</code></span>
+<span class="codeline" id="line-168"><code>// Special cases are:</code></span>
+<span class="codeline" id="line-169"><code>//	Lgamma(+Inf) = +Inf</code></span>
+<span class="codeline" id="line-170"><code>//	Lgamma(0) = +Inf</code></span>
+<span class="codeline" id="line-171"><code>//	Lgamma(-integer) = +Inf</code></span>
+<span class="codeline" id="line-172"><code>//	Lgamma(-Inf) = -Inf</code></span>
+<span class="codeline" id="line-173"><code>//	Lgamma(NaN) = NaN</code></span>
+<span class="codeline" id="line-174"><code>func Lgamma(x float64) (lgamma float64, sign int) {</code></span>
+<span class="codeline" id="line-175"><code>	const (</code></span>
+<span class="codeline" id="line-176"><code>		Ymin  = 1.461632144968362245</code></span>
+<span class="codeline" id="line-177"><code>		Two52 = 1 &lt;&lt; 52                     // 0x4330000000000000 ~4.5036e+15</code></span>
+<span class="codeline" id="line-178"><code>		Two53 = 1 &lt;&lt; 53                     // 0x4340000000000000 ~9.0072e+15</code></span>
+<span class="codeline" id="line-179"><code>		Two58 = 1 &lt;&lt; 58                     // 0x4390000000000000 ~2.8823e+17</code></span>
+<span class="codeline" id="line-180"><code>		Tiny  = 1.0 / (1 &lt;&lt; 70)             // 0x3b90000000000000 ~8.47033e-22</code></span>
+<span class="codeline" id="line-181"><code>		Tc    = 1.46163214496836224576e+00  // 0x3FF762D86356BE3F</code></span>
+<span class="codeline" id="line-182"><code>		Tf    = -1.21486290535849611461e-01 // 0xBFBF19B9BCC38A42</code></span>
+<span class="codeline" id="line-183"><code>		// Tt = -(tail of Tf)</code></span>
+<span class="codeline" id="line-184"><code>		Tt = -3.63867699703950536541e-18 // 0xBC50C7CAA48A971F</code></span>
+<span class="codeline" id="line-185"><code>	)</code></span>
+<span class="codeline" id="line-186"><code>	// special cases</code></span>
+<span class="codeline" id="line-187"><code>	sign = 1</code></span>
+<span class="codeline" id="line-188"><code>	switch {</code></span>
+<span class="codeline" id="line-189"><code>	case IsNaN(x):</code></span>
+<span class="codeline" id="line-190"><code>		lgamma = x</code></span>
+<span class="codeline" id="line-191"><code>		return</code></span>
+<span class="codeline" id="line-192"><code>	case IsInf(x, 0):</code></span>
+<span class="codeline" id="line-193"><code>		lgamma = x</code></span>
+<span class="codeline" id="line-194"><code>		return</code></span>
+<span class="codeline" id="line-195"><code>	case x == 0:</code></span>
+<span class="codeline" id="line-196"><code>		lgamma = Inf(1)</code></span>
+<span class="codeline" id="line-197"><code>		return</code></span>
+<span class="codeline" id="line-198"><code>	}</code></span>
+<span class="codeline" id="line-199"><code></code></span>
+<span class="codeline" id="line-200"><code>	neg := false</code></span>
+<span class="codeline" id="line-201"><code>	if x &lt; 0 {</code></span>
+<span class="codeline" id="line-202"><code>		x = -x</code></span>
+<span class="codeline" id="line-203"><code>		neg = true</code></span>
+<span class="codeline" id="line-204"><code>	}</code></span>
+<span class="codeline" id="line-205"><code></code></span>
+<span class="codeline" id="line-206"><code>	if x &lt; Tiny { // if |x| &lt; 2**-70, return -log(|x|)</code></span>
+<span class="codeline" id="line-207"><code>		if neg {</code></span>
+<span class="codeline" id="line-208"><code>			sign = -1</code></span>
+<span class="codeline" id="line-209"><code>		}</code></span>
+<span class="codeline" id="line-210"><code>		lgamma = -Log(x)</code></span>
+<span class="codeline" id="line-211"><code>		return</code></span>
+<span class="codeline" id="line-212"><code>	}</code></span>
+<span class="codeline" id="line-213"><code>	var nadj float64</code></span>
+<span class="codeline" id="line-214"><code>	if neg {</code></span>
+<span class="codeline" id="line-215"><code>		if x &gt;= Two52 { // |x| &gt;= 2**52, must be -integer</code></span>
+<span class="codeline" id="line-216"><code>			lgamma = Inf(1)</code></span>
+<span class="codeline" id="line-217"><code>			return</code></span>
+<span class="codeline" id="line-218"><code>		}</code></span>
+<span class="codeline" id="line-219"><code>		t := sinPi(x)</code></span>
+<span class="codeline" id="line-220"><code>		if t == 0 {</code></span>
+<span class="codeline" id="line-221"><code>			lgamma = Inf(1) // -integer</code></span>
+<span class="codeline" id="line-222"><code>			return</code></span>
+<span class="codeline" id="line-223"><code>		}</code></span>
+<span class="codeline" id="line-224"><code>		nadj = Log(Pi / Abs(t*x))</code></span>
+<span class="codeline" id="line-225"><code>		if t &lt; 0 {</code></span>
+<span class="codeline" id="line-226"><code>			sign = -1</code></span>
+<span class="codeline" id="line-227"><code>		}</code></span>
+<span class="codeline" id="line-228"><code>	}</code></span>
+<span class="codeline" id="line-229"><code></code></span>
+<span class="codeline" id="line-230"><code>	switch {</code></span>
+<span class="codeline" id="line-231"><code>	case x == 1 || x == 2: // purge off 1 and 2</code></span>
+<span class="codeline" id="line-232"><code>		lgamma = 0</code></span>
+<span class="codeline" id="line-233"><code>		return</code></span>
+<span class="codeline" id="line-234"><code>	case x &lt; 2: // use lgamma(x) = lgamma(x+1) - log(x)</code></span>
+<span class="codeline" id="line-235"><code>		var y float64</code></span>
+<span class="codeline" id="line-236"><code>		var i int</code></span>
+<span class="codeline" id="line-237"><code>		if x &lt;= 0.9 {</code></span>
+<span class="codeline" id="line-238"><code>			lgamma = -Log(x)</code></span>
+<span class="codeline" id="line-239"><code>			switch {</code></span>
+<span class="codeline" id="line-240"><code>			case x &gt;= (Ymin - 1 + 0.27): // 0.7316 &lt;= x &lt;=  0.9</code></span>
+<span class="codeline" id="line-241"><code>				y = 1 - x</code></span>
+<span class="codeline" id="line-242"><code>				i = 0</code></span>
+<span class="codeline" id="line-243"><code>			case x &gt;= (Ymin - 1 - 0.27): // 0.2316 &lt;= x &lt; 0.7316</code></span>
+<span class="codeline" id="line-244"><code>				y = x - (Tc - 1)</code></span>
+<span class="codeline" id="line-245"><code>				i = 1</code></span>
+<span class="codeline" id="line-246"><code>			default: // 0 &lt; x &lt; 0.2316</code></span>
+<span class="codeline" id="line-247"><code>				y = x</code></span>
+<span class="codeline" id="line-248"><code>				i = 2</code></span>
+<span class="codeline" id="line-249"><code>			}</code></span>
+<span class="codeline" id="line-250"><code>		} else {</code></span>
+<span class="codeline" id="line-251"><code>			lgamma = 0</code></span>
+<span class="codeline" id="line-252"><code>			switch {</code></span>
+<span class="codeline" id="line-253"><code>			case x &gt;= (Ymin + 0.27): // 1.7316 &lt;= x &lt; 2</code></span>
+<span class="codeline" id="line-254"><code>				y = 2 - x</code></span>
+<span class="codeline" id="line-255"><code>				i = 0</code></span>
+<span class="codeline" id="line-256"><code>			case x &gt;= (Ymin - 0.27): // 1.2316 &lt;= x &lt; 1.7316</code></span>
+<span class="codeline" id="line-257"><code>				y = x - Tc</code></span>
+<span class="codeline" id="line-258"><code>				i = 1</code></span>
+<span class="codeline" id="line-259"><code>			default: // 0.9 &lt; x &lt; 1.2316</code></span>
+<span class="codeline" id="line-260"><code>				y = x - 1</code></span>
+<span class="codeline" id="line-261"><code>				i = 2</code></span>
+<span class="codeline" id="line-262"><code>			}</code></span>
+<span class="codeline" id="line-263"><code>		}</code></span>
+<span class="codeline" id="line-264"><code>		switch i {</code></span>
+<span class="codeline" id="line-265"><code>		case 0:</code></span>
+<span class="codeline" id="line-266"><code>			z := y * y</code></span>
+<span class="codeline" id="line-267"><code>			p1 := _lgamA[0] + z*(_lgamA[2]+z*(_lgamA[4]+z*(_lgamA[6]+z*(_lgamA[8]+z*_lgamA[10]))))</code></span>
+<span class="codeline" id="line-268"><code>			p2 := z * (_lgamA[1] + z*(+_lgamA[3]+z*(_lgamA[5]+z*(_lgamA[7]+z*(_lgamA[9]+z*_lgamA[11])))))</code></span>
+<span class="codeline" id="line-269"><code>			p := y*p1 + p2</code></span>
+<span class="codeline" id="line-270"><code>			lgamma += (p - 0.5*y)</code></span>
+<span class="codeline" id="line-271"><code>		case 1:</code></span>
+<span class="codeline" id="line-272"><code>			z := y * y</code></span>
+<span class="codeline" id="line-273"><code>			w := z * y</code></span>
+<span class="codeline" id="line-274"><code>			p1 := _lgamT[0] + w*(_lgamT[3]+w*(_lgamT[6]+w*(_lgamT[9]+w*_lgamT[12]))) // parallel comp</code></span>
+<span class="codeline" id="line-275"><code>			p2 := _lgamT[1] + w*(_lgamT[4]+w*(_lgamT[7]+w*(_lgamT[10]+w*_lgamT[13])))</code></span>
+<span class="codeline" id="line-276"><code>			p3 := _lgamT[2] + w*(_lgamT[5]+w*(_lgamT[8]+w*(_lgamT[11]+w*_lgamT[14])))</code></span>
+<span class="codeline" id="line-277"><code>			p := z*p1 - (Tt - w*(p2+y*p3))</code></span>
+<span class="codeline" id="line-278"><code>			lgamma += (Tf + p)</code></span>
+<span class="codeline" id="line-279"><code>		case 2:</code></span>
+<span class="codeline" id="line-280"><code>			p1 := y * (_lgamU[0] + y*(_lgamU[1]+y*(_lgamU[2]+y*(_lgamU[3]+y*(_lgamU[4]+y*_lgamU[5])))))</code></span>
+<span class="codeline" id="line-281"><code>			p2 := 1 + y*(_lgamV[1]+y*(_lgamV[2]+y*(_lgamV[3]+y*(_lgamV[4]+y*_lgamV[5]))))</code></span>
+<span class="codeline" id="line-282"><code>			lgamma += (-0.5*y + p1/p2)</code></span>
+<span class="codeline" id="line-283"><code>		}</code></span>
+<span class="codeline" id="line-284"><code>	case x &lt; 8: // 2 &lt;= x &lt; 8</code></span>
+<span class="codeline" id="line-285"><code>		i := int(x)</code></span>
+<span class="codeline" id="line-286"><code>		y := x - float64(i)</code></span>
+<span class="codeline" id="line-287"><code>		p := y * (_lgamS[0] + y*(_lgamS[1]+y*(_lgamS[2]+y*(_lgamS[3]+y*(_lgamS[4]+y*(_lgamS[5]+y*_lgamS[6]))))))</code></span>
+<span class="codeline" id="line-288"><code>		q := 1 + y*(_lgamR[1]+y*(_lgamR[2]+y*(_lgamR[3]+y*(_lgamR[4]+y*(_lgamR[5]+y*_lgamR[6])))))</code></span>
+<span class="codeline" id="line-289"><code>		lgamma = 0.5*y + p/q</code></span>
+<span class="codeline" id="line-290"><code>		z := 1.0 // Lgamma(1+s) = Log(s) + Lgamma(s)</code></span>
+<span class="codeline" id="line-291"><code>		switch i {</code></span>
+<span class="codeline" id="line-292"><code>		case 7:</code></span>
+<span class="codeline" id="line-293"><code>			z *= (y + 6)</code></span>
+<span class="codeline" id="line-294"><code>			fallthrough</code></span>
+<span class="codeline" id="line-295"><code>		case 6:</code></span>
+<span class="codeline" id="line-296"><code>			z *= (y + 5)</code></span>
+<span class="codeline" id="line-297"><code>			fallthrough</code></span>
+<span class="codeline" id="line-298"><code>		case 5:</code></span>
+<span class="codeline" id="line-299"><code>			z *= (y + 4)</code></span>
+<span class="codeline" id="line-300"><code>			fallthrough</code></span>
+<span class="codeline" id="line-301"><code>		case 4:</code></span>
+<span class="codeline" id="line-302"><code>			z *= (y + 3)</code></span>
+<span class="codeline" id="line-303"><code>			fallthrough</code></span>
+<span class="codeline" id="line-304"><code>		case 3:</code></span>
+<span class="codeline" id="line-305"><code>			z *= (y + 2)</code></span>
+<span class="codeline" id="line-306"><code>			lgamma += Log(z)</code></span>
+<span class="codeline" id="line-307"><code>		}</code></span>
+<span class="codeline" id="line-308"><code>	case x &lt; Two58: // 8 &lt;= x &lt; 2**58</code></span>
+<span class="codeline" id="line-309"><code>		t := Log(x)</code></span>
+<span class="codeline" id="line-310"><code>		z := 1 / x</code></span>
+<span class="codeline" id="line-311"><code>		y := z * z</code></span>
+<span class="codeline" id="line-312"><code>		w := _lgamW[0] + z*(_lgamW[1]+y*(_lgamW[2]+y*(_lgamW[3]+y*(_lgamW[4]+y*(_lgamW[5]+y*_lgamW[6])))))</code></span>
+<span class="codeline" id="line-313"><code>		lgamma = (x-0.5)*(t-1) + w</code></span>
+<span class="codeline" id="line-314"><code>	default: // 2**58 &lt;= x &lt;= Inf</code></span>
+<span class="codeline" id="line-315"><code>		lgamma = x * (Log(x) - 1)</code></span>
+<span class="codeline" id="line-316"><code>	}</code></span>
+<span class="codeline" id="line-317"><code>	if neg {</code></span>
+<span class="codeline" id="line-318"><code>		lgamma = nadj - lgamma</code></span>
+<span class="codeline" id="line-319"><code>	}</code></span>
+<span class="codeline" id="line-320"><code>	return</code></span>
+<span class="codeline" id="line-321"><code>}</code></span>
+<span class="codeline" id="line-322"><code></code></span>
+<span class="codeline" id="line-323"><code>// sinPi(x) is a helper function for negative x</code></span>
+<span class="codeline" id="line-324"><code>func sinPi(x float64) float64 {</code></span>
+<span class="codeline" id="line-325"><code>	const (</code></span>
+<span class="codeline" id="line-326"><code>		Two52 = 1 &lt;&lt; 52 // 0x4330000000000000 ~4.5036e+15</code></span>
+<span class="codeline" id="line-327"><code>		Two53 = 1 &lt;&lt; 53 // 0x4340000000000000 ~9.0072e+15</code></span>
+<span class="codeline" id="line-328"><code>	)</code></span>
+<span class="codeline" id="line-329"><code>	if x &lt; 0.25 {</code></span>
+<span class="codeline" id="line-330"><code>		return -Sin(Pi * x)</code></span>
+<span class="codeline" id="line-331"><code>	}</code></span>
+<span class="codeline" id="line-332"><code></code></span>
+<span class="codeline" id="line-333"><code>	// argument reduction</code></span>
+<span class="codeline" id="line-334"><code>	z := Floor(x)</code></span>
+<span class="codeline" id="line-335"><code>	var n int</code></span>
+<span class="codeline" id="line-336"><code>	if z != x { // inexact</code></span>
+<span class="codeline" id="line-337"><code>		x = Mod(x, 2)</code></span>
+<span class="codeline" id="line-338"><code>		n = int(x * 4)</code></span>
+<span class="codeline" id="line-339"><code>	} else {</code></span>
+<span class="codeline" id="line-340"><code>		if x &gt;= Two53 { // x must be even</code></span>
+<span class="codeline" id="line-341"><code>			x = 0</code></span>
+<span class="codeline" id="line-342"><code>			n = 0</code></span>
+<span class="codeline" id="line-343"><code>		} else {</code></span>
+<span class="codeline" id="line-344"><code>			if x &lt; Two52 {</code></span>
+<span class="codeline" id="line-345"><code>				z = x + Two52 // exact</code></span>
+<span class="codeline" id="line-346"><code>			}</code></span>
+<span class="codeline" id="line-347"><code>			n = int(1 &amp; Float64bits(z))</code></span>
+<span class="codeline" id="line-348"><code>			x = float64(n)</code></span>
+<span class="codeline" id="line-349"><code>			n &lt;&lt;= 2</code></span>
+<span class="codeline" id="line-350"><code>		}</code></span>
+<span class="codeline" id="line-351"><code>	}</code></span>
+<span class="codeline" id="line-352"><code>	switch n {</code></span>
+<span class="codeline" id="line-353"><code>	case 0:</code></span>
+<span class="codeline" id="line-354"><code>		x = Sin(Pi * x)</code></span>
+<span class="codeline" id="line-355"><code>	case 1, 2:</code></span>
+<span class="codeline" id="line-356"><code>		x = Cos(Pi * (0.5 - x))</code></span>
+<span class="codeline" id="line-357"><code>	case 3, 4:</code></span>
+<span class="codeline" id="line-358"><code>		x = Sin(Pi * (1 - x))</code></span>
+<span class="codeline" id="line-359"><code>	case 5, 6:</code></span>
+<span class="codeline" id="line-360"><code>		x = -Cos(Pi * (x - 1.5))</code></span>
+<span class="codeline" id="line-361"><code>	default:</code></span>
+<span class="codeline" id="line-362"><code>		x = Sin(Pi * (x - 2))</code></span>
+<span class="codeline" id="line-363"><code>	}</code></span>
+<span class="codeline" id="line-364"><code>	return -x</code></span>
+<span class="codeline" id="line-365"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mfixalloc.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mfixalloc.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2009 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// Fixed-size object allocator. Returned memory is not zeroed.</code></span>
+<span class="codeline" id="line-6"><code>//</code></span>
+<span class="codeline" id="line-7"><code>// See malloc.go for overview.</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>package runtime</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>// FixAlloc is a simple free-list allocator for fixed size objects.</code></span>
+<span class="codeline" id="line-14"><code>// Malloc uses a FixAlloc wrapped around sysAlloc to manage its</code></span>
+<span class="codeline" id="line-15"><code>// mcache and mspan objects.</code></span>
+<span class="codeline" id="line-16"><code>//</code></span>
+<span class="codeline" id="line-17"><code>// Memory returned by fixalloc.alloc is zeroed by default, but the</code></span>
+<span class="codeline" id="line-18"><code>// caller may take responsibility for zeroing allocations by setting</code></span>
+<span class="codeline" id="line-19"><code>// the zero flag to false. This is only safe if the memory never</code></span>
+<span class="codeline" id="line-20"><code>// contains heap pointers.</code></span>
+<span class="codeline" id="line-21"><code>//</code></span>
+<span class="codeline" id="line-22"><code>// The caller is responsible for locking around FixAlloc calls.</code></span>
+<span class="codeline" id="line-23"><code>// Callers can keep state in the object but the first word is</code></span>
+<span class="codeline" id="line-24"><code>// smashed by freeing and reallocating.</code></span>
+<span class="codeline" id="line-25"><code>//</code></span>
+<span class="codeline" id="line-26"><code>// Consider marking fixalloc'd types go:notinheap.</code></span>
+<span class="codeline" id="line-27"><code>type fixalloc struct {</code></span>
+<span class="codeline" id="line-28"><code>	size   uintptr</code></span>
+<span class="codeline" id="line-29"><code>	first  func(arg, p unsafe.Pointer) // called first time p is returned</code></span>
+<span class="codeline" id="line-30"><code>	arg    unsafe.Pointer</code></span>
+<span class="codeline" id="line-31"><code>	list   *mlink</code></span>
+<span class="codeline" id="line-32"><code>	chunk  uintptr // use uintptr instead of unsafe.Pointer to avoid write barriers</code></span>
+<span class="codeline" id="line-33"><code>	nchunk uint32</code></span>
+<span class="codeline" id="line-34"><code>	inuse  uintptr // in-use bytes now</code></span>
+<span class="codeline" id="line-35"><code>	stat   *sysMemStat</code></span>
+<span class="codeline" id="line-36"><code>	zero   bool // zero allocations</code></span>
+<span class="codeline" id="line-37"><code>}</code></span>
+<span class="codeline" id="line-38"><code></code></span>
+<span class="codeline" id="line-39"><code>// A generic linked list of blocks.  (Typically the block is bigger than sizeof(MLink).)</code></span>
+<span class="codeline" id="line-40"><code>// Since assignments to mlink.next will result in a write barrier being performed</code></span>
+<span class="codeline" id="line-41"><code>// this cannot be used by some of the internal GC structures. For example when</code></span>
+<span class="codeline" id="line-42"><code>// the sweeper is placing an unmarked object on the free list it does not want the</code></span>
+<span class="codeline" id="line-43"><code>// write barrier to be called since that could result in the object being reachable.</code></span>
+<span class="codeline" id="line-44"><code>//</code></span>
+<span class="codeline" id="line-45"><code>//go:notinheap</code></span>
+<span class="codeline" id="line-46"><code>type mlink struct {</code></span>
+<span class="codeline" id="line-47"><code>	next *mlink</code></span>
+<span class="codeline" id="line-48"><code>}</code></span>
+<span class="codeline" id="line-49"><code></code></span>
+<span class="codeline" id="line-50"><code>// Initialize f to allocate objects of the given size,</code></span>
+<span class="codeline" id="line-51"><code>// using the allocator to obtain chunks of memory.</code></span>
+<span class="codeline" id="line-52"><code>func (f *fixalloc) init(size uintptr, first func(arg, p unsafe.Pointer), arg unsafe.Pointer, stat *sysMemStat) {</code></span>
+<span class="codeline" id="line-53"><code>	f.size = size</code></span>
+<span class="codeline" id="line-54"><code>	f.first = first</code></span>
+<span class="codeline" id="line-55"><code>	f.arg = arg</code></span>
+<span class="codeline" id="line-56"><code>	f.list = nil</code></span>
+<span class="codeline" id="line-57"><code>	f.chunk = 0</code></span>
+<span class="codeline" id="line-58"><code>	f.nchunk = 0</code></span>
+<span class="codeline" id="line-59"><code>	f.inuse = 0</code></span>
+<span class="codeline" id="line-60"><code>	f.stat = stat</code></span>
+<span class="codeline" id="line-61"><code>	f.zero = true</code></span>
+<span class="codeline" id="line-62"><code>}</code></span>
+<span class="codeline" id="line-63"><code></code></span>
+<span class="codeline" id="line-64"><code>func (f *fixalloc) alloc() unsafe.Pointer {</code></span>
+<span class="codeline" id="line-65"><code>	if f.size == 0 {</code></span>
+<span class="codeline" id="line-66"><code>		print("runtime: use of FixAlloc_Alloc before FixAlloc_Init\n")</code></span>
+<span class="codeline" id="line-67"><code>		throw("runtime: internal error")</code></span>
+<span class="codeline" id="line-68"><code>	}</code></span>
+<span class="codeline" id="line-69"><code></code></span>
+<span class="codeline" id="line-70"><code>	if f.list != nil {</code></span>
+<span class="codeline" id="line-71"><code>		v := unsafe.Pointer(f.list)</code></span>
+<span class="codeline" id="line-72"><code>		f.list = f.list.next</code></span>
+<span class="codeline" id="line-73"><code>		f.inuse += f.size</code></span>
+<span class="codeline" id="line-74"><code>		if f.zero {</code></span>
+<span class="codeline" id="line-75"><code>			memclrNoHeapPointers(v, f.size)</code></span>
+<span class="codeline" id="line-76"><code>		}</code></span>
+<span class="codeline" id="line-77"><code>		return v</code></span>
+<span class="codeline" id="line-78"><code>	}</code></span>
+<span class="codeline" id="line-79"><code>	if uintptr(f.nchunk) &lt; f.size {</code></span>
+<span class="codeline" id="line-80"><code>		f.chunk = uintptr(persistentalloc(_FixAllocChunk, 0, f.stat))</code></span>
+<span class="codeline" id="line-81"><code>		f.nchunk = _FixAllocChunk</code></span>
+<span class="codeline" id="line-82"><code>	}</code></span>
+<span class="codeline" id="line-83"><code></code></span>
+<span class="codeline" id="line-84"><code>	v := unsafe.Pointer(f.chunk)</code></span>
+<span class="codeline" id="line-85"><code>	if f.first != nil {</code></span>
+<span class="codeline" id="line-86"><code>		f.first(f.arg, v)</code></span>
+<span class="codeline" id="line-87"><code>	}</code></span>
+<span class="codeline" id="line-88"><code>	f.chunk = f.chunk + f.size</code></span>
+<span class="codeline" id="line-89"><code>	f.nchunk -= uint32(f.size)</code></span>
+<span class="codeline" id="line-90"><code>	f.inuse += f.size</code></span>
+<span class="codeline" id="line-91"><code>	return v</code></span>
+<span class="codeline" id="line-92"><code>}</code></span>
+<span class="codeline" id="line-93"><code></code></span>
+<span class="codeline" id="line-94"><code>func (f *fixalloc) free(p unsafe.Pointer) {</code></span>
+<span class="codeline" id="line-95"><code>	f.inuse -= f.size</code></span>
+<span class="codeline" id="line-96"><code>	v := (*mlink)(p)</code></span>
+<span class="codeline" id="line-97"><code>	v.next = f.list</code></span>
+<span class="codeline" id="line-98"><code>	f.list = v</code></span>
+<span class="codeline" id="line-99"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

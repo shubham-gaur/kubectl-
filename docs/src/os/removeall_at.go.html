@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: removeall_at.go in package os</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	removeall_at.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/os.html">os</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2018 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>package os</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>import (</code></span>
+<span class="codeline" id="line-10"><code>	"internal/syscall/unix"</code></span>
+<span class="codeline" id="line-11"><code>	"io"</code></span>
+<span class="codeline" id="line-12"><code>	"syscall"</code></span>
+<span class="codeline" id="line-13"><code>)</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>func removeAll(path string) error {</code></span>
+<span class="codeline" id="line-16"><code>	if path == "" {</code></span>
+<span class="codeline" id="line-17"><code>		// fail silently to retain compatibility with previous behavior</code></span>
+<span class="codeline" id="line-18"><code>		// of RemoveAll. See issue 28830.</code></span>
+<span class="codeline" id="line-19"><code>		return nil</code></span>
+<span class="codeline" id="line-20"><code>	}</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>	// The rmdir system call does not permit removing ".",</code></span>
+<span class="codeline" id="line-23"><code>	// so we don't permit it either.</code></span>
+<span class="codeline" id="line-24"><code>	if endsWithDot(path) {</code></span>
+<span class="codeline" id="line-25"><code>		return &amp;PathError{Op: "RemoveAll", Path: path, Err: syscall.EINVAL}</code></span>
+<span class="codeline" id="line-26"><code>	}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>	// Simple case: if Remove works, we're done.</code></span>
+<span class="codeline" id="line-29"><code>	err := Remove(path)</code></span>
+<span class="codeline" id="line-30"><code>	if err == nil || IsNotExist(err) {</code></span>
+<span class="codeline" id="line-31"><code>		return nil</code></span>
+<span class="codeline" id="line-32"><code>	}</code></span>
+<span class="codeline" id="line-33"><code></code></span>
+<span class="codeline" id="line-34"><code>	// RemoveAll recurses by deleting the path base from</code></span>
+<span class="codeline" id="line-35"><code>	// its parent directory</code></span>
+<span class="codeline" id="line-36"><code>	parentDir, base := splitPath(path)</code></span>
+<span class="codeline" id="line-37"><code></code></span>
+<span class="codeline" id="line-38"><code>	parent, err := Open(parentDir)</code></span>
+<span class="codeline" id="line-39"><code>	if IsNotExist(err) {</code></span>
+<span class="codeline" id="line-40"><code>		// If parent does not exist, base cannot exist. Fail silently</code></span>
+<span class="codeline" id="line-41"><code>		return nil</code></span>
+<span class="codeline" id="line-42"><code>	}</code></span>
+<span class="codeline" id="line-43"><code>	if err != nil {</code></span>
+<span class="codeline" id="line-44"><code>		return err</code></span>
+<span class="codeline" id="line-45"><code>	}</code></span>
+<span class="codeline" id="line-46"><code>	defer parent.Close()</code></span>
+<span class="codeline" id="line-47"><code></code></span>
+<span class="codeline" id="line-48"><code>	if err := removeAllFrom(parent, base); err != nil {</code></span>
+<span class="codeline" id="line-49"><code>		if pathErr, ok := err.(*PathError); ok {</code></span>
+<span class="codeline" id="line-50"><code>			pathErr.Path = parentDir + string(PathSeparator) + pathErr.Path</code></span>
+<span class="codeline" id="line-51"><code>			err = pathErr</code></span>
+<span class="codeline" id="line-52"><code>		}</code></span>
+<span class="codeline" id="line-53"><code>		return err</code></span>
+<span class="codeline" id="line-54"><code>	}</code></span>
+<span class="codeline" id="line-55"><code>	return nil</code></span>
+<span class="codeline" id="line-56"><code>}</code></span>
+<span class="codeline" id="line-57"><code></code></span>
+<span class="codeline" id="line-58"><code>func removeAllFrom(parent *File, base string) error {</code></span>
+<span class="codeline" id="line-59"><code>	parentFd := int(parent.Fd())</code></span>
+<span class="codeline" id="line-60"><code>	// Simple case: if Unlink (aka remove) works, we're done.</code></span>
+<span class="codeline" id="line-61"><code>	err := unix.Unlinkat(parentFd, base, 0)</code></span>
+<span class="codeline" id="line-62"><code>	if err == nil || IsNotExist(err) {</code></span>
+<span class="codeline" id="line-63"><code>		return nil</code></span>
+<span class="codeline" id="line-64"><code>	}</code></span>
+<span class="codeline" id="line-65"><code></code></span>
+<span class="codeline" id="line-66"><code>	// EISDIR means that we have a directory, and we need to</code></span>
+<span class="codeline" id="line-67"><code>	// remove its contents.</code></span>
+<span class="codeline" id="line-68"><code>	// EPERM or EACCES means that we don't have write permission on</code></span>
+<span class="codeline" id="line-69"><code>	// the parent directory, but this entry might still be a directory</code></span>
+<span class="codeline" id="line-70"><code>	// whose contents need to be removed.</code></span>
+<span class="codeline" id="line-71"><code>	// Otherwise just return the error.</code></span>
+<span class="codeline" id="line-72"><code>	if err != syscall.EISDIR &amp;&amp; err != syscall.EPERM &amp;&amp; err != syscall.EACCES {</code></span>
+<span class="codeline" id="line-73"><code>		return &amp;PathError{Op: "unlinkat", Path: base, Err: err}</code></span>
+<span class="codeline" id="line-74"><code>	}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>	// Is this a directory we need to recurse into?</code></span>
+<span class="codeline" id="line-77"><code>	var statInfo syscall.Stat_t</code></span>
+<span class="codeline" id="line-78"><code>	statErr := unix.Fstatat(parentFd, base, &amp;statInfo, unix.AT_SYMLINK_NOFOLLOW)</code></span>
+<span class="codeline" id="line-79"><code>	if statErr != nil {</code></span>
+<span class="codeline" id="line-80"><code>		if IsNotExist(statErr) {</code></span>
+<span class="codeline" id="line-81"><code>			return nil</code></span>
+<span class="codeline" id="line-82"><code>		}</code></span>
+<span class="codeline" id="line-83"><code>		return &amp;PathError{Op: "fstatat", Path: base, Err: statErr}</code></span>
+<span class="codeline" id="line-84"><code>	}</code></span>
+<span class="codeline" id="line-85"><code>	if statInfo.Mode&amp;syscall.S_IFMT != syscall.S_IFDIR {</code></span>
+<span class="codeline" id="line-86"><code>		// Not a directory; return the error from the unix.Unlinkat.</code></span>
+<span class="codeline" id="line-87"><code>		return &amp;PathError{Op: "unlinkat", Path: base, Err: err}</code></span>
+<span class="codeline" id="line-88"><code>	}</code></span>
+<span class="codeline" id="line-89"><code></code></span>
+<span class="codeline" id="line-90"><code>	// Remove the directory's entries.</code></span>
+<span class="codeline" id="line-91"><code>	var recurseErr error</code></span>
+<span class="codeline" id="line-92"><code>	for {</code></span>
+<span class="codeline" id="line-93"><code>		const reqSize = 1024</code></span>
+<span class="codeline" id="line-94"><code>		var respSize int</code></span>
+<span class="codeline" id="line-95"><code></code></span>
+<span class="codeline" id="line-96"><code>		// Open the directory to recurse into</code></span>
+<span class="codeline" id="line-97"><code>		file, err := openFdAt(parentFd, base)</code></span>
+<span class="codeline" id="line-98"><code>		if err != nil {</code></span>
+<span class="codeline" id="line-99"><code>			if IsNotExist(err) {</code></span>
+<span class="codeline" id="line-100"><code>				return nil</code></span>
+<span class="codeline" id="line-101"><code>			}</code></span>
+<span class="codeline" id="line-102"><code>			recurseErr = &amp;PathError{Op: "openfdat", Path: base, Err: err}</code></span>
+<span class="codeline" id="line-103"><code>			break</code></span>
+<span class="codeline" id="line-104"><code>		}</code></span>
+<span class="codeline" id="line-105"><code></code></span>
+<span class="codeline" id="line-106"><code>		for {</code></span>
+<span class="codeline" id="line-107"><code>			numErr := 0</code></span>
+<span class="codeline" id="line-108"><code></code></span>
+<span class="codeline" id="line-109"><code>			names, readErr := file.Readdirnames(reqSize)</code></span>
+<span class="codeline" id="line-110"><code>			// Errors other than EOF should stop us from continuing.</code></span>
+<span class="codeline" id="line-111"><code>			if readErr != nil &amp;&amp; readErr != io.EOF {</code></span>
+<span class="codeline" id="line-112"><code>				file.Close()</code></span>
+<span class="codeline" id="line-113"><code>				if IsNotExist(readErr) {</code></span>
+<span class="codeline" id="line-114"><code>					return nil</code></span>
+<span class="codeline" id="line-115"><code>				}</code></span>
+<span class="codeline" id="line-116"><code>				return &amp;PathError{Op: "readdirnames", Path: base, Err: readErr}</code></span>
+<span class="codeline" id="line-117"><code>			}</code></span>
+<span class="codeline" id="line-118"><code></code></span>
+<span class="codeline" id="line-119"><code>			respSize = len(names)</code></span>
+<span class="codeline" id="line-120"><code>			for _, name := range names {</code></span>
+<span class="codeline" id="line-121"><code>				err := removeAllFrom(file, name)</code></span>
+<span class="codeline" id="line-122"><code>				if err != nil {</code></span>
+<span class="codeline" id="line-123"><code>					if pathErr, ok := err.(*PathError); ok {</code></span>
+<span class="codeline" id="line-124"><code>						pathErr.Path = base + string(PathSeparator) + pathErr.Path</code></span>
+<span class="codeline" id="line-125"><code>					}</code></span>
+<span class="codeline" id="line-126"><code>					numErr++</code></span>
+<span class="codeline" id="line-127"><code>					if recurseErr == nil {</code></span>
+<span class="codeline" id="line-128"><code>						recurseErr = err</code></span>
+<span class="codeline" id="line-129"><code>					}</code></span>
+<span class="codeline" id="line-130"><code>				}</code></span>
+<span class="codeline" id="line-131"><code>			}</code></span>
+<span class="codeline" id="line-132"><code></code></span>
+<span class="codeline" id="line-133"><code>			// If we can delete any entry, break to start new iteration.</code></span>
+<span class="codeline" id="line-134"><code>			// Otherwise, we discard current names, get next entries and try deleting them.</code></span>
+<span class="codeline" id="line-135"><code>			if numErr != reqSize {</code></span>
+<span class="codeline" id="line-136"><code>				break</code></span>
+<span class="codeline" id="line-137"><code>			}</code></span>
+<span class="codeline" id="line-138"><code>		}</code></span>
+<span class="codeline" id="line-139"><code></code></span>
+<span class="codeline" id="line-140"><code>		// Removing files from the directory may have caused</code></span>
+<span class="codeline" id="line-141"><code>		// the OS to reshuffle it. Simply calling Readdirnames</code></span>
+<span class="codeline" id="line-142"><code>		// again may skip some entries. The only reliable way</code></span>
+<span class="codeline" id="line-143"><code>		// to avoid this is to close and re-open the</code></span>
+<span class="codeline" id="line-144"><code>		// directory. See issue 20841.</code></span>
+<span class="codeline" id="line-145"><code>		file.Close()</code></span>
+<span class="codeline" id="line-146"><code></code></span>
+<span class="codeline" id="line-147"><code>		// Finish when the end of the directory is reached</code></span>
+<span class="codeline" id="line-148"><code>		if respSize &lt; reqSize {</code></span>
+<span class="codeline" id="line-149"><code>			break</code></span>
+<span class="codeline" id="line-150"><code>		}</code></span>
+<span class="codeline" id="line-151"><code>	}</code></span>
+<span class="codeline" id="line-152"><code></code></span>
+<span class="codeline" id="line-153"><code>	// Remove the directory itself.</code></span>
+<span class="codeline" id="line-154"><code>	unlinkError := unix.Unlinkat(parentFd, base, unix.AT_REMOVEDIR)</code></span>
+<span class="codeline" id="line-155"><code>	if unlinkError == nil || IsNotExist(unlinkError) {</code></span>
+<span class="codeline" id="line-156"><code>		return nil</code></span>
+<span class="codeline" id="line-157"><code>	}</code></span>
+<span class="codeline" id="line-158"><code></code></span>
+<span class="codeline" id="line-159"><code>	if recurseErr != nil {</code></span>
+<span class="codeline" id="line-160"><code>		return recurseErr</code></span>
+<span class="codeline" id="line-161"><code>	}</code></span>
+<span class="codeline" id="line-162"><code>	return &amp;PathError{Op: "unlinkat", Path: base, Err: unlinkError}</code></span>
+<span class="codeline" id="line-163"><code>}</code></span>
+<span class="codeline" id="line-164"><code></code></span>
+<span class="codeline" id="line-165"><code>// openFdAt opens path relative to the directory in fd.</code></span>
+<span class="codeline" id="line-166"><code>// Other than that this should act like openFileNolog.</code></span>
+<span class="codeline" id="line-167"><code>// This acts like openFileNolog rather than OpenFile because</code></span>
+<span class="codeline" id="line-168"><code>// we are going to (try to) remove the file.</code></span>
+<span class="codeline" id="line-169"><code>// The contents of this file are not relevant for test caching.</code></span>
+<span class="codeline" id="line-170"><code>func openFdAt(dirfd int, name string) (*File, error) {</code></span>
+<span class="codeline" id="line-171"><code>	var r int</code></span>
+<span class="codeline" id="line-172"><code>	for {</code></span>
+<span class="codeline" id="line-173"><code>		var e error</code></span>
+<span class="codeline" id="line-174"><code>		r, e = unix.Openat(dirfd, name, O_RDONLY|syscall.O_CLOEXEC, 0)</code></span>
+<span class="codeline" id="line-175"><code>		if e == nil {</code></span>
+<span class="codeline" id="line-176"><code>			break</code></span>
+<span class="codeline" id="line-177"><code>		}</code></span>
+<span class="codeline" id="line-178"><code></code></span>
+<span class="codeline" id="line-179"><code>		// See comment in openFileNolog.</code></span>
+<span class="codeline" id="line-180"><code>		if e == syscall.EINTR {</code></span>
+<span class="codeline" id="line-181"><code>			continue</code></span>
+<span class="codeline" id="line-182"><code>		}</code></span>
+<span class="codeline" id="line-183"><code></code></span>
+<span class="codeline" id="line-184"><code>		return nil, e</code></span>
+<span class="codeline" id="line-185"><code>	}</code></span>
+<span class="codeline" id="line-186"><code></code></span>
+<span class="codeline" id="line-187"><code>	if !supportsCloseOnExec {</code></span>
+<span class="codeline" id="line-188"><code>		syscall.CloseOnExec(r)</code></span>
+<span class="codeline" id="line-189"><code>	}</code></span>
+<span class="codeline" id="line-190"><code></code></span>
+<span class="codeline" id="line-191"><code>	return newFile(uintptr(r), name, kindOpenFile), nil</code></span>
+<span class="codeline" id="line-192"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

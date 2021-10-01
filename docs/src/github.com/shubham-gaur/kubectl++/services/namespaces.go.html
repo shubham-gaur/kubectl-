@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: namespaces.go in package github.com/shubham-gaur/kubectl++/services</title>
+<link href="../../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	namespaces.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../../pkg/github.com/shubham-gaur/kubectl++/services.html">github.com/shubham-gaur/kubectl++/services</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>package services</code></span>
+<span class="codeline" id="line-2"><code></code></span>
+<span class="codeline" id="line-3"><code>import (</code></span>
+<span class="codeline" id="line-4"><code>	"fmt"</code></span>
+<span class="codeline" id="line-5"><code>	"strings"</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>	help "github.com/shubham-gaur/kubectl++/helper"</code></span>
+<span class="codeline" id="line-8"><code>	log "github.com/shubham-gaur/kubectl++/logger"</code></span>
+<span class="codeline" id="line-9"><code>)</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>var namespacesSt struct {</code></span>
+<span class="codeline" id="line-12"><code>	namespaces         []string</code></span>
+<span class="codeline" id="line-13"><code>	numberOfNamespaces int</code></span>
+<span class="codeline" id="line-14"><code>}</code></span>
+<span class="codeline" id="line-15"><code>var nsStr string</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>func fetchNamespaces() {</code></span>
+<span class="codeline" id="line-18"><code>	kargs := []string{"get", "namespaces"}</code></span>
+<span class="codeline" id="line-19"><code>	nsStr = help.ExecKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-20"><code>	ns := strings.Fields(nsStr)</code></span>
+<span class="codeline" id="line-21"><code>	namespacesSt.namespaces = []string{}</code></span>
+<span class="codeline" id="line-22"><code>	for nsIndex := 3; nsIndex &lt; len(ns); nsIndex = nsIndex + 3 {</code></span>
+<span class="codeline" id="line-23"><code>		namespacesSt.namespaces = append(namespacesSt.namespaces, ns[nsIndex])</code></span>
+<span class="codeline" id="line-24"><code>	}</code></span>
+<span class="codeline" id="line-25"><code>	namespacesSt.numberOfNamespaces = len(namespacesSt.namespaces)</code></span>
+<span class="codeline" id="line-26"><code>}</code></span>
+<span class="codeline" id="line-27"><code></code></span>
+<span class="codeline" id="line-28"><code>func DisplayNamespaces() {</code></span>
+<span class="codeline" id="line-29"><code>	fetchNamespaces()</code></span>
+<span class="codeline" id="line-30"><code>	log.PrintSpecial(log.GetCurrentFunctionName(), nsStr)</code></span>
+<span class="codeline" id="line-31"><code>}</code></span>
+<span class="codeline" id="line-32"><code></code></span>
+<span class="codeline" id="line-33"><code>func GetTaggedNamespaces() int {</code></span>
+<span class="codeline" id="line-34"><code>	fetchNamespaces()</code></span>
+<span class="codeline" id="line-35"><code>	nsMap := make(map[int]string)</code></span>
+<span class="codeline" id="line-36"><code>	log.Info.Printf("🤔 Which namespace you are looking for?")</code></span>
+<span class="codeline" id="line-37"><code>	log.Info.Printf("😀 Below list might help... Available namespaces 👇 ")</code></span>
+<span class="codeline" id="line-38"><code>	fmt.Printf("%5v﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎﹎\n", "")</code></span>
+<span class="codeline" id="line-39"><code>	for ns := 0; ns &lt; namespacesSt.numberOfNamespaces; ns++ {</code></span>
+<span class="codeline" id="line-40"><code>		nsMap[ns] = namespacesSt.namespaces[ns]</code></span>
+<span class="codeline" id="line-41"><code>		fmt.Printf("%10v👉 Press [%-2v]: %v\n", "", ns, namespacesSt.namespaces[ns])</code></span>
+<span class="codeline" id="line-42"><code>	}</code></span>
+<span class="codeline" id="line-43"><code>	fmt.Printf("%5v﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n", "")</code></span>
+<span class="codeline" id="line-44"><code>	var nsIndex int</code></span>
+<span class="codeline" id="line-45"><code>	help.TakeIntInput(&amp;nsIndex, namespacesSt.numberOfNamespaces)</code></span>
+<span class="codeline" id="line-46"><code>	return nsIndex</code></span>
+<span class="codeline" id="line-47"><code>}</code></span>
+<span class="codeline" id="line-48"><code></code></span>
+<span class="codeline" id="line-49"><code>func MarkNamespace() {</code></span>
+<span class="codeline" id="line-50"><code>	log.Info.Printf("🤔 Mark active namespace for operations...")</code></span>
+<span class="codeline" id="line-51"><code>	var nsIndex int</code></span>
+<span class="codeline" id="line-52"><code>	nsIndex = GetTaggedNamespaces()</code></span>
+<span class="codeline" id="line-53"><code>	defaultNamespace := namespacesSt.namespaces[nsIndex]</code></span>
+<span class="codeline" id="line-54"><code>	options := make(map[int]string)</code></span>
+<span class="codeline" id="line-55"><code>	options[0] = "select another namespace"</code></span>
+<span class="codeline" id="line-56"><code>	options[1] = "show all resources in a namespace"</code></span>
+<span class="codeline" id="line-57"><code>	options[2] = "create namespace"</code></span>
+<span class="codeline" id="line-58"><code>	options[3] = "delete namespace"</code></span>
+<span class="codeline" id="line-59"><code>	options[4] = "show all namespaces"</code></span>
+<span class="codeline" id="line-60"><code>	options[5] = "return to main"</code></span>
+<span class="codeline" id="line-61"><code>	var opt int</code></span>
+<span class="codeline" id="line-62"><code>	for {</code></span>
+<span class="codeline" id="line-63"><code>		log.Info.Printf("😀 Refreshing %v namespace status...", defaultNamespace)</code></span>
+<span class="codeline" id="line-64"><code>		kargs := []string{"get", "ns", defaultNamespace, "-o", "jsonpath={.status.phase}"}</code></span>
+<span class="codeline" id="line-65"><code>		status := help.ExecKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-66"><code>		if status == "Active" {</code></span>
+<span class="codeline" id="line-67"><code>			log.Info.Printf("😀 [Set Namespace]|👉 %v namespace |👌 %v", defaultNamespace, status)</code></span>
+<span class="codeline" id="line-68"><code>		} else {</code></span>
+<span class="codeline" id="line-69"><code>			if status == "" {</code></span>
+<span class="codeline" id="line-70"><code>				status = "Error"</code></span>
+<span class="codeline" id="line-71"><code>			}</code></span>
+<span class="codeline" id="line-72"><code>			log.Info.Printf("😦 [Set Namespace]|👉 %v namespace |❌ %v ", defaultNamespace, status)</code></span>
+<span class="codeline" id="line-73"><code>			log.Error.Printf("🙏 |♻️ Please change namespace!")</code></span>
+<span class="codeline" id="line-74"><code>		}</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>		help.Default(options)</code></span>
+<span class="codeline" id="line-77"><code>		help.TakeIntInput(&amp;opt, len(options))</code></span>
+<span class="codeline" id="line-78"><code>		switch options[opt] {</code></span>
+<span class="codeline" id="line-79"><code>		case options[0]:</code></span>
+<span class="codeline" id="line-80"><code>			nsIndex = GetTaggedNamespaces()</code></span>
+<span class="codeline" id="line-81"><code>			defaultNamespace = namespacesSt.namespaces[nsIndex]</code></span>
+<span class="codeline" id="line-82"><code>			log.Info.Printf("😀 Active namespace being set to 👉 %v", defaultNamespace)</code></span>
+<span class="codeline" id="line-83"><code>		case options[1]:</code></span>
+<span class="codeline" id="line-84"><code>			log.Info.Printf("🤔 Displaying all resources in %v namespace", defaultNamespace)</code></span>
+<span class="codeline" id="line-85"><code>			kargs := []string{"get", "all", "-n", defaultNamespace}</code></span>
+<span class="codeline" id="line-86"><code>			help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-87"><code>		case options[2]:</code></span>
+<span class="codeline" id="line-88"><code>			var nsName string</code></span>
+<span class="codeline" id="line-89"><code>			log.Info.Printf("🤔 What is the namespace name you are looking for?")</code></span>
+<span class="codeline" id="line-90"><code>			help.TakeStrInput(&amp;nsName)</code></span>
+<span class="codeline" id="line-91"><code>			kargs := []string{"create", "ns", nsName}</code></span>
+<span class="codeline" id="line-92"><code>			help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-93"><code>			log.Info.Printf("[✔️ ] %v create operation successfully 😄 ", nsName)</code></span>
+<span class="codeline" id="line-94"><code>		case options[3]:</code></span>
+<span class="codeline" id="line-95"><code>			var confirm string</code></span>
+<span class="codeline" id="line-96"><code>			log.Info.Printf("😲 You are going to delete a namespace..?")</code></span>
+<span class="codeline" id="line-97"><code>			log.Info.Printf("🙄  Deleting %v namespace... This action is irreversible. Please confirm by typing 'y' for yes?", defaultNamespace)</code></span>
+<span class="codeline" id="line-98"><code>			help.TakeStrInput(&amp;confirm)</code></span>
+<span class="codeline" id="line-99"><code>			if confirm == "y" {</code></span>
+<span class="codeline" id="line-100"><code>				kargs := []string{"delete", "ns", defaultNamespace}</code></span>
+<span class="codeline" id="line-101"><code>				help.RunKubectlCmd(kargs...)</code></span>
+<span class="codeline" id="line-102"><code>				log.Info.Printf("[✔️ ] %v delete operation successfull 😄 ", defaultNamespace)</code></span>
+<span class="codeline" id="line-103"><code>			} else {</code></span>
+<span class="codeline" id="line-104"><code>				log.Info.Printf("😐 Confirmation failed please try again?")</code></span>
+<span class="codeline" id="line-105"><code>			}</code></span>
+<span class="codeline" id="line-106"><code>		case options[4]:</code></span>
+<span class="codeline" id="line-107"><code>			DisplayNamespaces()</code></span>
+<span class="codeline" id="line-108"><code>		case options[5]:</code></span>
+<span class="codeline" id="line-109"><code>			return</code></span>
+<span class="codeline" id="line-110"><code>		}</code></span>
+<span class="codeline" id="line-111"><code>	}</code></span>
+<span class="codeline" id="line-112"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

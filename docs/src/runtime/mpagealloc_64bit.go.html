@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: mpagealloc_64bit.go in package runtime</title>
+<link href="../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	mpagealloc_64bit.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../pkg/runtime.html">runtime</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2019 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>// +build amd64 !ios,arm64 mips64 mips64le ppc64 ppc64le riscv64 s390x</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>// See mpagealloc_32bit.go for why ios/arm64 is excluded here.</code></span>
+<span class="codeline" id="line-8"><code></code></span>
+<span class="codeline" id="line-9"><code>package runtime</code></span>
+<span class="codeline" id="line-10"><code></code></span>
+<span class="codeline" id="line-11"><code>import "unsafe"</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>const (</code></span>
+<span class="codeline" id="line-14"><code>	// The number of levels in the radix tree.</code></span>
+<span class="codeline" id="line-15"><code>	summaryLevels = 5</code></span>
+<span class="codeline" id="line-16"><code></code></span>
+<span class="codeline" id="line-17"><code>	// Constants for testing.</code></span>
+<span class="codeline" id="line-18"><code>	pageAlloc32Bit = 0</code></span>
+<span class="codeline" id="line-19"><code>	pageAlloc64Bit = 1</code></span>
+<span class="codeline" id="line-20"><code></code></span>
+<span class="codeline" id="line-21"><code>	// Number of bits needed to represent all indices into the L1 of the</code></span>
+<span class="codeline" id="line-22"><code>	// chunks map.</code></span>
+<span class="codeline" id="line-23"><code>	//</code></span>
+<span class="codeline" id="line-24"><code>	// See (*pageAlloc).chunks for more details. Update the documentation</code></span>
+<span class="codeline" id="line-25"><code>	// there should this number change.</code></span>
+<span class="codeline" id="line-26"><code>	pallocChunksL1Bits = 13</code></span>
+<span class="codeline" id="line-27"><code>)</code></span>
+<span class="codeline" id="line-28"><code></code></span>
+<span class="codeline" id="line-29"><code>// levelBits is the number of bits in the radix for a given level in the super summary</code></span>
+<span class="codeline" id="line-30"><code>// structure.</code></span>
+<span class="codeline" id="line-31"><code>//</code></span>
+<span class="codeline" id="line-32"><code>// The sum of all the entries of levelBits should equal heapAddrBits.</code></span>
+<span class="codeline" id="line-33"><code>var levelBits = [summaryLevels]uint{</code></span>
+<span class="codeline" id="line-34"><code>	summaryL0Bits,</code></span>
+<span class="codeline" id="line-35"><code>	summaryLevelBits,</code></span>
+<span class="codeline" id="line-36"><code>	summaryLevelBits,</code></span>
+<span class="codeline" id="line-37"><code>	summaryLevelBits,</code></span>
+<span class="codeline" id="line-38"><code>	summaryLevelBits,</code></span>
+<span class="codeline" id="line-39"><code>}</code></span>
+<span class="codeline" id="line-40"><code></code></span>
+<span class="codeline" id="line-41"><code>// levelShift is the number of bits to shift to acquire the radix for a given level</code></span>
+<span class="codeline" id="line-42"><code>// in the super summary structure.</code></span>
+<span class="codeline" id="line-43"><code>//</code></span>
+<span class="codeline" id="line-44"><code>// With levelShift, one can compute the index of the summary at level l related to a</code></span>
+<span class="codeline" id="line-45"><code>// pointer p by doing:</code></span>
+<span class="codeline" id="line-46"><code>//   p &gt;&gt; levelShift[l]</code></span>
+<span class="codeline" id="line-47"><code>var levelShift = [summaryLevels]uint{</code></span>
+<span class="codeline" id="line-48"><code>	heapAddrBits - summaryL0Bits,</code></span>
+<span class="codeline" id="line-49"><code>	heapAddrBits - summaryL0Bits - 1*summaryLevelBits,</code></span>
+<span class="codeline" id="line-50"><code>	heapAddrBits - summaryL0Bits - 2*summaryLevelBits,</code></span>
+<span class="codeline" id="line-51"><code>	heapAddrBits - summaryL0Bits - 3*summaryLevelBits,</code></span>
+<span class="codeline" id="line-52"><code>	heapAddrBits - summaryL0Bits - 4*summaryLevelBits,</code></span>
+<span class="codeline" id="line-53"><code>}</code></span>
+<span class="codeline" id="line-54"><code></code></span>
+<span class="codeline" id="line-55"><code>// levelLogPages is log2 the maximum number of runtime pages in the address space</code></span>
+<span class="codeline" id="line-56"><code>// a summary in the given level represents.</code></span>
+<span class="codeline" id="line-57"><code>//</code></span>
+<span class="codeline" id="line-58"><code>// The leaf level always represents exactly log2 of 1 chunk's worth of pages.</code></span>
+<span class="codeline" id="line-59"><code>var levelLogPages = [summaryLevels]uint{</code></span>
+<span class="codeline" id="line-60"><code>	logPallocChunkPages + 4*summaryLevelBits,</code></span>
+<span class="codeline" id="line-61"><code>	logPallocChunkPages + 3*summaryLevelBits,</code></span>
+<span class="codeline" id="line-62"><code>	logPallocChunkPages + 2*summaryLevelBits,</code></span>
+<span class="codeline" id="line-63"><code>	logPallocChunkPages + 1*summaryLevelBits,</code></span>
+<span class="codeline" id="line-64"><code>	logPallocChunkPages,</code></span>
+<span class="codeline" id="line-65"><code>}</code></span>
+<span class="codeline" id="line-66"><code></code></span>
+<span class="codeline" id="line-67"><code>// sysInit performs architecture-dependent initialization of fields</code></span>
+<span class="codeline" id="line-68"><code>// in pageAlloc. pageAlloc should be uninitialized except for sysStat</code></span>
+<span class="codeline" id="line-69"><code>// if any runtime statistic should be updated.</code></span>
+<span class="codeline" id="line-70"><code>func (p *pageAlloc) sysInit() {</code></span>
+<span class="codeline" id="line-71"><code>	// Reserve memory for each level. This will get mapped in</code></span>
+<span class="codeline" id="line-72"><code>	// as R/W by setArenas.</code></span>
+<span class="codeline" id="line-73"><code>	for l, shift := range levelShift {</code></span>
+<span class="codeline" id="line-74"><code>		entries := 1 &lt;&lt; (heapAddrBits - shift)</code></span>
+<span class="codeline" id="line-75"><code></code></span>
+<span class="codeline" id="line-76"><code>		// Reserve b bytes of memory anywhere in the address space.</code></span>
+<span class="codeline" id="line-77"><code>		b := alignUp(uintptr(entries)*pallocSumBytes, physPageSize)</code></span>
+<span class="codeline" id="line-78"><code>		r := sysReserve(nil, b)</code></span>
+<span class="codeline" id="line-79"><code>		if r == nil {</code></span>
+<span class="codeline" id="line-80"><code>			throw("failed to reserve page summary memory")</code></span>
+<span class="codeline" id="line-81"><code>		}</code></span>
+<span class="codeline" id="line-82"><code></code></span>
+<span class="codeline" id="line-83"><code>		// Put this reservation into a slice.</code></span>
+<span class="codeline" id="line-84"><code>		sl := notInHeapSlice{(*notInHeap)(r), 0, entries}</code></span>
+<span class="codeline" id="line-85"><code>		p.summary[l] = *(*[]pallocSum)(unsafe.Pointer(&amp;sl))</code></span>
+<span class="codeline" id="line-86"><code>	}</code></span>
+<span class="codeline" id="line-87"><code>}</code></span>
+<span class="codeline" id="line-88"><code></code></span>
+<span class="codeline" id="line-89"><code>// sysGrow performs architecture-dependent operations on heap</code></span>
+<span class="codeline" id="line-90"><code>// growth for the page allocator, such as mapping in new memory</code></span>
+<span class="codeline" id="line-91"><code>// for summaries. It also updates the length of the slices in</code></span>
+<span class="codeline" id="line-92"><code>// [.summary.</code></span>
+<span class="codeline" id="line-93"><code>//</code></span>
+<span class="codeline" id="line-94"><code>// base is the base of the newly-added heap memory and limit is</code></span>
+<span class="codeline" id="line-95"><code>// the first address past the end of the newly-added heap memory.</code></span>
+<span class="codeline" id="line-96"><code>// Both must be aligned to pallocChunkBytes.</code></span>
+<span class="codeline" id="line-97"><code>//</code></span>
+<span class="codeline" id="line-98"><code>// The caller must update p.start and p.end after calling sysGrow.</code></span>
+<span class="codeline" id="line-99"><code>func (p *pageAlloc) sysGrow(base, limit uintptr) {</code></span>
+<span class="codeline" id="line-100"><code>	if base%pallocChunkBytes != 0 || limit%pallocChunkBytes != 0 {</code></span>
+<span class="codeline" id="line-101"><code>		print("runtime: base = ", hex(base), ", limit = ", hex(limit), "\n")</code></span>
+<span class="codeline" id="line-102"><code>		throw("sysGrow bounds not aligned to pallocChunkBytes")</code></span>
+<span class="codeline" id="line-103"><code>	}</code></span>
+<span class="codeline" id="line-104"><code></code></span>
+<span class="codeline" id="line-105"><code>	// addrRangeToSummaryRange converts a range of addresses into a range</code></span>
+<span class="codeline" id="line-106"><code>	// of summary indices which must be mapped to support those addresses</code></span>
+<span class="codeline" id="line-107"><code>	// in the summary range.</code></span>
+<span class="codeline" id="line-108"><code>	addrRangeToSummaryRange := func(level int, r addrRange) (int, int) {</code></span>
+<span class="codeline" id="line-109"><code>		sumIdxBase, sumIdxLimit := addrsToSummaryRange(level, r.base.addr(), r.limit.addr())</code></span>
+<span class="codeline" id="line-110"><code>		return blockAlignSummaryRange(level, sumIdxBase, sumIdxLimit)</code></span>
+<span class="codeline" id="line-111"><code>	}</code></span>
+<span class="codeline" id="line-112"><code></code></span>
+<span class="codeline" id="line-113"><code>	// summaryRangeToSumAddrRange converts a range of indices in any</code></span>
+<span class="codeline" id="line-114"><code>	// level of p.summary into page-aligned addresses which cover that</code></span>
+<span class="codeline" id="line-115"><code>	// range of indices.</code></span>
+<span class="codeline" id="line-116"><code>	summaryRangeToSumAddrRange := func(level, sumIdxBase, sumIdxLimit int) addrRange {</code></span>
+<span class="codeline" id="line-117"><code>		baseOffset := alignDown(uintptr(sumIdxBase)*pallocSumBytes, physPageSize)</code></span>
+<span class="codeline" id="line-118"><code>		limitOffset := alignUp(uintptr(sumIdxLimit)*pallocSumBytes, physPageSize)</code></span>
+<span class="codeline" id="line-119"><code>		base := unsafe.Pointer(&amp;p.summary[level][0])</code></span>
+<span class="codeline" id="line-120"><code>		return addrRange{</code></span>
+<span class="codeline" id="line-121"><code>			offAddr{uintptr(add(base, baseOffset))},</code></span>
+<span class="codeline" id="line-122"><code>			offAddr{uintptr(add(base, limitOffset))},</code></span>
+<span class="codeline" id="line-123"><code>		}</code></span>
+<span class="codeline" id="line-124"><code>	}</code></span>
+<span class="codeline" id="line-125"><code></code></span>
+<span class="codeline" id="line-126"><code>	// addrRangeToSumAddrRange is a convienience function that converts</code></span>
+<span class="codeline" id="line-127"><code>	// an address range r to the address range of the given summary level</code></span>
+<span class="codeline" id="line-128"><code>	// that stores the summaries for r.</code></span>
+<span class="codeline" id="line-129"><code>	addrRangeToSumAddrRange := func(level int, r addrRange) addrRange {</code></span>
+<span class="codeline" id="line-130"><code>		sumIdxBase, sumIdxLimit := addrRangeToSummaryRange(level, r)</code></span>
+<span class="codeline" id="line-131"><code>		return summaryRangeToSumAddrRange(level, sumIdxBase, sumIdxLimit)</code></span>
+<span class="codeline" id="line-132"><code>	}</code></span>
+<span class="codeline" id="line-133"><code></code></span>
+<span class="codeline" id="line-134"><code>	// Find the first inUse index which is strictly greater than base.</code></span>
+<span class="codeline" id="line-135"><code>	//</code></span>
+<span class="codeline" id="line-136"><code>	// Because this function will never be asked remap the same memory</code></span>
+<span class="codeline" id="line-137"><code>	// twice, this index is effectively the index at which we would insert</code></span>
+<span class="codeline" id="line-138"><code>	// this new growth, and base will never overlap/be contained within</code></span>
+<span class="codeline" id="line-139"><code>	// any existing range.</code></span>
+<span class="codeline" id="line-140"><code>	//</code></span>
+<span class="codeline" id="line-141"><code>	// This will be used to look at what memory in the summary array is already</code></span>
+<span class="codeline" id="line-142"><code>	// mapped before and after this new range.</code></span>
+<span class="codeline" id="line-143"><code>	inUseIndex := p.inUse.findSucc(base)</code></span>
+<span class="codeline" id="line-144"><code></code></span>
+<span class="codeline" id="line-145"><code>	// Walk up the radix tree and map summaries in as needed.</code></span>
+<span class="codeline" id="line-146"><code>	for l := range p.summary {</code></span>
+<span class="codeline" id="line-147"><code>		// Figure out what part of the summary array this new address space needs.</code></span>
+<span class="codeline" id="line-148"><code>		needIdxBase, needIdxLimit := addrRangeToSummaryRange(l, makeAddrRange(base, limit))</code></span>
+<span class="codeline" id="line-149"><code></code></span>
+<span class="codeline" id="line-150"><code>		// Update the summary slices with a new upper-bound. This ensures</code></span>
+<span class="codeline" id="line-151"><code>		// we get tight bounds checks on at least the top bound.</code></span>
+<span class="codeline" id="line-152"><code>		//</code></span>
+<span class="codeline" id="line-153"><code>		// We must do this regardless of whether we map new memory.</code></span>
+<span class="codeline" id="line-154"><code>		if needIdxLimit &gt; len(p.summary[l]) {</code></span>
+<span class="codeline" id="line-155"><code>			p.summary[l] = p.summary[l][:needIdxLimit]</code></span>
+<span class="codeline" id="line-156"><code>		}</code></span>
+<span class="codeline" id="line-157"><code></code></span>
+<span class="codeline" id="line-158"><code>		// Compute the needed address range in the summary array for level l.</code></span>
+<span class="codeline" id="line-159"><code>		need := summaryRangeToSumAddrRange(l, needIdxBase, needIdxLimit)</code></span>
+<span class="codeline" id="line-160"><code></code></span>
+<span class="codeline" id="line-161"><code>		// Prune need down to what needs to be newly mapped. Some parts of it may</code></span>
+<span class="codeline" id="line-162"><code>		// already be mapped by what inUse describes due to page alignment requirements</code></span>
+<span class="codeline" id="line-163"><code>		// for mapping. prune's invariants are guaranteed by the fact that this</code></span>
+<span class="codeline" id="line-164"><code>		// function will never be asked to remap the same memory twice.</code></span>
+<span class="codeline" id="line-165"><code>		if inUseIndex &gt; 0 {</code></span>
+<span class="codeline" id="line-166"><code>			need = need.subtract(addrRangeToSumAddrRange(l, p.inUse.ranges[inUseIndex-1]))</code></span>
+<span class="codeline" id="line-167"><code>		}</code></span>
+<span class="codeline" id="line-168"><code>		if inUseIndex &lt; len(p.inUse.ranges) {</code></span>
+<span class="codeline" id="line-169"><code>			need = need.subtract(addrRangeToSumAddrRange(l, p.inUse.ranges[inUseIndex]))</code></span>
+<span class="codeline" id="line-170"><code>		}</code></span>
+<span class="codeline" id="line-171"><code>		// It's possible that after our pruning above, there's nothing new to map.</code></span>
+<span class="codeline" id="line-172"><code>		if need.size() == 0 {</code></span>
+<span class="codeline" id="line-173"><code>			continue</code></span>
+<span class="codeline" id="line-174"><code>		}</code></span>
+<span class="codeline" id="line-175"><code></code></span>
+<span class="codeline" id="line-176"><code>		// Map and commit need.</code></span>
+<span class="codeline" id="line-177"><code>		sysMap(unsafe.Pointer(need.base.addr()), need.size(), p.sysStat)</code></span>
+<span class="codeline" id="line-178"><code>		sysUsed(unsafe.Pointer(need.base.addr()), need.size())</code></span>
+<span class="codeline" id="line-179"><code>	}</code></span>
+<span class="codeline" id="line-180"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Source: getrandom_linux.go in package internal/syscall/unix</title>
+<link href="../../../../css/light-v0.3.2.css" rel="stylesheet">
+<script src="../../../../jvs/golds-v0.3.2.js"></script>
+<body onload="onPageLoad()"><div>
+
+<pre id="header"><code><span class="title">Source File</span>
+	getrandom_linux.go
+
+<span class="title">Belonging Package</span>
+	<a href="../../../../pkg/internal/syscall/unix.html">internal/syscall/unix</a>
+</code></pre>
+
+<pre class="line-numbers">
+<span class="codeline" id="line-1"><code>// Copyright 2014 The Go Authors. All rights reserved.</code></span>
+<span class="codeline" id="line-2"><code>// Use of this source code is governed by a BSD-style</code></span>
+<span class="codeline" id="line-3"><code>// license that can be found in the LICENSE file.</code></span>
+<span class="codeline" id="line-4"><code></code></span>
+<span class="codeline" id="line-5"><code>package unix</code></span>
+<span class="codeline" id="line-6"><code></code></span>
+<span class="codeline" id="line-7"><code>import (</code></span>
+<span class="codeline" id="line-8"><code>	"sync/atomic"</code></span>
+<span class="codeline" id="line-9"><code>	"syscall"</code></span>
+<span class="codeline" id="line-10"><code>	"unsafe"</code></span>
+<span class="codeline" id="line-11"><code>)</code></span>
+<span class="codeline" id="line-12"><code></code></span>
+<span class="codeline" id="line-13"><code>var randomUnsupported int32 // atomic</code></span>
+<span class="codeline" id="line-14"><code></code></span>
+<span class="codeline" id="line-15"><code>// GetRandomFlag is a flag supported by the getrandom system call.</code></span>
+<span class="codeline" id="line-16"><code>type GetRandomFlag uintptr</code></span>
+<span class="codeline" id="line-17"><code></code></span>
+<span class="codeline" id="line-18"><code>const (</code></span>
+<span class="codeline" id="line-19"><code>	// GRND_NONBLOCK means return EAGAIN rather than blocking.</code></span>
+<span class="codeline" id="line-20"><code>	GRND_NONBLOCK GetRandomFlag = 0x0001</code></span>
+<span class="codeline" id="line-21"><code></code></span>
+<span class="codeline" id="line-22"><code>	// GRND_RANDOM means use the /dev/random pool instead of /dev/urandom.</code></span>
+<span class="codeline" id="line-23"><code>	GRND_RANDOM GetRandomFlag = 0x0002</code></span>
+<span class="codeline" id="line-24"><code>)</code></span>
+<span class="codeline" id="line-25"><code></code></span>
+<span class="codeline" id="line-26"><code>// GetRandom calls the Linux getrandom system call.</code></span>
+<span class="codeline" id="line-27"><code>// See https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=c6e9d6f38894798696f23c8084ca7edbf16ee895</code></span>
+<span class="codeline" id="line-28"><code>func GetRandom(p []byte, flags GetRandomFlag) (n int, err error) {</code></span>
+<span class="codeline" id="line-29"><code>	if len(p) == 0 {</code></span>
+<span class="codeline" id="line-30"><code>		return 0, nil</code></span>
+<span class="codeline" id="line-31"><code>	}</code></span>
+<span class="codeline" id="line-32"><code>	if atomic.LoadInt32(&amp;randomUnsupported) != 0 {</code></span>
+<span class="codeline" id="line-33"><code>		return 0, syscall.ENOSYS</code></span>
+<span class="codeline" id="line-34"><code>	}</code></span>
+<span class="codeline" id="line-35"><code>	r1, _, errno := syscall.Syscall(getrandomTrap,</code></span>
+<span class="codeline" id="line-36"><code>		uintptr(unsafe.Pointer(&amp;p[0])),</code></span>
+<span class="codeline" id="line-37"><code>		uintptr(len(p)),</code></span>
+<span class="codeline" id="line-38"><code>		uintptr(flags))</code></span>
+<span class="codeline" id="line-39"><code>	if errno != 0 {</code></span>
+<span class="codeline" id="line-40"><code>		if errno == syscall.ENOSYS {</code></span>
+<span class="codeline" id="line-41"><code>			atomic.StoreInt32(&amp;randomUnsupported, 1)</code></span>
+<span class="codeline" id="line-42"><code>		}</code></span>
+<span class="codeline" id="line-43"><code>		return 0, errno</code></span>
+<span class="codeline" id="line-44"><code>	}</code></span>
+<span class="codeline" id="line-45"><code>	return int(r1), nil</code></span>
+<span class="codeline" id="line-46"><code>}</code></span>
+</pre><pre id="footer">
+<table><tr><td><img src="../../../../png/go101-twitter.png"></td>
+<td>The pages are generated with <a href="https://go101.org/article/tool-golds.html"><b>Golds</b></a> <i>v0.3.2</i>. (GOOS=linux GOARCH=amd64)
+<b>Golds</b> is a <a href="https://go101.org">Go 101</a> project developed by <a href="https://tapirgames.com">Tapir Liu</a>.
+PR and bug reports are welcome and can be submitted to <a href="https://github.com/go101/golds">the issue list</a>.
+Please follow <a href="https://twitter.com/go100and1">@Go100and1</a> (reachable from the left QR code) to get the latest news of <b>Golds</b>.</td></tr></table></pre>
